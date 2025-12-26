@@ -1,0 +1,6 @@
+<project toolsVersion="5.0">
+    <remote name="github-slang" type="https"
+            packageLocation="github.com/shader-slang/slang/releases/download/v${version}/slang-${version}-win64.zip"/>
+    <remote name="github-slang-linux" type="https"
+            packageLocation="github.com/shader-slang/slang/releases/download/v${version}/slang-${version}-linux-x86_64.zip"/>
+</project>

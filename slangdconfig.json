@@ -1,0 +1,23 @@
+{
+    "slang.predefinedMacros": [
+        "FALCOR",
+        "FALCOR_D3D12=1",
+        "INDEXED_VERTICES=1",
+        "MATERIAL_COUNT=128",
+        "PARTICLE_SYSTEM_COUNT=1",
+        "SAMPLE_GENERATOR_TYPE=SAMPLE_GENERATOR_UNIFORM"
+    ],
+
+    "slang.additionalSearchPaths": [
+        "C:/Users/aresk/Desktop/VolumetricReSTIRRelease/Source",
+        "C:/Users/aresk/Desktop/VolumetricReSTIRRelease/Source/Falcor",
+        "C:/Users/aresk/Desktop/VolumetricReSTIRRelease/Source/RenderPasses"
+    ],
+
+    "slang.diagnostics.suppress": [
+        "implicit-conversion",
+        "implicit-int-conversion",
+        "implicit-truncation"
+    ]
+    
+}
