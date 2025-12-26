@@ -18,3 +18,7 @@ Source/RenderPasses/VolumetricReSTIR/Data
 Tools/.packman
 Tests/data
 enc_temp_folder
+Source\Externals\.packman\CUDA_13.0 
+Source\Externals\.packman\OptiX_9.0.0
+Source\Externals\.packman\oidn
+
