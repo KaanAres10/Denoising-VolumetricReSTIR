@@ -6,10 +6,21 @@ import math, os, time, re
 # ============================================================
 W, H = 1920, 1080
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+def find_repo_root(start):
+    cur = start
+    while True:
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return start
+        if os.path.isdir(os.path.join(cur, "Source")):
+            return cur
+        cur = parent
+
+BIN_DIR = os.getcwd()
+REPO_ROOT = find_repo_root(BIN_DIR)
 
 OUT_ROOT = os.path.join(
-    SCRIPT_DIR,
+    REPO_ROOT,
     "outputs",
     "Plume_Reference_Video"
 )

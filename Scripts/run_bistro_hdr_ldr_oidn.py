@@ -12,15 +12,26 @@ import math
 
 # CONFIG
 PIPE_MODE    = "REF"      # "HDR" | "LDR" | "REF"
-CAPTURE_MODE = "frames"   # "timing" | "frames" | "both"
+CAPTURE_MODE = "timing"   # "timing" | "frames" | "both"
 
 W, H = 1920, 1080
 NUM_FRAMES = 100          # used for HDR/LDR; REF will override to 1 below
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+def find_repo_root(start):
+    cur = start
+    while True:
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return start
+        if os.path.isdir(os.path.join(cur, "Source")):
+            return cur
+        cur = parent
+
+BIN_DIR = os.getcwd()
+REPO_ROOT = find_repo_root(BIN_DIR)
 
 OUT_ROOT = os.path.join(
-    SCRIPT_DIR,
+    REPO_ROOT,
     "outputs",
     "Bistro_OIDN_HDR_LDR"
 )
