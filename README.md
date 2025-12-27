@@ -12,7 +12,7 @@ This repository has been extended as part of an research project investigating t
 The work builds based on the original implementation of **Volumetric ReSTIR** by Lin et al.(2021), and integrates Open Intel Image Denoise(OIDN) and updated version OptiX Denoiser 9.0 into the Falcor pipeline to enable systematic evaluation.
 
 The original Volumetric ReSTIR implementation can be found at:  
-![Comparison Video](https://github.com/DQLin/VolumetricReSTIRRelease)
+https://github.com/DQLin/VolumetricReSTIRRelease
 
 ---
 
