@@ -1,5 +1,12 @@
 ## Denoising vs Sampling Trade off for Volumetric ReSTIR
 
+<p align="center">
+  <img
+    src="Docs/Cover_Comparison.png"
+    alt="Comparison of Volumetric ReSTIR on different denoiser: no denoiser (BASE), OIDN, OptiX, Reference"
+    width="800">
+</p>
+
 This repository has been extended as part of an research project investigating the trade off between **denoising strength** and **additional Volumetric ReSTIR sampling** under a **fixed compute budget**.
 
 The work builds based on the original implementation of **Volumetric ReSTIR** by Lin et al.(2021), and integrates Open Intel Image Denoise(OIDN) and updated version OptiX Denoiser 9.0 into the Falcor pipeline to enable systematic evaluation.
@@ -36,12 +43,6 @@ The following denoisers were integrated **on top of the VolumetricReSTIR render 
 - **Intel Open Image Denoise (OIDN) – GPU**
 - **Intel Open Image Denoise (OIDN) – CPU**
 - **NVIDIA OptiX AI Denoiser (Updated to OptiX 9.0 SDK)**
-
-Each denoiser is inserted into the render graph as:
-
-
-Both **static** and **dynamic (orbiting camera)** sequences are supported.
-
 ---
 
 ### Scene Configurations
@@ -82,6 +83,37 @@ The screenshot below shows the **OIDN GPU denoiser configuration** in Falcor, in
 The screenshot below shows the **OptiX denoiser configuration** in Falcor, including blend factors and HDR/LDR mode, .etc.
 
 ![OptiX denoiser parameter selection](Docs/opt.png)
+
+
+## Scripts
+
+All scripts used to reproduce the experiments presented in this repository can be found in the **`Scripts/`** directory located at the root.
+
+## Prerequisites
+
+- **Windows 10** version 1809 or newer  
+- **Visual Studio 2019/2022**  
+- **Microsoft Windows SDK** version 1903 (10.0.18362.1) or newer  
+  https://developer.microsoft.com/en-us/windows/downloads/sdk-archive  
+- **NVIDIA RTX 2060** or higher  
+
+## How to Compile
+
+1. Open `Falcor.sln`
+2. Select the **ReleaseD3D12** configuration
+3. Build the entire solution (If it crashes, try to build each RenderPass seperatly)
+
+## Fetch Example Scenes
+
+Download the example scenes (**7.87 GB**) from the following link:
+
+https://drive.google.com/file/d/1oo29EuEN4TputF6JGTJYze_e08uDRbpx/view?usp=sharing
+
+Extract the archive to **one** of the following locations:
+
+- `Bin\x64\Release\Data`  
+**OR**
+- `Source\RenderPasses\VolumetricReSTIR\Data` (the data will automatically be copied to the appropriate binary folder whenever **VolumetricReSTIR** is built.)  
 
 ## To Use OptiX and OIDN Denoising
 
