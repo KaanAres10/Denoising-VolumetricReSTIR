@@ -74,6 +74,34 @@ OIDNGPUPass::OIDNGPUPass(const Dictionary& dict) {
     mpFbo = Fbo::create();
 }
 
+void OIDNGPUPass::renderUI(Gui::Widgets& widget)
+{
+    widget.checkbox("Enabled", mEnabled);
+
+    if (!mEnabled) return;
+
+    widget.checkbox("HDR", mHdr);
+    widget.checkbox("sRGB", mSrgb);
+    widget.checkbox("Clean Aux", mCleanAux);
+
+    uint32_t quality = (uint32_t)mQuality;
+
+    if (widget.dropdown(
+        "Quality",
+        {
+            {0u, "Default"},
+            {1u, "Fast"},
+            {2u, "Balanced"},
+            {3u, "High"}
+        },
+        quality))
+    {
+        mQuality = (int)quality;
+    }
+    widget.var("Max Memory (MB)", mMaxMemoryMB, -1, 65536); // pick bounds you like
+    widget.var("Input Scale", mInputScale);                // beware NaN, see note below
+}
+
 Dictionary OIDNGPUPass::getScriptingDictionary()
 {
     Dictionary d;
@@ -200,6 +228,12 @@ void OIDNGPUPass::execute(RenderContext* pRenderContext, const RenderData& rende
     auto pSrc = renderData[kSrc]->asTexture();
     auto pDst = renderData[kDst]->asTexture();
     if (!pSrc || !pDst) return;
+
+    if (!mEnabled)
+    {
+        pRenderContext->blit(pSrc->getSRV(), pDst->getRTV());
+        return;
+    }
 
     uint32_t width = pSrc->getWidth();
     uint32_t height = pSrc->getHeight();

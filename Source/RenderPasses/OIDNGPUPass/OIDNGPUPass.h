@@ -20,6 +20,9 @@ public:
 private:
     OIDNGPUPass(const Dictionary& dict);
 
+    void renderUI(Gui::Widgets& widget) override;
+
+
     void initInterop(RenderContext* pCtx, uint32_t width, uint32_t height);
     void releaseInterop();
     // OIDN

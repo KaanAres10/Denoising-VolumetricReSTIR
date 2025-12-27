@@ -8,12 +8,34 @@ static const std::string kDst = "dst";
 static const std::string kConvertTexToBufFile = "RenderPasses/OIDNCPUPass/ConvertTexToBuf.cs.slang";
 static const std::string kConvertBufToTexFile = "RenderPasses/OIDNCPUPass/ConvertBufToTex.ps.slang";
 
+// dict keys
+static const char kEnabled[] = "mEnabled";
+static const char kQuality[] = "mQuality";
+static const char kHdr[] = "mHdr";
+static const char kSrgb[] = "mSrgb";
+static const char kInputScale[] = "mInputScale";
+static const char kCleanAux[] = "mCleanAux";
+static const char kMaxMemMB[] = "mMaxMemoryMB";
+
+
 extern "C" __declspec(dllexport) const char* getProjDir() { return PROJECT_DIR; }
 
 extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary & lib)
 {
     lib.registerClass("OIDNCPUPass", OIDNCPUPass::kDesc, OIDNCPUPass::create);
 }
+
+static oidn::Quality toOidnQuality(int q)
+{
+    switch (q)
+    {
+    default: return oidn::Quality::Default;
+    case 1:  return oidn::Quality::Fast;
+    case 2:  return oidn::Quality::Balanced;
+    case 3:  return oidn::Quality::High;
+    }
+}
+
 
 OIDNCPUPass::SharedPtr OIDNCPUPass::create(RenderContext* pRenderContext, const Dictionary& dict)
 {
@@ -33,10 +55,24 @@ OIDNCPUPass::OIDNCPUPass(const Dictionary& dict)
     mDevice.commit();
 
     mFilter = mDevice.newFilter("RT");
-    if (!mFilter)
-    {
-        logError("OIDNCPUPass: Failed to create OIDN RT filter");
-    }
+
+    if (dict.keyExists(kEnabled))    mEnabled = (bool)dict[kEnabled];
+    if (dict.keyExists(kHdr))        mHdr = (bool)dict[kHdr];
+    if (dict.keyExists(kSrgb))       mSrgb = (bool)dict[kSrgb];
+    if (dict.keyExists(kCleanAux))   mCleanAux = (bool)dict[kCleanAux];
+    if (dict.keyExists(kQuality))    mQuality = (int)dict[kQuality];
+    if (dict.keyExists(kMaxMemMB))   mMaxMemoryMB = (int)dict[kMaxMemMB];
+    if (dict.keyExists(kInputScale)) mInputScale = (float)dict[kInputScale];
+
+    mFilter.set("hdr", mHdr);
+    mFilter.set("srgb", mSrgb);
+    mFilter.set("cleanAux", mCleanAux);
+    mFilter.set("quality", toOidnQuality(mQuality));
+    if (!std::isnan(mInputScale))
+        mFilter.set("inputScale", mInputScale);
+
+    if (mMaxMemoryMB >= 0)
+        mFilter.set("maxMemoryMB", mMaxMemoryMB);
 
     mpConvertTexToBuf = ComputePass::create(kConvertTexToBufFile, "main");
     mpConvertBufToTex = FullScreenPass::create(kConvertBufToTexFile);
@@ -51,6 +87,47 @@ RenderPassReflection OIDNCPUPass::reflect(const CompileData& compileData)
     r.addOutput(kDst, "Output denoised image")
         .format(ResourceFormat::RGBA32Float);   
     return r;
+}
+
+Dictionary OIDNCPUPass::getScriptingDictionary()
+{
+    Dictionary d;
+    d[kEnabled] = mEnabled;
+    d[kHdr] = mHdr;
+    d[kSrgb] = mSrgb;
+    d[kCleanAux] = mCleanAux;
+    d[kQuality] = mQuality;
+    d[kMaxMemMB] = mMaxMemoryMB;
+    d[kInputScale] = mInputScale;
+    return d;
+}
+
+void OIDNCPUPass::renderUI(Gui::Widgets& widget)
+{
+    widget.checkbox("Enabled", mEnabled);
+
+    if (!mEnabled) return;
+
+    widget.checkbox("HDR", mHdr);
+    widget.checkbox("sRGB", mSrgb);
+    widget.checkbox("Clean Aux", mCleanAux);
+
+    uint32_t quality = (uint32_t)mQuality;
+
+    if (widget.dropdown(
+        "Quality",
+        {
+            {0u, "Default"},
+            {1u, "Fast"},
+            {2u, "Balanced"},
+            {3u, "High"}
+        },
+        quality))
+    {
+        mQuality = (int)quality;
+    }
+    widget.var("Max Memory (MB)", mMaxMemoryMB, -1, 65536); // pick bounds you like
+    widget.var("Input Scale", mInputScale);                // beware NaN, see note below
 }
 
 static void allocateStagingBuffers(RenderContext* pContext,
@@ -121,6 +198,12 @@ void OIDNCPUPass::execute(RenderContext* pRenderContext, const RenderData& rende
     if (!pSrc || !pDst ||
         !mInputBufGPU || !mOutputBufGPU ||
         !mInputBufCPU || !mOutputBufCPU) return;
+
+    if (!mEnabled)
+    {
+        pRenderContext->blit(pSrc->getSRV(), pDst->getRTV());
+        return;
+    }
 
     const size_t numPixels = size_t(mBufferSize.x) * mBufferSize.y;
     const size_t numFloats = numPixels * 4;

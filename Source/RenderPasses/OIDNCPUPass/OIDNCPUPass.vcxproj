@@ -103,7 +103,8 @@
       <AdditionalDependencies>OpenImageDenoise.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y /D "$(SolutionDir)Source\Externals\.packman\oidn\bin\OpenImageDenoise*.dll" "$(OutDir)"</Command>
+      <Command>xcopy /Y /D "$(SolutionDir)Source\Externals\.packman\oidn\bin\OpenImageDenoise*.dll" "$(OutDir)"
+xcopy /Y /D "$(SolutionDir)Source\Externals\.packman\oidn\bin\tbb*.dll" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
