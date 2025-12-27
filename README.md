@@ -34,6 +34,14 @@ To answer this, we extended the original codebase with multiple denoising config
 
 ---
 
+## Key Findings (Summary)
+
+- Denoisers significantly reduce perceptual error, especially in complex scenes.
+- In simple volumetric scenes, Volumetric ReSTIR already produces clean samples, making aggressive denoising less beneficial.
+- Reallocating compute from denoising to sampling can recover much of the quality lost by weaker denoising.
+- Low-quality denoising combined with improved sampling often matches and sometimes exceeds the quality of high-quality denoisers.
+- Selecting the strongest denoiser is **not always optimal**; best results come from balancing sample quality and denoiser strength.
+
 ## What Was Added
 
 ### Denoiser Integrations
@@ -58,15 +66,7 @@ Two canonical scenes were used, following the original Volumetric ReSTIR paper:
 
 ---
 
----
 
-## Key Findings (Summary)
-
-- Denoisers significantly reduce perceptual error, especially in complex scenes.
-- In simple volumetric scenes, Volumetric ReSTIR already produces clean samples, making aggressive denoising less beneficial.
-- Reallocating compute from denoising to sampling can recover much of the quality lost by weaker denoising.
-- Low-quality denoising combined with improved sampling often matches and sometimes exceeds the quality of high-quality denoisers.
-- Selecting the strongest denoiser is **not always optimal**; best results come from balancing sample quality and denoiser strength.
 
 ---
 
