@@ -20,7 +20,7 @@ https://github.com/DQLin/VolumetricReSTIRRelease
 
 A video comparing Volumetric ReSTIR with different denoisers
 
-https://github.com/user-attachments/assets/ae49a7f1-0505-46f3-b3a3-946a05ded240
+https://github.com/user-attachments/assets/e14cf250-5386-43c5-bc7f-247b2b295c4d
 
 ## Motivation
 
