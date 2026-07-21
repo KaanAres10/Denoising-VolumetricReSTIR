@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -35,12 +35,12 @@ namespace Mogwai
     public:
         virtual ~CaptureTrigger() {};
 
-        virtual void beginFrame(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo) override final;
-        virtual void endFrame(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo) override final;
+        virtual void beginFrame(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo) override final;
+        virtual void endFrame(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo) override final;
         virtual bool hasWindow() const override { return true; }
         virtual bool isWindowShown() const override { return mShowUI; }
         virtual void toggleWindow() override { mShowUI = !mShowUI; }
-        virtual void scriptBindings(Bindings& bindings) override;
+        virtual void registerScriptBindings(pybind11::module& m) override;
         virtual void activeGraphChanged(RenderGraph* pNewGraph, RenderGraph* pPrevGraph) override;
     protected:
         CaptureTrigger(Renderer* pRenderer, const std::string& name) : Extension(pRenderer, name) {}
@@ -53,15 +53,15 @@ namespace Mogwai
 
         void addRange(const RenderGraph* pGraph, uint64_t startFrame, uint64_t count);
         void reset(const RenderGraph* pGraph = nullptr);
-        void renderUI(Gui::Window& w);
+        void renderBaseUI(Gui::Window& w);
 
-        void setOutputDirectory(const std::string& outDir);
-        const std::string& getOutputDirectory() const { return mOutputDir; }
+        void setOutputDirectory(const std::filesystem::path& path);
+        const std::filesystem::path& getOutputDirectory() const { return mOutputDir; }
 
         void setBaseFilename(const std::string& baseFilename);
         const std::string& getBaseFilename() const { return mBaseFilename; }
 
-        std::string getScript(const std::string& var);
+        std::string getScript(const std::string& var) const override;
         std::filesystem::path getOutputPath() const;
         std::string getOutputNamePrefix(const std::string& output) const;
 
@@ -69,7 +69,7 @@ namespace Mogwai
         std::unordered_map<const RenderGraph*, range_vec> mGraphRanges;
 
         std::string mBaseFilename = "Mogwai";
-        std::string mOutputDir = ".";
+        std::filesystem::path mOutputDir = ".";
         bool mShowUI = false;
 
         struct

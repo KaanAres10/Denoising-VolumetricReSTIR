@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,15 +25,13 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-import Scene.ShadingData;
-import Utils.Helpers;
 import SVGFCommon;
 
 cbuffer PerImageCB
 {
-    Texture2D   gAlbedo;
-    Texture2D   gEmission;
-    Texture2D   gIllumination;
+    Texture2D gAlbedo;
+    Texture2D gEmission;
+    Texture2D gIllumination;
 };
 
 float4 main(FullScreenPassVsOut vsOut) : SV_TARGET0

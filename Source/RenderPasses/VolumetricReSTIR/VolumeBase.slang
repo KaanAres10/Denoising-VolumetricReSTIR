@@ -20,7 +20,7 @@ SamplerState gPointSampler;
 
 ParameterBlock<VDBInfo> gvdb;
 
-struct Ray
+struct VolRay
 {
     float3 origin;
     float3 dir;
@@ -33,6 +33,64 @@ struct Ray
     }
 };
 
+// [8.0 port] The fork added computeRayPinholeScaled / computeNonNormalizedRayDirPinholeScaled and a
+// CameraRay struct to core Camera.slang. To avoid modifying 8.0's core Camera, they are replicated
+// here as free functions taking the Camera by value (Camera exposes its CameraData as `data`).
+struct CameraRay { float3 origin; float3 dir; float tMin; float tMax; };
+
+float3 computeNonNormalizedRayDirPinholeOffset(Camera cam, uint2 pixel, float2 offsets, uint2 frameDim)
+{
+    float2 p = (float2(pixel) + offsets) / frameDim + float2(-cam.data.jitterX, cam.data.jitterY);
+    float2 ndc = float2(2, -2) * p + float2(-1, 1);
+    return ndc.x * cam.data.cameraU + ndc.y * cam.data.cameraV + cam.data.cameraW;
+}
+
+CameraRay computeRayPinholeScaled(Camera cam, uint2 pixel, int scale, float2 offset, uint2 frameDim)
+{
+    float2 pixelPos = (float2(pixel) + offset) * scale;
+    CameraRay ray;
+    ray.origin = cam.data.posW;
+    ray.dir = normalize(computeNonNormalizedRayDirPinholeOffset(cam, int2(pixelPos), pixelPos - int2(pixelPos), frameDim));
+    float invCos = 1.f / dot(normalize(cam.data.cameraW), ray.dir);
+    ray.tMin = cam.data.nearZ * invCos;
+    ray.tMax = cam.data.farZ * invCos;
+    return ray;
+}
+
+float3 computeNonNormalizedRayDirPinholeScaled(Camera cam, uint2 pixel, int scale, float2 offset, uint2 frameDim)
+{
+    float2 pixelPos = (float2(pixel) + offset) * scale;
+    return computeNonNormalizedRayDirPinholeOffset(cam, int2(pixelPos), pixelPos - int2(pixelPos), frameDim);
+}
+
+// Prev-frame (explicit ray-tracing frame) variants used by temporal reprojection.
+float3 computeNonNormalizedRayDirPinholeWithFrame(uint2 pixel, float2 offsets, uint2 frameDim, float3 cameraU, float3 cameraV, float3 cameraW)
+{
+    float2 p = (float2(pixel) + offsets) / frameDim;
+    float2 ndc = float2(2, -2) * p + float2(-1, 1);
+    return ndc.x * cameraU + ndc.y * cameraV + cameraW;
+}
+
+CameraRay computeRayPinholeWithRayTracingFrameScaled(Camera cam, uint2 pixel, int scale, float2 offset, uint2 frameDim, float3 posW, float3 cameraU, float3 cameraV, float3 cameraW)
+{
+    float2 pixelPos = (float2(pixel) + offset) * scale;
+    CameraRay ray;
+    ray.origin = posW;
+    ray.dir = normalize(computeNonNormalizedRayDirPinholeWithFrame(uint2(pixelPos), pixelPos - int2(pixelPos), frameDim, cameraU, cameraV, cameraW));
+    float invCos = 1.f / dot(normalize(cameraW), ray.dir);
+    ray.tMin = cam.data.nearZ * invCos;
+    ray.tMax = cam.data.farZ * invCos;
+    return ray;
+}
+
+float3 computeWorldPositionWithRayTracingFrameScaled(Camera cam, uint2 pixel, int scale, float2 offset, uint2 frameDim, float3 posW, float3 cameraU, float3 cameraV, float3 cameraW, float depth)
+{
+    float2 pixelPos = (float2(pixel) + offset) * scale;
+    float3 origin = posW;
+    float3 dir = normalize(computeNonNormalizedRayDirPinholeWithFrame(uint2(pixelPos), pixelPos - int2(pixelPos), frameDim, cameraU, cameraV, cameraW));
+    return origin + depth * dir;
+}
+
 struct SceneLightSample
 {
     // Light sample
@@ -42,8 +100,8 @@ struct SceneLightSample
     float   pdf;            ///< Probability density function with respect to solid angle (pdf == 0 for invalid samples).
     float   pdfArea;
     // Shadow ray parameters
-    float3  rayDir;         ///< Ray direction for visibility evaluation (normalized). This may differ from 'dir' due to ray offsets.
-    float   rayDistance;    ///< Ray distance for visibility evaluation. This may differ from 'distance' due to ray offsets.
+    float3  rayDir;         ///< VolRay direction for visibility evaluation (normalized). This may differ from 'dir' due to ray offsets.
+    float   rayDistance;    ///< VolRay distance for visibility evaluation. This may differ from 'distance' due to ray offsets.
 };
 
 
@@ -95,12 +153,12 @@ struct MediumInteraction
         return PhaseHG(cosTheta, g);
     }
 
-    Ray SpawnRay(float3 d) {
+    VolRay SpawnRay(float3 d) {
         return { p, d, 0, kRayTMax };
     }
 }
 
-Ray WorldToMedium(Ray r, int mipLevel)
+VolRay WorldToMedium(VolRay r, int mipLevel)
 {
     float4x4 WorldToMediumMatrix = mul(gScene.volumeExternalWorldToModelMatrix, gvdb.invxform[mipLevel]);
     float4 o = mul(float4(r.origin, 1), WorldToMediumMatrix);
@@ -134,7 +192,7 @@ struct Bounds3f
     float3 pMin;
     float3 pMax;
 
-    bool IntersectP(Ray ray, inout float hitt0, inout float hitt1) {
+    bool IntersectP(VolRay ray, inout float hitt0, inout float hitt1) {
         float t0 = 0, t1 = ray.tMax;
         for (int i = 0; i < 3; ++i) {
             float invRayDir = 1 / ray.dir[i];
@@ -159,7 +217,7 @@ struct Bounds3f
 }
 
 
-bool IntersectVolumeBound(Ray ray, inout float tMin, inout float tMax, int mipLevel, bool vertexCenter = false)
+bool IntersectVolumeBound(VolRay ray, inout float tMin, inout float tMax, int mipLevel, bool vertexCenter = false)
 {
     Bounds3f b;
 

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,249 +25,240 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "GraphicsState.h"
+#include "Core/ObjectPython.h"
+#include "Core/API/Device.h"
+#include "Core/Program/ProgramVars.h"
+#include "Utils/Scripting/ScriptBindings.h"
 
 namespace Falcor
 {
-    static GraphicsStateObject::PrimitiveType topology2Type(Vao::Topology t)
+static GraphicsStateObjectDesc::PrimitiveType topology2Type(Vao::Topology t)
+{
+    switch (t)
     {
-        switch (t)
-        {
-        case Vao::Topology::PointList:
-            return GraphicsStateObject::PrimitiveType::Point;
-        case Vao::Topology::LineList:
-        case Vao::Topology::LineStrip:
-            return GraphicsStateObject::PrimitiveType::Line;
-        case Vao::Topology::TriangleList:
-        case Vao::Topology::TriangleStrip:
-            return GraphicsStateObject::PrimitiveType::Triangle;
-        case Vao::Topology::Patch:
-            return GraphicsStateObject::PrimitiveType::Patch;
-        default:
-            should_not_get_here();
-            return GraphicsStateObject::PrimitiveType::Undefined;
-        }
-    }
-
-    GraphicsState::GraphicsState()
-    {
-        uint32_t vpCount = getMaxViewportCount();
-
-        // Create the viewports
-        mViewports.resize(vpCount);
-        mScissors.resize(vpCount);
-        mVpStack.resize(vpCount);
-        mScStack.resize(vpCount);
-        for (uint32_t i = 0; i < vpCount; i++)
-        {
-            setViewport(i, mViewports[i], true);
-        }
-
-        mpGsoGraph = StateGraph::create();
-    }
-
-    GraphicsState::~GraphicsState() = default;
-
-    GraphicsStateObject::SharedPtr GraphicsState::getGSO(const GraphicsVars* pVars)
-    {
-        auto pProgramKernels = mpProgram ? mpProgram->getActiveVersion()->getKernels(pVars) : nullptr;
-        bool newProgVersion = pProgramKernels.get() != mCachedData.pProgramKernels;
-        if (newProgVersion)
-        {
-            mCachedData.pProgramKernels = pProgramKernels.get();
-            mpGsoGraph->walk((void*)pProgramKernels.get());
-        }
-
-        RootSignature::SharedPtr pRoot = pProgramKernels ? pProgramKernels->getRootSignature() : RootSignature::getEmpty();
-
-        if (mCachedData.pRootSig != pRoot.get())
-        {
-            mCachedData.pRootSig = pRoot.get();
-            mpGsoGraph->walk((void*)mCachedData.pRootSig);
-        }
-
-        const Fbo::Desc* pFboDesc = mpFbo ? &mpFbo->getDesc() : nullptr;
-        if(mCachedData.pFboDesc != pFboDesc)
-        {
-            mpGsoGraph->walk((void*)pFboDesc);
-            mCachedData.pFboDesc = pFboDesc;
-        }
-
-        GraphicsStateObject::SharedPtr pGso = mpGsoGraph->getCurrentNode();
-        if(pGso == nullptr)
-        {
-            mDesc.setProgramKernels(pProgramKernels);
-            mDesc.setFboFormats(mpFbo ? mpFbo->getDesc() : Fbo::Desc());
-#ifdef FALCOR_VK
-            mDesc.setRenderPass(mpFbo ? (VkRenderPass)mpFbo->getApiHandle() : VK_NULL_HANDLE);
-#endif
-            mDesc.setVertexLayout(mpVao->getVertexLayout());
-            mDesc.setPrimitiveType(topology2Type(mpVao->getPrimitiveTopology()));
-            mDesc.setRootSignature(pRoot);
-
-            StateGraph::CompareFunc cmpFunc = [&desc = mDesc](GraphicsStateObject::SharedPtr pGso) -> bool
-            {
-                return pGso && (desc == pGso->getDesc());
-            };
-
-            if (mpGsoGraph->scanForMatchingNode(cmpFunc))
-            {
-                pGso = mpGsoGraph->getCurrentNode();
-            }
-            else
-            {
-                pGso = GraphicsStateObject::create(mDesc);
-                mpGsoGraph->setCurrentNodeData(pGso);
-            }
-        }
-        return pGso;
-    }
-
-    GraphicsState& GraphicsState::setFbo(const Fbo::SharedPtr& pFbo, bool setVp0Sc0)
-    {
-        mpFbo = pFbo;
-
-        if (setVp0Sc0 && pFbo)
-        {
-            uint32_t w = pFbo->getWidth();
-            uint32_t h = pFbo->getHeight();
-            GraphicsState::Viewport vp(0, 0, float(w), float(h), 0, 1);
-            setViewport(0, vp, true);
-        }
-        return *this;
-    }
-
-    void GraphicsState::pushFbo(const Fbo::SharedPtr& pFbo, bool setVp0Sc0)
-    {
-        mFboStack.push(mpFbo);
-        setFbo(pFbo, setVp0Sc0);
-    }
-
-    void GraphicsState::popFbo(bool setVp0Sc0)
-    {
-        if (mFboStack.empty())
-        {
-            logError("PipelineState::popFbo() - can't pop FBO since the FBO stack is empty.");
-            return;
-        }
-        setFbo(mFboStack.top(), setVp0Sc0);
-        mFboStack.pop();
-    }
-
-    GraphicsState& GraphicsState::setVao(const Vao::SharedConstPtr& pVao)
-    {
-        if(mpVao != pVao)
-        {
-            mpVao = pVao;
-
-#ifdef FALCOR_VK
-            mDesc.setVao(pVao);
-#endif
-
-            mpGsoGraph->walk(pVao ? (void*)pVao->getVertexLayout().get() : nullptr);
-        }
-        return *this;
-    }
-
-    GraphicsState& GraphicsState::setBlendState(BlendState::SharedPtr pBlendState)
-    {
-        if(mDesc.getBlendState() != pBlendState)
-        {
-            mDesc.setBlendState(pBlendState);
-            mpGsoGraph->walk((void*)pBlendState.get());
-        }
-        return *this;
-    }
-
-    GraphicsState& GraphicsState::setRasterizerState(RasterizerState::SharedPtr pRasterizerState)
-    {
-        if(mDesc.getRasterizerState() != pRasterizerState)
-        {
-            mDesc.setRasterizerState(pRasterizerState);
-            mpGsoGraph->walk((void*)pRasterizerState.get());
-        }
-        return *this;
-    }
-
-    GraphicsState& GraphicsState::setSampleMask(uint32_t sampleMask)
-    {
-        if(mDesc.getSampleMask() != sampleMask)
-        {
-            mDesc.setSampleMask(sampleMask);
-            mpGsoGraph->walk((void*)(uint64_t)sampleMask);
-        }
-        return *this;
-    }
-
-    GraphicsState& GraphicsState::setDepthStencilState(DepthStencilState::SharedPtr pDepthStencilState)
-    {
-        if(mDesc.getDepthStencilState() != pDepthStencilState)
-        {
-            mDesc.setDepthStencilState(pDepthStencilState);
-            mpGsoGraph->walk((void*)pDepthStencilState.get());
-        }
-        return *this;
-    }
-
-    void GraphicsState::pushViewport(uint32_t index, const GraphicsState::Viewport& vp, bool setScissors)
-    {
-        mVpStack[index].push(mViewports[index]);
-        setViewport(index, vp, setScissors);
-    }
-
-    void GraphicsState::popViewport(uint32_t index, bool setScissors)
-    {
-        if (mVpStack[index].empty())
-        {
-            logError("PipelineState::popViewport() - can't pop viewport since the viewport stack is empty.");
-            return;
-        }
-        const auto& VP = mVpStack[index].top();
-        setViewport(index, VP, setScissors);
-        mVpStack[index].pop();
-    }
-
-    void GraphicsState::pushScissors(uint32_t index, const GraphicsState::Scissor& sc)
-    {
-        mScStack[index].push(mScissors[index]);
-        setScissors(index, sc);
-    }
-
-    void GraphicsState::popScissors(uint32_t index)
-    {
-        if (mScStack[index].empty())
-        {
-            logError("PipelineState::popScissors() - can't pop scissors since the scissors stack is empty.");
-            return;
-        }
-        const auto& sc = mScStack[index].top();
-        setScissors(index, sc);
-        mScStack[index].pop();
-    }
-
-    void GraphicsState::setViewport(uint32_t index, const GraphicsState::Viewport& vp, bool setScissors)
-    {
-        mViewports[index] = vp;
-
-        if (setScissors)
-        {
-            GraphicsState::Scissor sc;
-            sc.left = (int32_t)vp.originX;
-            sc.right = sc.left + (int32_t)vp.width;
-            sc.top = (int32_t)vp.originY;
-            sc.bottom = sc.top + (int32_t)vp.height;
-            this->setScissors(index, sc);
-        }
-    }
-
-    void GraphicsState::setScissors(uint32_t index, const GraphicsState::Scissor& sc)
-    {
-        mScissors[index] = sc;
-    }
-
-    SCRIPT_BINDING(GraphicsState)
-    {
-        pybind11::class_<GraphicsState, GraphicsState::SharedPtr>(m, "GraphicsState");
+    case Vao::Topology::PointList:
+        return GraphicsStateObjectDesc::PrimitiveType::Point;
+    case Vao::Topology::LineList:
+    case Vao::Topology::LineStrip:
+        return GraphicsStateObjectDesc::PrimitiveType::Line;
+    case Vao::Topology::TriangleList:
+    case Vao::Topology::TriangleStrip:
+        return GraphicsStateObjectDesc::PrimitiveType::Triangle;
+    default:
+        FALCOR_UNREACHABLE();
+        return GraphicsStateObjectDesc::PrimitiveType::Undefined;
     }
 }
+
+ref<GraphicsState> GraphicsState::create(ref<Device> pDevice)
+{
+    return ref<GraphicsState>(new GraphicsState(pDevice));
+}
+
+GraphicsState::GraphicsState(ref<Device> pDevice) : mpDevice(pDevice)
+{
+    uint32_t vpCount = getMaxViewportCount();
+
+    // Create the viewports
+    mViewports.resize(vpCount);
+    mScissors.resize(vpCount);
+    mVpStack.resize(vpCount);
+    mScStack.resize(vpCount);
+    for (uint32_t i = 0; i < vpCount; i++)
+    {
+        setViewport(i, mViewports[i], true);
+    }
+
+    mpGsoGraph = std::make_unique<GraphicsStateGraph>();
+}
+
+GraphicsState::~GraphicsState() = default;
+
+ref<GraphicsStateObject> GraphicsState::getGSO(const ProgramVars* pVars)
+{
+    auto pProgramKernels = mpProgram ? mpProgram->getActiveVersion()->getKernels(mpDevice, pVars) : nullptr;
+    bool newProgVersion = pProgramKernels.get() != mCachedData.pProgramKernels;
+    if (newProgVersion)
+    {
+        mCachedData.pProgramKernels = pProgramKernels.get();
+        mpGsoGraph->walk((void*)pProgramKernels.get());
+    }
+
+    const Fbo::Desc* pFboDesc = mpFbo ? &mpFbo->getDesc() : nullptr;
+    if (mCachedData.pFboDesc != pFboDesc)
+    {
+        mpGsoGraph->walk((void*)pFboDesc);
+        mCachedData.pFboDesc = pFboDesc;
+    }
+
+    ref<GraphicsStateObject> pGso = mpGsoGraph->getCurrentNode();
+    if (pGso == nullptr)
+    {
+        mDesc.pProgramKernels = pProgramKernels;
+        mDesc.fboDesc = mpFbo ? mpFbo->getDesc() : Fbo::Desc();
+        mDesc.pVertexLayout = mpVao->getVertexLayout();
+        mDesc.primitiveType = topology2Type(mpVao->getPrimitiveTopology());
+
+        GraphicsStateGraph::CompareFunc cmpFunc = [&desc = mDesc](ref<GraphicsStateObject> pGso) -> bool
+        { return pGso && (desc == pGso->getDesc()); };
+
+        if (mpGsoGraph->scanForMatchingNode(cmpFunc))
+        {
+            pGso = mpGsoGraph->getCurrentNode();
+        }
+        else
+        {
+            pGso = mpDevice->createGraphicsStateObject(mDesc);
+            mDesc = pGso->getDesc();
+            pGso->breakStrongReferenceToDevice();
+            mpGsoGraph->setCurrentNodeData(pGso);
+        }
+    }
+    return pGso;
+}
+
+GraphicsState& GraphicsState::setFbo(const ref<Fbo>& pFbo, bool setVp0Sc0)
+{
+    mpFbo = pFbo;
+
+    if (setVp0Sc0 && pFbo)
+    {
+        uint32_t w = pFbo->getWidth();
+        uint32_t h = pFbo->getHeight();
+        GraphicsState::Viewport vp(0, 0, float(w), float(h), 0, 1);
+        setViewport(0, vp, true);
+    }
+    return *this;
+}
+
+void GraphicsState::pushFbo(const ref<Fbo>& pFbo, bool setVp0Sc0)
+{
+    mFboStack.push(mpFbo);
+    setFbo(pFbo, setVp0Sc0);
+}
+
+void GraphicsState::popFbo(bool setVp0Sc0)
+{
+    FALCOR_CHECK(!mFboStack.empty(), "Empty stack.");
+
+    setFbo(mFboStack.top(), setVp0Sc0);
+    mFboStack.pop();
+}
+
+GraphicsState& GraphicsState::setVao(const ref<Vao>& pVao)
+{
+    if (mpVao != pVao)
+    {
+        mpVao = pVao;
+        mpGsoGraph->walk(pVao ? (void*)pVao->getVertexLayout().get() : nullptr);
+    }
+    return *this;
+}
+
+GraphicsState& GraphicsState::setBlendState(ref<BlendState> pBlendState)
+{
+    if (mDesc.pBlendState != pBlendState)
+    {
+        mDesc.pBlendState = pBlendState;
+        mpGsoGraph->walk((void*)pBlendState.get());
+    }
+    return *this;
+}
+
+GraphicsState& GraphicsState::setRasterizerState(ref<RasterizerState> pRasterizerState)
+{
+    if (mDesc.pRasterizerState != pRasterizerState)
+    {
+        mDesc.pRasterizerState = pRasterizerState;
+        mpGsoGraph->walk((void*)pRasterizerState.get());
+    }
+    return *this;
+}
+
+GraphicsState& GraphicsState::setSampleMask(uint32_t sampleMask)
+{
+    if (mDesc.sampleMask != sampleMask)
+    {
+        mDesc.sampleMask = sampleMask;
+        mpGsoGraph->walk((void*)(uint64_t)sampleMask);
+    }
+    return *this;
+}
+
+GraphicsState& GraphicsState::setDepthStencilState(ref<DepthStencilState> pDepthStencilState)
+{
+    if (mDesc.pDepthStencilState != pDepthStencilState)
+    {
+        mDesc.pDepthStencilState = pDepthStencilState;
+        mpGsoGraph->walk((void*)pDepthStencilState.get());
+    }
+    return *this;
+}
+
+void GraphicsState::pushViewport(uint32_t index, const GraphicsState::Viewport& vp, bool setScissors)
+{
+    FALCOR_CHECK(index < mVpStack.size(), "'index' is out of range.");
+
+    mVpStack[index].push(mViewports[index]);
+    setViewport(index, vp, setScissors);
+}
+
+void GraphicsState::popViewport(uint32_t index, bool setScissors)
+{
+    FALCOR_CHECK(index < mVpStack.size(), "'index' is out of range.");
+    FALCOR_CHECK(!mVpStack[index].empty(), "Empty stack.");
+
+    const auto& VP = mVpStack[index].top();
+    setViewport(index, VP, setScissors);
+    mVpStack[index].pop();
+}
+
+void GraphicsState::pushScissors(uint32_t index, const GraphicsState::Scissor& sc)
+{
+    FALCOR_CHECK(index < mScStack.size(), "'index' is out of range.");
+
+    mScStack[index].push(mScissors[index]);
+    setScissors(index, sc);
+}
+
+void GraphicsState::popScissors(uint32_t index)
+{
+    FALCOR_CHECK(index < mScStack.size(), "'index' is out of range.");
+    FALCOR_CHECK(!mScStack[index].empty(), "Empty stack.");
+
+    const auto& sc = mScStack[index].top();
+    setScissors(index, sc);
+    mScStack[index].pop();
+}
+
+void GraphicsState::setViewport(uint32_t index, const GraphicsState::Viewport& vp, bool setScissors)
+{
+    mViewports[index] = vp;
+
+    if (setScissors)
+    {
+        GraphicsState::Scissor sc;
+        sc.left = (int32_t)vp.originX;
+        sc.right = sc.left + (int32_t)vp.width;
+        sc.top = (int32_t)vp.originY;
+        sc.bottom = sc.top + (int32_t)vp.height;
+        this->setScissors(index, sc);
+    }
+}
+
+void GraphicsState::setScissors(uint32_t index, const GraphicsState::Scissor& sc)
+{
+    mScissors[index] = sc;
+}
+
+void GraphicsState::breakStrongReferenceToDevice()
+{
+    mpDevice.breakStrongReference();
+}
+
+FALCOR_SCRIPT_BINDING(GraphicsState)
+{
+    pybind11::class_<GraphicsState, ref<GraphicsState>>(m, "GraphicsState");
+}
+} // namespace Falcor

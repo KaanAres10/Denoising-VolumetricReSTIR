@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,72 +27,67 @@
  **************************************************************************/
 #include "SplitScreenPass.h"
 
-const char* SplitScreenPass::kDesc = "Allows the user to split the screen between two inputs.";
-
 namespace
 {
-    // Divider colors
-    const float4 kColorUnselected = float4(0, 0, 0, 1);
-    const float4 kColorSelected = float4(1, 1, 1, 1);
+// Divider colors
+const float4 kColorUnselected = float4(0, 0, 0, 1);
+const float4 kColorSelected = float4(1, 1, 1, 1);
 
-    // A simple character array representing a 16x16 grayscale arrow
-    const unsigned char kArrowArray[256] = {
-        0, 0, 0, 0,  0, 0, 0, 0,    87, 13, 0, 0,       0, 0, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 212,  255, 255, 34, 0,    0, 0, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 255,  255, 255, 255, 32,  0, 0, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 78,   255, 255, 255, 255, 33, 0, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 0,    81, 255, 255, 255,  255, 32, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 0,    0, 72, 255, 255,    255, 255, 34, 0,
-        31, 158, 156, 156,   156, 156, 156, 156,  156, 146, 212, 255,  255, 255, 255, 34,
-        241, 255, 255, 255,  255, 255, 255, 255,  255, 255, 255, 255,  255, 255, 255, 240,
-        241, 255, 255, 255,  255, 255, 255, 255,  255, 255, 255, 255,  255, 255, 255, 240,
-        31, 158, 156, 156,   156, 156, 156, 156,  156, 146, 212, 255,  255, 255, 255, 33,
-        0, 0, 0, 0,  0, 0, 0, 0,   0, 73, 255, 255,     255, 255, 34, 0,
-        0, 0, 0, 0,  0, 0, 0, 0,   81, 255, 255, 255,   255, 31, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 79,  255, 255, 255 ,255,  32, 0, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 255, 255, 255, 255, 31,   0, 0, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 212, 255, 255, 33, 0,     0, 0, 0, 0,
-        0, 0, 0, 0,  0, 0, 0, 0,   87, 12, 0, 0,        0, 0, 0, 0
-    };
+// A simple character array representing a 16x16 grayscale arrow
+const unsigned char kArrowArray[256] = {
+    // clang-format off
+    0,  0,  0,  0,  0,  0,  0,  0,  87, 13, 0,  0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  212,255,255,34, 0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  255,255,255,255,32, 0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  78, 255,255,255,255,33, 0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  81, 255,255,255,255,32, 0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  72, 255,255,255,255,34, 0,
+    31, 158,156,156,156,156,156,156,156,146,212,255,255,255,255,34,
+    241,255,255,255,255,255,255,255,255,255,255,255,255,255,255,240,
+    241,255,255,255,255,255,255,255,255,255,255,255,255,255,255,240,
+    31, 158,156,156,156,156,156,156,156,146,212,255,255,255,255,33,
+    0,  0,  0,  0,  0,  0,  0,  0,  0,  73, 255,255,255,255,34, 0,
+    0,  0,  0,  0,  0,  0,  0,  0,  81, 255,255,255,255,31, 0,  0,
+    0,  0,  0,  0,  0,  0,  0,  79, 255,255,255,255,32, 0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  255,255,255,255,31, 0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  212,255,255,33, 0,  0,  0,  0,  0,
+    0,  0,  0,  0,  0,  0,  0,  0,  87, 12, 0,  0,  0,  0,  0,  0
+    // clang-format on
+};
 
-    // Where is our shader located?
-    const std::string kSplitShader = "RenderPasses/DebugPasses/SplitScreenPass/SplitScreen.ps.slang";
-}
+// Where is our shader located?
+const std::string kSplitShader = "RenderPasses/DebugPasses/SplitScreenPass/SplitScreen.ps.slang";
+} // namespace
 
-SplitScreenPass::SplitScreenPass()
+SplitScreenPass::SplitScreenPass(ref<Device> pDevice, const Properties& props) : ComparisonPass(pDevice)
 {
-    mpArrowTex = Texture::create2D(16, 16, ResourceFormat::R8Unorm, 1, Texture::kMaxPossible, kArrowArray);
-    mClock = gpFramework->getGlobalClock();
+    mpArrowTex = mpDevice->createTexture2D(16, 16, ResourceFormat::R8Unorm, 1, Texture::kMaxPossible, kArrowArray);
     createProgram();
-}
 
-SplitScreenPass::SharedPtr SplitScreenPass::create(RenderContext* pRenderContext, const Dictionary& dict)
-{
-    SharedPtr pPass = SharedPtr(new SplitScreenPass());
-    for (const auto& [key, value] : dict)
+    for (const auto& [key, value] : props)
     {
-        if (!pPass->parseKeyValuePair(key, value))
+        if (!parseKeyValuePair(key, value))
         {
-            logWarning("Unknown field '" + key + "' in a SplitScreenPass dictionary");
+            logWarning("Unknown property '{}' in a SplitScreenPass properties.", key);
         }
     }
-    return pPass;
 }
 
 void SplitScreenPass::createProgram()
 {
     // Create our shader that splits the screen.
-    mpSplitShader = FullScreenPass::create(kSplitShader);
+    mpSplitShader = FullScreenPass::create(mpDevice, kSplitShader);
 }
 
-void SplitScreenPass::execute(RenderContext* pContext, const RenderData& renderData)
+void SplitScreenPass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
-    mpSplitShader["GlobalCB"]["gDividerColor"] = mMouseOverDivider ? kColorSelected : kColorUnselected;
-    mpSplitShader["GlobalCB"]["gMousePosition"] = mMousePos;
-    mpSplitShader["GlobalCB"]["gDrawArrows"] = mDrawArrows && mMouseOverDivider;
-    mpSplitShader["gArrowTex"] = mpArrowTex;
+    auto var = mpSplitShader->getRootVar();
+    var["GlobalCB"]["gDividerColor"] = mMouseOverDivider ? kColorSelected : kColorUnselected;
+    var["GlobalCB"]["gMousePosition"] = mMousePos;
+    var["GlobalCB"]["gDrawArrows"] = mDrawArrows && mMouseOverDivider;
+    var["gArrowTex"] = mpArrowTex;
 
-    ComparisonPass::execute(pContext, renderData);
+    ComparisonPass::execute(pRenderContext, renderData);
 }
 
 bool SplitScreenPass::onMouseEvent(const MouseEvent& mouseEvent)
@@ -104,20 +99,22 @@ bool SplitScreenPass::onMouseEvent(const MouseEvent& mouseEvent)
     mMousePos = int2(mouseEvent.screenPos.x, mouseEvent.screenPos.y);
 
     // If we're outside the window, stop.
-    mMousePos = glm::clamp(mMousePos, int2(0, 0), int2(pDstFbo->getWidth() - 1, pDstFbo->getHeight() - 1));
+    mMousePos = clamp(mMousePos, int2(0, 0), int2(pDstFbo->getWidth() - 1, pDstFbo->getHeight() - 1));
 
     // Actually process our events
-    if (mMouseOverDivider && mouseEvent.type == MouseEvent::Type::LeftButtonDown)
+    if (mMouseOverDivider && mouseEvent.type == MouseEvent::Type::ButtonDown && mouseEvent.button == Input::MouseButton::Left)
     {
         mDividerGrabbed = true;
         handled = true;
 
-        if (mClock.getTime() - mTimeOfLastClick < 0.1f) mSplitLoc = 0.5f;
-        else mTimeOfLastClick = mClock.getTime();
+        if (CpuTimer::calcDuration(mTimeOfLastClick, CpuTimer::getCurrentTimePoint()) < 100.0)
+            mSplitLoc = 0.5f;
+        else
+            mTimeOfLastClick = CpuTimer::getCurrentTimePoint();
     }
     else if (mDividerGrabbed)
     {
-        if (mouseEvent.type == MouseEvent::Type::LeftButtonUp)
+        if (mouseEvent.type == MouseEvent::Type::ButtonUp && mouseEvent.button == Input::MouseButton::Left)
         {
             mDividerGrabbed = false;
             handled = true;
@@ -131,7 +128,7 @@ bool SplitScreenPass::onMouseEvent(const MouseEvent& mouseEvent)
 
     // Update whether the mouse if over the divider.  To ensure selecting the slider isn't a pain,
     // have a minimum landing size (13 pixels, 2*6+1) that counts as hovering over the slider.
-    mMouseOverDivider = (glm::abs(int32_t(mSplitLoc * pDstFbo->getWidth()) - mMousePos.x) < glm::max(6, int32_t(mDividerSize)));
+    mMouseOverDivider = (std::abs(int32_t(mSplitLoc * pDstFbo->getWidth()) - mMousePos.x) < std::max(6, int32_t(mDividerSize)));
 
     return handled;
 }

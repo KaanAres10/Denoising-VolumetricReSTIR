@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,44 +25,53 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
-#include <numeric>
 #include "TimeReport.h"
 #include "Utils/Logger.h"
 #include "Utils/StringUtils.h"
+#include <numeric>
 
 namespace Falcor
 {
-    TimeReport::TimeReport()
-    {
-        reset();
-    }
+TimeReport::TimeReport()
+{
+    reset();
+}
 
-    void TimeReport::reset()
-    {
-        mLastMeasureTime = CpuTimer::getCurrentTimePoint();
-        mMeasurements.clear();
-    }
+void TimeReport::reset()
+{
+    mLastMeasureTime = CpuTimer::getCurrentTimePoint();
+    mMeasurements.clear();
+    mTotal = 0.0;
+}
 
-    void TimeReport::printToLog()
-    {
-        for (const auto& [task, duration] : mMeasurements)
-        {
-            logInfo(padStringToLength(task + ":", 25) + " " + std::to_string(duration) + " s");
-        }
-    }
+void TimeReport::resetTimer()
+{
+    mLastMeasureTime = CpuTimer::getCurrentTimePoint();
+    mTotal = 0.0;
+}
 
-    void TimeReport::measure(const std::string& name)
+void TimeReport::printToLog()
+{
+    for (const auto& [task, duration] : mMeasurements)
     {
-        auto currentTime = CpuTimer::getCurrentTimePoint();
-        std::chrono::duration<double> duration = currentTime - mLastMeasureTime;
-        mLastMeasureTime = currentTime;
-        mMeasurements.push_back({name, duration.count()});
-    }
-
-    void TimeReport::addTotal(const std::string name)
-    {
-        double total = std::accumulate(mMeasurements.begin(), mMeasurements.end(), 0.0, [] (double t, auto &&m) { return t + m.second; });
-        mMeasurements.push_back({"Total", total});
+        logInfo(
+            padStringToLength(task + ":", 25) + " " + std::to_string(duration) + " s" +
+            (mTotal > 0.0 && !mMeasurements.empty() ? ", " + std::to_string(100.0 * duration / mTotal) + "% of total" : "")
+        );
     }
 }
+
+void TimeReport::measure(const std::string& name)
+{
+    auto currentTime = CpuTimer::getCurrentTimePoint();
+    std::chrono::duration<double> duration = currentTime - mLastMeasureTime;
+    mLastMeasureTime = currentTime;
+    mMeasurements.push_back({name, duration.count()});
+}
+
+void TimeReport::addTotal(const std::string name)
+{
+    mTotal = std::accumulate(mMeasurements.begin(), mMeasurements.end(), 0.0, [](double t, auto&& m) { return t + m.second; });
+    mMeasurements.push_back({"Total", mTotal});
+}
+} // namespace Falcor

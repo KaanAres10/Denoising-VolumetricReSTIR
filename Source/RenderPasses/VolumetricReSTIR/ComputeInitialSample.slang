@@ -1,11 +1,11 @@
 import ReSTIRHelper;
 import Utils.Debug.PixelDebug;
 
-Reservoir ComputeInitialSample(Ray primaryRay, float precomputedHitDistance, float precomputedPdfDist, float precomputedTr, int maxBounces, int numInitialSamples,
+Reservoir ComputeInitialSample(VolRay primaryRay, float precomputedHitDistance, float precomputedPdfDist, float precomputedTr, int maxBounces, int numInitialSamples,
     inout SampleGenerator sg, SamplingOptions options, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
     bool useCoarserGridForIndirectBounce, bool useRussianRoulette, bool noReuse
 #ifdef SURFACE_SCENE
-    , HitInfo hitInfo
+    , SurfaceHitInfo hitInfo
 #endif
 #if MAX_BOUNCES > 1
     , inout ExtraBounceReservoir extrabounceReservoir[MAX_BOUNCES - 1]
@@ -16,7 +16,7 @@ Reservoir ComputeInitialSample(Ray primaryRay, float precomputedHitDistance, flo
     float pathPHat = 1.f;
     float lastDepth = 0.f;
 
-    Ray ray = primaryRay;
+    VolRay ray = primaryRay;
 
 #if MAX_BOUNCES > 1
     Reservoir combinedReservoir = createNewReservoir();
@@ -165,7 +165,7 @@ Reservoir ComputeInitialSample(Ray primaryRay, float precomputedHitDistance, flo
                 float3 albedo = gScene.volumeDesc.sigma_s / gScene.volumeDesc.sigma_t;
 
             #ifdef SURFACE_SCENE
-                ShadingData shadingInfo;
+                SurfaceShadingData shadingInfo;
                 if (isSurfaceHit)
                 {
                     shadingInfo = computeSurfaceShadingInfo(hitInfo, -ray.dir);
@@ -245,7 +245,7 @@ Reservoir ComputeInitialSample(Ray primaryRay, float precomputedHitDistance, flo
                             scatterSampleResult.pdf = 1.f;
                             // generate next bounce direction
                             sampleBSDF(shadingInfo, sg, scatterSampleResult);
-                            wi = scatterSampleResult.wi;
+                            wi = scatterSampleResult.wo;
                             pdfDir = scatterSampleResult.pdf;
                         }
                         else
@@ -296,7 +296,7 @@ Reservoir ComputeInitialSample(Ray primaryRay, float precomputedHitDistance, flo
                         if (isSurfaceHit)
                         {
                             p_y = pathPHat * luminance(Ld * outLightPdf); // Ld is bsdf * L / pdf
-                            pathPHat *= luminance(evalBSDFCosine(shadingInfo, wi));
+                            pathPHat *= luminance(evalBSDFCosine(shadingInfo, wi, sg));
                         }
                         else
                     #endif

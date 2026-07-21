@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,100 +26,191 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include "Vector.h"
+#include "Core/Macros.h"
+#include "Core/API/Raytracing.h"
+#include "Utils/Math/Matrix.h"
+#include "Utils/Math/Vector.h"
+#include <limits>
 
 namespace Falcor
 {
-    /** An Axis-Aligned Bounding Box
-    */
-    struct BoundingBox
+/**
+ * Axis-aligned bounding box (AABB) stored by its min/max points.
+ *
+ * The user is responsible for checking the validity of returned AABBs.
+ * There is an equivalent GPU-side implementation in the AABB.slang module.
+ */
+struct AABB
+{
+    float3 minPoint = float3(std::numeric_limits<float>::infinity());  ///< Minimum point.
+    float3 maxPoint = float3(-std::numeric_limits<float>::infinity()); ///< Maximum point. If any minPoint > maxPoint the box is invalid.
+
+    /// Construct bounding box initialized to +/-inf.
+    AABB() = default;
+
+    /// Construct bounding box initialized to single point.
+    AABB(const float3& p) : minPoint(p), maxPoint(p) {}
+
+    /// Construct bounding box initialized to min/max point.
+    AABB(const float3& pmin, const float3& pmax) : minPoint(pmin), maxPoint(pmax) {}
+
+    /// Construct bounding box initialized to min/max point.
+    explicit AABB(const RtAABB& aabb) : minPoint(aabb.min), maxPoint(aabb.max) {}
+
+    /// Set box to single point.
+    void set(const float3& p) { minPoint = maxPoint = p; }
+
+    /// Set the box corners explicitly.
+    void set(const float3& pmin, const float3& pmax)
     {
-        float3 center; ///< Center position of the bounding box
-        float3 extent; ///< Half length of each side. Essentially the coordinates to the max corner relative to the center.
+        minPoint = pmin;
+        maxPoint = pmax;
+    }
 
-        /** Checks whether two bounding boxes are equivalent in position and size
-        */
-        bool operator==(const BoundingBox& other)
-        {
-            return (other.center == center) && (other.extent == extent);
-        }
+    /// Invalidates the box.
+    void invalidate()
+    {
+        minPoint = float3(std::numeric_limits<float>::infinity());
+        maxPoint = float3(-std::numeric_limits<float>::infinity());
+    }
 
-        /** Calculates the bounding box transformed by a matrix
-            \param[in] mat Transform matrix
-            \return Bounding box after transformation
-        */
-        BoundingBox transform(const glm::mat4& mat) const
-        {
-            float3 min = center - extent;
-            float3 max = center + extent;
+    /// Returns true if bounding box is valid (all dimensions zero or larger).
+    bool valid() const { return maxPoint.x >= minPoint.x && maxPoint.y >= minPoint.y && maxPoint.z >= minPoint.z; }
 
-            float3 xa = float3(mat[0] * min.x);
-            float3 xb = float3(mat[0] * max.x);
-            float3 xMin = glm::min(xa, xb);
-            float3 xMax = glm::max(xa, xb);
+    /// Grows the box to include the point p.
+    AABB& include(const float3& p)
+    {
+        minPoint = min(minPoint, p);
+        maxPoint = max(maxPoint, p);
+        return *this;
+    }
 
-            float3 ya = float3(mat[1] * min.y);
-            float3 yb = float3(mat[1] * max.y);
-            float3 yMin = glm::min(ya, yb);
-            float3 yMax = glm::max(ya, yb);
+    /// Grows the box to include another box.
+    AABB& include(const AABB& b)
+    {
+        minPoint = min(minPoint, b.minPoint);
+        maxPoint = max(maxPoint, b.maxPoint);
+        return *this;
+    }
 
-            float3 za = float3(mat[2] * min.z);
-            float3 zb = float3(mat[2] * max.z);
-            float3 zMin = glm::min(za, zb);
-            float3 zMax = glm::max(za, zb);
+    /// Make the box be the intersection between this and another box.
+    AABB& intersection(const AABB& b)
+    {
+        minPoint = max(minPoint, b.minPoint);
+        maxPoint = min(maxPoint, b.maxPoint);
+        return *this;
+    }
 
+    /// Returns true if the two AABBs have any overlap.
+    bool overlaps(AABB b)
+    {
+        b.intersection(*this);
+        return b.valid() && b.volume() > 0.f;
+    }
 
-            float3 newMin = xMin + yMin + zMin + float3(mat[3]);
-            float3 newMax = xMax + yMax + zMax + float3(mat[3]);
+    /// Returns true if the AABB `b` is fully contained within this AABB.
+    bool contains(const AABB& b)
+    {
+        AABB temp = *this;
+        return temp.include(b) == *this;
+    }
 
-            return BoundingBox::fromMinMax(newMin, newMax);
-        }
+    /**
+     * Returns the box center.
+     * @return Center of the box if valid, undefined otherwise.
+     */
+    float3 center() const { return (minPoint + maxPoint) * 0.5f; }
 
-        /** Gets the minimum position of the bounding box
-            \return Minimum position
-        */
-        float3 getMinPos() const
-        {
-            return center - extent;
-        }
+    /**
+     * Returns the box extent.
+     * @return Size of the box if valid, undefined otherwise.
+     */
+    float3 extent() const { return maxPoint - minPoint; }
 
-        /** Gets the maximum position of the bounding box
-            \return Maximum position
-        */
-        float3 getMaxPos() const
-        {
-            return center + extent;
-        }
+    /**
+     * Returns the surface area of the box.
+     * @return Surface area if box is valid, undefined otherwise.
+     */
+    float area() const
+    {
+        float3 e = extent();
+        return (e.x * e.y + e.x * e.z + e.y * e.z) * 2.f;
+    }
 
-        /** Gets the size of each dimension of the bounding box.
-            \return X,Y and Z lengths of the bounding box
-        */
-        float3 getSize() const
-        {
-            return extent * 2.0f;
-        }
+    /**
+     * Return the volume of the box.
+     * @return Volume if the box is valid, undefined otherwise.
+     */
+    float volume() const
+    {
+        float3 e = extent();
+        return e.x * e.y * e.z;
+    }
 
-        /** Construct a bounding box from a minimum and maximum point.
-            \param[in] min Minimum point
-            \param[in] max Maximum point
-            \return A bounding box
-        */
-        static BoundingBox fromMinMax(const float3& min, const float3& max)
-        {
-            BoundingBox box;
-            box.center = (max + min) * float3(0.5f);
-            box.extent = (max - min) * float3(0.5f);
-            return box;
-        }
+    /**
+     * Returns the radius of the minimal sphere that encloses the box.
+     * @return Radius of minimal bounding sphere, or undefined if box is invalid.
+     */
+    float radius() const { return 0.5f * length(extent()); }
 
-        /** Constructs a bounding box from the union of two other bounding boxes.
-            \param[in] bb0 First bounding box
-            \param[in] bb1 Second bounding box
-            \return A bounding box
-        */
-        static BoundingBox fromUnion(const BoundingBox& bb0, const BoundingBox& bb1)
-        {
-            return BoundingBox::fromMinMax(min(bb0.getMinPos(), bb1.getMinPos()), max(bb0.getMaxPos(), bb1.getMaxPos()));
-        }
-    };
-}
+    /**
+     * Calculates the bounding box transformed by a matrix.
+     * @param[in] mat Transform matrix
+     * @return Bounding box after transformation.
+     */
+    [[nodiscard]] AABB transform(const float4x4& mat) const
+    {
+        if (!valid())
+            return {};
+
+        float3 xa = mat.getCol(0).xyz() * minPoint.x;
+        float3 xb = mat.getCol(0).xyz() * maxPoint.x;
+        float3 xMin = min(xa, xb);
+        float3 xMax = max(xa, xb);
+
+        float3 ya = mat.getCol(1).xyz() * minPoint.y;
+        float3 yb = mat.getCol(1).xyz() * maxPoint.y;
+        float3 yMin = min(ya, yb);
+        float3 yMax = max(ya, yb);
+
+        float3 za = mat.getCol(2).xyz() * minPoint.z;
+        float3 zb = mat.getCol(2).xyz() * maxPoint.z;
+        float3 zMin = min(za, zb);
+        float3 zMax = max(za, zb);
+
+        float3 newMin = xMin + yMin + zMin + mat.getCol(3).xyz();
+        float3 newMax = xMax + yMax + zMax + mat.getCol(3).xyz();
+
+        return AABB(newMin, newMax);
+    }
+
+    /// Checks whether two bounding boxes are equal.
+    bool operator==(const AABB& rhs) const { return all(minPoint == rhs.minPoint) && all(maxPoint == rhs.maxPoint); }
+
+    /// Checks whether two bounding boxes are not equal.
+    bool operator!=(const AABB& rhs) const { return any(minPoint != rhs.minPoint) || any(maxPoint != rhs.maxPoint); }
+
+    /// Union of two boxes.
+    AABB& operator|=(const AABB& rhs) { return include(rhs); }
+
+    /// Union of two boxes.
+    AABB operator|(const AABB& rhs) const
+    {
+        AABB bb = *this;
+        return bb |= rhs;
+    }
+
+    /// Intersection of two boxes.
+    AABB& operator&=(const AABB& rhs) { return intersection(rhs); }
+
+    /// Intersection of two boxes.
+    AABB operator&(const AABB& rhs) const
+    {
+        AABB bb = *this;
+        return bb &= rhs;
+    }
+
+    /// Conversion to RtAABB.
+    explicit operator RtAABB() const { return {minPoint, maxPoint}; }
+};
+} // namespace Falcor

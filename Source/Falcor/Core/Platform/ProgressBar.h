@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-22, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,46 +26,42 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
+#include "Core/Macros.h"
+#include <memory>
+#include <string>
 #include <vector>
 
 namespace Falcor
 {
-    struct ProgressBarData;
+/**
+ * Creates a progress bar visual and manages a new thread for it.
+ */
+class FALCOR_API ProgressBar
+{
+public:
+    struct Window;
 
-    /** Creates a progress bar visual and manages a new thread for it.
-    */
-    class dlldecl ProgressBar
-    {
-    public:
-        using SharedPtr = std::shared_ptr<ProgressBar>;
-        using MessageList = std::vector<std::string>;
-        ~ProgressBar();
+    ProgressBar();
+    ~ProgressBar();
 
-        /** Creates a progress bar.
-            \param[in] list List of messages to display on the progress bar
-            \param[in] delayInMs Time between updates in milliseconds
-        */
-        static SharedPtr show(const MessageList& list, uint32_t delayInMs = 1000);
+    /**
+     * Show the progress bar.
+     * @param[in] msg Message to display on the progress bar.
+     */
+    void show(const std::string& msg);
 
-        /** Creates a progress bar.
-            \param[in] pMsg Message to display on the progress bar
-            \param[in] delayInMs Time between updates in milliseconds
-        */
-        static SharedPtr show(const char* pMsg = nullptr, uint32_t delayInMs = 1000);
+    /**
+     * Close the progress bar.
+     */
+    void close();
 
-        /** Close the progress bar
-        */
-        static void close();
+    /**
+     * Check if the progress bar is currently active.
+     * @return Returns true if progress bar is active.
+     */
+    bool isActive() const { return mpWindow != nullptr; }
 
-        /** Check if the progress bar is currently active.
-            \return Returns true if progress bar is active.
-        */
-        static bool isActive();
-
-    private:
-        static std::weak_ptr<ProgressBar> spBar;
-        static ProgressBarData* spData;
-        ProgressBar() = default;
-        void platformInit(const MessageList& list, uint32_t delayInMs);
-    };
-}
+private:
+    std::unique_ptr<Window> mpWindow;
+};
+} // namespace Falcor

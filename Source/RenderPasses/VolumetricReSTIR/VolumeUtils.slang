@@ -1,13 +1,13 @@
 __exported import VolumeBase;
 import VolumeTrackingAdapterGVDB;
-__exported import Experimental.Scene.Lights.EnvMapSampler;
-__exported import Experimental.Scene.Lights.EmissiveLightSampler;
-__exported import Utils.Helpers; // For computeRayOrigin()
+__exported import Rendering.Lights.EnvMapSampler;
+__exported import Rendering.Lights.EmissiveLightSampler;
+__exported import Utils.Geometry.GeometryHelpers; // For computeRayOrigin()
 import Utils.Debug.PixelDebug;
 
-import Experimental.Scene.Lights.LightHelpers;
+import Rendering.Lights.LightHelpers;
 __exported import InlineRayTracingHelpers;
-__exported import Experimental.Scene.Material.MaterialShading;
+// [8.0 port] MaterialShading (4.x surface-material API) removed; surface-scene path TBD
 
 bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSampler emissiveSampler, const float3 rayOrigin, bool kUseEnvironmentLights, bool kUseAnalyticLights, bool kUseEmissiveLights,
     inout SampleGenerator sg, out SceneLightSample ls, out int outLightIndex, out float2 outLightUV, float3 surfaceNormal = float3(0.f))
@@ -58,7 +58,7 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
             ls.Li = pdf > 0.f ? lightSample.Le / pdf : 0.f;
 
             outLightIndex = -1;
-            outLightUV = envMapSampler.encodeLightUV(ls.rayDir, outLightIndex);
+            outLightUV = gScene.envMap.worldToUv(ls.rayDir); // [8.0 port] was envMapSampler.encodeLightUV
 
             return !any(isnan(ls.rayDir)); // TODO: figure out why sampled dir can be nan
         }
@@ -111,13 +111,16 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
 
             // Sample emissive lights.
             TriangleLightSample lightSample;
-            bool valid = emissiveSampler.sampleLight(rayOrigin, surfaceNormal, sg, lightSample);
+            bool valid = emissiveSampler.sampleLight(rayOrigin, surfaceNormal, false, sg, lightSample); // [8.0 port] added upperHemisphere=false
 
             // Reject sample if lower hemisphere.
             //if (!valid || dot(sd.N, lightSample.dir) < kMinCosTheta) return false;
             // Evaluate MIS with BRDF sampling as the other sampling strategy.
             float pdf = selectionPdf * lightSample.pdf;
-            float pdfArea = selectionPdf * lightSample.pdfArea;
+            // [8.0 port] TriangleLightSample.pdfArea removed; reconstruct area-measure pdf from the
+            // solid-angle pdf: pdfArea = pdfSolidAngle * |cos(thetaLight)| / distance^2.
+            float lightSamplePdfArea = lightSample.pdf * abs(dot(lightSample.normalW, lightSample.dir)) / max(1e-9f, lightSample.distance * lightSample.distance);
+            float pdfArea = selectionPdf * lightSamplePdfArea;
             // Compute offset light sample position to reduce self-intersections at the light.
             // We compute the shadow ray parameters based on the offset position.
             float3 offsetPos = computeRayOrigin(lightSample.posW, lightSample.normalW);
@@ -168,7 +171,7 @@ SceneLightSample getAnalyticalLightSample(int lightIndex, float3 rayOrigin, inou
 }
 
 
-void VolumeTrackingGVDB<VolumeTrackingAdapterGVDB:IVolumeTrackingAdapterGVDB>(Ray rWorld, int mipLevel, inout SampleGenerator sg, inout VolumeTrackingAdapterGVDB adapter, bool vertexCenter)
+void VolumeTrackingGVDB<VolumeTrackingAdapterGVDB:IVolumeTrackingAdapterGVDB>(VolRay rWorld, int mipLevel, inout SampleGenerator sg, inout VolumeTrackingAdapterGVDB adapter, bool vertexCenter)
 {
     int		nodeid[3];					// level variables
     float	tMax[3];
@@ -182,7 +185,7 @@ void VolumeTrackingGVDB<VolumeTrackingAdapterGVDB:IVolumeTrackingAdapterGVDB>(Ra
     int topLev = lev;
     nodeid[lev] = 0;		// rootid ndx
 
-    Ray ray = WorldToMedium(rWorld, mipLevel);
+    VolRay ray = WorldToMedium(rWorld, mipLevel);
 
     if (vertexCenter)
     {
@@ -281,7 +284,7 @@ void VolumeTrackingGVDB<VolumeTrackingAdapterGVDB:IVolumeTrackingAdapterGVDB>(Ra
     adapter.ExecuteEndStep();
 }
 
-float MediumTrAnalyticGeneric(Ray rWorld, int mipLevel, inout SampleGenerator sg, bool useLinearSampler)
+float MediumTrAnalyticGeneric(VolRay rWorld, int mipLevel, inout SampleGenerator sg, bool useLinearSampler)
 {
     MediumTrAnalyticAdapterGVDB adapter;
     adapter.InitializeValues();
@@ -291,7 +294,7 @@ float MediumTrAnalyticGeneric(Ray rWorld, int mipLevel, inout SampleGenerator sg
     return adapter.Tr;
 }
 
-void SampleMediumAnalyticGeneric(Ray rWorld, inout SampleGenerator sg, bool useLinearSampler, inout float hitDistances[MaxInitialSampleCount],
+void SampleMediumAnalyticGeneric(VolRay rWorld, inout SampleGenerator sg, bool useLinearSampler, inout float hitDistances[MaxInitialSampleCount],
     int mipLevel, inout float pdf[MaxInitialSampleCount], inout float outTr[MaxInitialSampleCount], int numSamples)
 {
     SampleMediumAnalyticAdapterGVDB adapter;
@@ -312,12 +315,12 @@ void SampleMediumAnalyticGeneric(Ray rWorld, inout SampleGenerator sg, bool useL
     pdf = adapter.pdf;
 }
 
-void SampleMediumSuperVoxelGeneric(Ray rWorld, inout SampleGenerator sg, inout MediumInteraction mi, int mipLevel)
+void SampleMediumSuperVoxelGeneric(VolRay rWorld, inout SampleGenerator sg, inout MediumInteraction mi, int mipLevel)
 {
     DecompositionTrackingGVDBAdapter adapter;
     adapter.InitializeValues();
 
-    Ray rMip0 = WorldToMedium(rWorld, mipLevel);
+    VolRay rMip0 = WorldToMedium(rWorld, mipLevel);
     adapter.rMip0 = rMip0;
     adapter.rWorld = rWorld;
     adapter.mi = mi;
@@ -325,11 +328,11 @@ void SampleMediumSuperVoxelGeneric(Ray rWorld, inout SampleGenerator sg, inout M
     mi = adapter.mi;
 }
 
-float MediumTrResidualRatioTrackingGeneric(Ray rWorld, int mipLevel, inout SampleGenerator sg, bool useAnalogResidual, bool useGlobalMajorant)
+float MediumTrResidualRatioTrackingGeneric(VolRay rWorld, int mipLevel, inout SampleGenerator sg, bool useAnalogResidual, bool useGlobalMajorant)
 {
     ResidualRatioTrackingGVDBAdapter adapter;
     adapter.InitializeValues();
-    Ray rMip0 = WorldToMedium(rWorld, mipLevel);
+    VolRay rMip0 = WorldToMedium(rWorld, mipLevel);
     adapter.rMip0 = rMip0;
     adapter.useGlobalMajorant = useGlobalMajorant;
     adapter.useAnalogResidual = useAnalogResidual || useGlobalMajorant;
@@ -339,7 +342,7 @@ float MediumTrResidualRatioTrackingGeneric(Ray rWorld, int mipLevel, inout Sampl
 }
 
 
-float2 SampleVolumeCellByDensityGeneric(Ray rWorld, inout SampleGenerator sg, int mipLevel, out float densityBound)
+float2 SampleVolumeCellByDensityGeneric(VolRay rWorld, inout SampleGenerator sg, int mipLevel, out float densityBound)
 {
     SampleVolumeCellByDensityAdapterGVDB adapter;
     adapter.InitializeValues();
@@ -347,7 +350,7 @@ float2 SampleVolumeCellByDensityGeneric(Ray rWorld, inout SampleGenerator sg, in
     return adapter.selectedInterval;
 }
 
-float MediumTrRayMarchingGeneric(Ray rWorld, int mipLevel, bool useLinearSampler, float tStepScale, inout SampleGenerator sg)
+float MediumTrRayMarchingGeneric(VolRay rWorld, int mipLevel, bool useLinearSampler, float tStepScale, inout SampleGenerator sg)
 {
     int effectiveMipLevel = mipLevel >= kPrevFrameDensityGridOffset ? mipLevel - kPrevFrameDensityGridOffset : mipLevel;
     effectiveMipLevel = effectiveMipLevel >= kNumMaxMips ? effectiveMipLevel - kNumMaxMips : effectiveMipLevel;
@@ -361,7 +364,7 @@ float MediumTrRayMarchingGeneric(Ray rWorld, int mipLevel, bool useLinearSampler
     return adapter.Tr;
 }
 
-void ReservoirFeatureRayMarchingGeneric(Ray rWorld, inout SampleGenerator sg, int mipLevel, bool useLinearSampler, float tStepScale, inout float accuTransmittance)
+void ReservoirFeatureRayMarchingGeneric(VolRay rWorld, inout SampleGenerator sg, int mipLevel, bool useLinearSampler, float tStepScale, inout float accuTransmittance)
 {
     ReservoirFeatureRayMarchingAdapterGVDB adapter;
     adapter.InitializeValues();
@@ -379,7 +382,7 @@ void ReservoirFeatureRayMarchingGeneric(Ray rWorld, inout SampleGenerator sg, in
 
 
 #ifdef SURFACE_SCENE
-float3 directLightingSurface(inout SampleGenerator sg, ShadingData shadingInfo, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, int kLightSamplesPerVertex, bool kUseEnvironmentLights,
+float3 directLightingSurface(inout SampleGenerator sg, SurfaceShadingData shadingInfo, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, int kLightSamplesPerVertex, bool kUseEnvironmentLights,
     bool kUseAnalyticLights, bool kUseEmissiveLights, bool enableShadow, int mipLevel, uint trackingMethod)
 {
     // Sample the scene lights.
@@ -397,7 +400,7 @@ float3 directLightingSurface(inout SampleGenerator sg, ShadingData shadingInfo, 
         if (!valid) continue;
         ls.pdf = 1.f;
 
-        Ray shadowRay = { posW, ls.rayDir, 0, ls.rayDistance };
+        VolRay shadowRay = { posW, ls.rayDir, 0, ls.rayDistance };
 
         if (enableShadow)
         {
@@ -405,7 +408,7 @@ float3 directLightingSurface(inout SampleGenerator sg, ShadingData shadingInfo, 
             ls.Li *= visibility;
         }
 
-        float3 f = evalBSDFCosine(shadingInfo, ls.rayDir);
+        float3 f = evalBSDFCosine(shadingInfo, ls.rayDir, sg);
         Ld += f * ls.Li / ls.pdf;
     }
 
@@ -430,7 +433,7 @@ float3 directLighting(inout SampleGenerator sg, MediumInteraction mi, EnvMapSamp
         bool valid = sampleSceneLights(envMapSampler, emissiveSampler, mi.p, kUseEnvironmentLights, kUseAnalyticLights, kUseEmissiveLights, sg, ls, outLightIndex, outLightUV);
         if (!valid) continue;
         ls.pdf = 1.f;
-        Ray shadowRay = { mi.p, ls.rayDir, 0, ls.rayDistance };
+        VolRay shadowRay = { mi.p, ls.rayDir, 0, ls.rayDistance };
         if (enableShadow)
         {
 #ifdef SURFACE_SCENE
@@ -470,7 +473,7 @@ float3 SampleDirectLighting(inout SampleGenerator sg, out float pdf, MediumInter
     }
 
     ls.pdf = 1.f; // ls.Li is already pre-divided
-    Ray shadowRay = { mi.p, ls.rayDir, 0, ls.rayDistance };
+    VolRay shadowRay = { mi.p, ls.rayDir, 0, ls.rayDistance };
     if (enableShadow)
     {
 #ifdef SURFACE_SCENE
@@ -492,7 +495,7 @@ float3 SampleDirectLighting(inout SampleGenerator sg, out float pdf, MediumInter
 }
 
 #ifdef SURFACE_SCENE
-float3 SampleDirectLightingSurface(inout SampleGenerator sg, out float pdf, ShadingData shadingInfo, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
+float3 SampleDirectLightingSurface(inout SampleGenerator sg, out float pdf, SurfaceShadingData shadingInfo, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
     bool kUseEnvironmentLights, bool kUseAnalyticLights, bool kUseEmissiveLights, bool enableShadow, int mipLevel, uint trackingMethod, bool useLinearSampler, int lightVisibilitySamples, float tStepScale,
     out int outLightIndex, out float2 outLightUV, out float outVisibility, bool allowRussianRoulette = false, bool clampValue = false)
 {
@@ -510,7 +513,7 @@ float3 SampleDirectLightingSurface(inout SampleGenerator sg, out float pdf, Shad
     }
 
     ls.pdf = 1.f; // ls.Li is already pre-divided
-    Ray shadowRay = { shadingInfo.posW, ls.rayDir, 0, ls.rayDistance };
+    VolRay shadowRay = { shadingInfo.posW, ls.rayDir, 0, ls.rayDistance };
     if (enableShadow)
     {
         // skip surface shadow for initial sampling
@@ -519,7 +522,7 @@ float3 SampleDirectLightingSurface(inout SampleGenerator sg, out float pdf, Shad
         ls.Li *= visibility;
     }
 
-    float3 f = evalBSDFCosine(shadingInfo, ls.rayDir);
+    float3 f = evalBSDFCosine(shadingInfo, ls.rayDir, sg);
     Ld += f * ls.Li / ls.pdf;
 
     return Ld;
@@ -528,7 +531,7 @@ float3 SampleDirectLightingSurface(inout SampleGenerator sg, out float pdf, Shad
 
 #ifdef SURFACE_SCENE
 // consider both surface and volume occlusion
-float computeGeneralPathSpaceVisibility(bool includeVolume, bool includeSurface, Ray ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f, bool cullNonOpaqueGeometry = false)
+float computeGeneralPathSpaceVisibility(bool includeVolume, bool includeSurface, VolRay ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f, bool cullNonOpaqueGeometry = false)
 {
     float visibility = 1.f;
     // shoot ray to light
@@ -550,7 +553,7 @@ float computeGeneralPathSpaceVisibility(bool includeVolume, bool includeSurface,
 #endif
 
 // Reduce the number of cases to speed up shader compilation
-float computeVisibility(Ray ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f)
+float computeVisibility(VolRay ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f)
 {
     float visibility = 0;
 
@@ -570,7 +573,7 @@ float computeVisibility(Ray ray, inout SampleGenerator sg, int visibilitySamples
     return visibility;
 }
 
-float RejectionSampleRandomPointByDensity(Ray rWorld, inout SampleGenerator sg, int mipLevel)
+float RejectionSampleRandomPointByDensity(VolRay rWorld, inout SampleGenerator sg, int mipLevel)
 {
     float densityBound;
     float2 selectedInterval = SampleVolumeCellByDensityGeneric(rWorld, sg, mipLevel, densityBound);

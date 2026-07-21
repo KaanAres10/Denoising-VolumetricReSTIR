@@ -27,12 +27,14 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
-#include "FalcorExperimental.h"
+#include "RenderGraph/RenderPass.h"
 #include "Utils/Sampling/SampleGenerator.h"
-#include "Experimental/Scene/Lights/EnvMapSampler.h"
-#include "Experimental/Scene/Lights/LightBVHSampler.h"
-#include "Experimental/Scene/Lights/EmissivePowerSampler.h"
-#include "HostDeviceSharedDefinitions.h"
+#include "Rendering/Lights/EnvMapSampler.h"
+#include "Rendering/Lights/LightBVHSampler.h"
+#include "Rendering/Lights/EmissivePowerSampler.h"
+#include "Rendering/Lights/EmissiveUniformSampler.h"
+#include "Rendering/Lights/EmissiveLightSampler.h"
+#include "HostDeviceSharedDefinitions.slangh"
 #include "Utils/Debug/PixelDebug.h"
 #include "HostDeviceSharedConstants.slang"
 
@@ -41,28 +43,27 @@ using namespace Falcor;
 class VolumetricReSTIR : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<VolumetricReSTIR>;
+    FALCOR_PLUGIN_CLASS(VolumetricReSTIR, "VolumetricReSTIR", "Volumetric ReSTIR render pass.");
 
-    /** Create a new render pass object.
-        \param[in] pRenderContext The render context.
-        \param[in] dict Dictionary of serialized parameters.
-        \return A new object, or an exception is thrown if creation failed.
-    */
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
+    static ref<VolumetricReSTIR> create(ref<Device> pDevice, const Properties& props)
+    {
+        return make_ref<VolumetricReSTIR>(pDevice, props);
+    }
 
-    virtual std::string getDesc() override { return "Click to expand options"; }
-    virtual Dictionary getScriptingDictionary() override;
+    VolumetricReSTIR(ref<Device> pDevice, const Properties& props);
+
+    virtual Properties getProperties() const override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
     virtual void compile(RenderContext* pContext, const CompileData& compileData) override {}
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
-    virtual void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
+    virtual void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
     virtual bool onMouseEvent(const MouseEvent& mouseEvent) override;
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override;
-    virtual void updateDict(const Dictionary& dict) override;
+    virtual void setProperties(const Properties& props) override;
 
 private:
-    void updateSceneDefines(Falcor::ComputePass::SharedPtr& pPass, const Falcor::Scene::SharedPtr& pScene);
+    void updateSceneDefines(ref<ComputePass>& pPass, const ref<Scene>& pScene);
     bool updateLights(RenderContext* pRenderContext);
     void beginFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void toggleCameraAnimation();
@@ -71,49 +72,45 @@ private:
     void _forwardCameraInterval(float distance, float3 anchorPosition);
     void resetCamera(bool useLastCameraPosition);
 
-    Sampler::SharedPtr mpSampler;
-    Sampler::SharedPtr mpPointSampler;
+    ref<Sampler> mpSampler;
+    ref<Sampler> mpPointSampler;
 
-    Scene::SharedPtr mpScene;
-
-    VolumetricReSTIR(const Dictionary& dict);
+    ref<Scene> mpScene;
 
     int mFrameCount = 0;
 
-    SampleGenerator::SharedPtr          mpSampleGenerator;              ///< GPU sample generator.
-    EnvMapSampler::SharedPtr            mpEnvMapSampler;                ///< Environment map sampler or nullptr if disabled.
-    EmissiveLightSampler::SharedPtr     mpEmissiveSampler;
+    ref<SampleGenerator>                mpSampleGenerator;              ///< GPU sample generator.
+    std::unique_ptr<EnvMapSampler>      mpEnvMapSampler;                ///< Environment map sampler or nullptr if disabled.
+    std::unique_ptr<EmissiveLightSampler> mpEmissiveSampler;
 
     int mEmissiveSamplerTypeId = 2;
     EmissiveLightSamplerType mEmissiveSamplerType = EmissiveLightSamplerType::Power;
-    EmissiveUniformSampler::Options mUniformSamplerOptions;
     LightBVHSampler::Options            mLightBVHSamplerOptions;        ///< Current options for the light BVH sampler.
-    EmissivePowerSampler::Options            mPowerSamplerOptions;        ///< Current options for the light BVH sampler.
 
-    PixelDebug::SharedPtr               mpPixelDebug;                    ///< Utility class for pixel debugging (print in shaders).
+    std::unique_ptr<PixelDebug>         mpPixelDebug;                   ///< Utility class for pixel debugging (print in shaders).
 
-    std::vector<Texture::SharedPtr> mTemporalSampleBuffers;
-    Buffer::SharedPtr mPerPixelReservoirBuffer[2];
-    Buffer::SharedPtr mTemporalReservoirBuffer;
-    Buffer::SharedPtr mPerPixelExtraBounceReservoirBuffer[2];
-    Buffer::SharedPtr mTemporalExtraBounceReservoirBuffer;
-    Buffer::SharedPtr mReservoirFeatureBuffer;
-    Buffer::SharedPtr mTemporalReservoirFeatureBuffer;
-    Buffer::SharedPtr mVBuffer;
-    Buffer::SharedPtr mTemporalVBuffer;
+    std::vector<ref<Texture>> mTemporalSampleBuffers;
+    ref<Buffer> mPerPixelReservoirBuffer[2];
+    ref<Buffer> mTemporalReservoirBuffer;
+    ref<Buffer> mPerPixelExtraBounceReservoirBuffer[2];
+    ref<Buffer> mTemporalExtraBounceReservoirBuffer;
+    ref<Buffer> mReservoirFeatureBuffer;
+    ref<Buffer> mTemporalReservoirFeatureBuffer;
+    ref<Buffer> mVBuffer;
+    ref<Buffer> mTemporalVBuffer;
 
     // for debug purpose
-    Texture::SharedPtr mAccumulateBuffer;
-    Texture::SharedPtr mPerPixelColorBuffer[2];
-    Texture::SharedPtr mOutputBackupBuffer;
+    ref<Texture> mAccumulateBuffer;
+    ref<Texture> mPerPixelColorBuffer[2];
+    ref<Texture> mOutputBackupBuffer;
 
-    ComputePass::SharedPtr mpTraceRaysPass;
-    ComputePass::SharedPtr mTemporalReusePass;
-    ComputePass::SharedPtr mSpatialReusePass;
-    ComputePass::SharedPtr mGenerateFeaturePass;
-    ComputePass::SharedPtr mCopyReservoirPass;
-    ComputePass::SharedPtr mFinalShadingPass;
-    ComputePass::SharedPtr mComputeAvgDensityPass;
+    ref<ComputePass> mpTraceRaysPass;
+    ref<ComputePass> mTemporalReusePass;
+    ref<ComputePass> mSpatialReusePass;
+    ref<ComputePass> mGenerateFeaturePass;
+    ref<ComputePass> mCopyReservoirPass;
+    ref<ComputePass> mFinalShadingPass;
+    ref<ComputePass> mComputeAvgDensityPass;
 
 
 	bool mFreezeFrame = false;
@@ -204,6 +201,59 @@ private:
         uint32_t mFinalLightTrackingMethod = kAnalyticTracking;
         uint32_t mFinalRandomSamplerType = kR2;
         float mFinalTStepScale = 0.2f;
+
+        template<typename Archive>
+        void serialize(Archive& ar)
+        {
+            ar("mMaxBounces", mMaxBounces);
+            ar("mEnableTemporalReuse", mEnableTemporalReuse);
+            ar("mEnableSpatialReuse", mEnableSpatialReuse);
+            ar("mVertexReuse", mVertexReuse);
+            ar("mVertexReuseStartBounce", mVertexReuseStartBounce);
+            ar("mUseReference", mUseReference);
+            ar("mUseEnvironmentLights", mUseEnvironmentLights);
+            ar("mUseAnalyticLights", mUseAnalyticLights);
+            ar("mUseEmissiveLights", mUseEmissiveLights);
+            ar("mBaselineSamplePerPixel", mBaselineSamplePerPixel);
+            ar("mVisualizeTotalTransmittance", mVisualizeTotalTransmittance);
+            ar("mUseSurfaceScene", mUseSurfaceScene);
+            ar("mUsePrevVolumeForReproj", mUsePrevVolumeForReproj);
+            ar("mInitialBaseMipLevel", mInitialBaseMipLevel);
+            ar("mInitialM", mInitialM);
+            ar("mInitialLightSamples", mInitialLightSamples);
+            ar("mInitialLightingMipLevel", mInitialLightingMipLevel);
+            ar("mInitialVisibilityUseLinearSampler", mInitialVisibilityUseLinearSampler);
+            ar("mInitialLightingUseLinearSampler", mInitialLightingUseLinearSampler);
+            ar("mInitialLightingTrackingMethod", mInitialLightingTrackingMethod);
+            ar("mInitialVisibilityTStepScale", mInitialVisibilityTStepScale);
+            ar("mInitialLightingTStepScale", mInitialLightingTStepScale);
+            ar("mInitialUseRussianRoulette", mInitialUseRussianRoulette);
+            ar("mInitialUseCoarserGridForIndirectBounce", mInitialUseCoarserGridForIndirectBounce);
+            ar("mTemporalReuseMThreshold", mTemporalReuseMThreshold);
+            ar("mTemporalReprojectionMode", mTemporalReprojectionMode);
+            ar("mTemporalMISMethod", mTemporalMISMethod);
+            ar("mTemporalReprojectionMipLevel", mTemporalReprojectionMipLevel);
+            ar("mSpatialReuseRounds", mSpatialReuseRounds);
+            ar("mSpatialVisibilityMipLevel", mSpatialVisibilityMipLevel);
+            ar("mSpatialLightingMipLevel", mSpatialLightingMipLevel);
+            ar("mSpatialVisibilityUseLinearSampler", mSpatialVisibilityUseLinearSampler);
+            ar("mSpatialLightingUseLinearSampler", mSpatialLightingUseLinearSampler);
+            ar("mSpatialVisibilityTStepScale", mSpatialVisibilityTStepScale);
+            ar("mSpatialLightingTStepScale", mSpatialLightingTStepScale);
+            ar("mSpatialVisibilityTrackingMethod", mSpatialVisibilityTrackingMethod);
+            ar("mSpatialLightingTrackingMethod", mSpatialLightingTrackingMethod);
+            ar("mRandomSamplerType", mRandomSamplerType);
+            ar("mSampleRadius", mSampleRadius);
+            ar("mSpatialSampleCount", mSpatialSampleCount);
+            ar("mEnableVisibilitySimilarityRejection", mEnableVisibilitySimilarityRejection);
+            ar("mSpatialMISMethod", mSpatialMISMethod);
+            ar("mFinalLightSamples", mFinalLightSamples);
+            ar("mFinalVisibilitySamples", mFinalVisibilitySamples);
+            ar("mFinalVisibilityTrackingMethod", mFinalVisibilityTrackingMethod);
+            ar("mFinalLightTrackingMethod", mFinalLightTrackingMethod);
+            ar("mFinalRandomSamplerType", mFinalRandomSamplerType);
+            ar("mFinalTStepScale", mFinalTStepScale);
+        }
     } mParams;
 
     private:
@@ -266,50 +316,10 @@ private:
     bool mOutputMotionVec = false; // enable when using Optix 7.3
 
     bool mRequestRecreateVarsForEmissiveSampler = false;
-    Shader::DefineList mDefaultDefines;
+    DefineList mDefaultDefines;
 
     std::vector<float3> mPointLightUnitSpherePos;
 
-    // Scripting
-#define serialize(var) \
-        if constexpr (!loadFromDict) dict[#var] = var; \
-        else if (dict.keyExists(#var)) { if constexpr (std::is_same<decltype(var), std::string>::value) var = (const std::string &)dict[#var]; else var = dict[#var]; vars.emplace(#var); }
-
-    template<bool loadFromDict, typename DictType>
-    void serializePass(DictType& dict)
-    {
-        std::unordered_set<std::string> vars;
-
-        // Add variables here that should be serialized to/from the dictionary.
-        serialize(mParams);
-        serialize(mCameraMoveScale);
-        serialize(mCameraForwardScale);
-        serialize(mCameraFrameInterval);
-        serialize(mCameraPauseInterval);
-        serialize(mCameraShakeTotalRounds);
-        serialize(mCameraShakeRoundsBeforePause);
-
-        serialize(mCameraAnimationMode);
-
-        serialize(mAnimateEnvLight);
-        serialize(mAnimationFreezedFrame);
-        serialize(mEnvLightRotationSpeed);
-        serialize(mFreezeFrame);
-		serialize(mVolumeAnimationSelectedFrameId);
-		serialize(mEmissiveSamplerTypeId);
-		serialize(volumeDensityScaleExtraControl);
-        serialize(volumeAlbedoExtraControl);
-        serialize(volumeAnisotropyExtraControl);
-        serialize(mOutputMotionVec);
-
-        if constexpr (loadFromDict)
-        {
-            for (const auto& [key, value] : dict)
-            {
-                if (vars.find(key) == vars.end()) logWarning("Unknown field '" + key + "' in a PathTracer dictionary");
-            }
-        }
-    }
-#undef serialize
-
+    // Scripting: serialize pass options to/from a Properties object.
+    void parseProperties(const Properties& props);
 };

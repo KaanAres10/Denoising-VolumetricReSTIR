@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -31,81 +31,82 @@
 
 namespace Falcor
 {
-    namespace
+namespace
+{
+uint32_t prefixSumRef(std::vector<uint32_t>& elems)
+{
+    // Perform exclusive scan. Return sum of all elements.
+    uint32_t sum = 0;
+    for (auto& it : elems)
     {
-        uint32_t prefixSum(std::vector<uint32_t>& elems)
-        {
-            // Perform exclusive scan. Return sum of all elements.
-            uint32_t sum = 0;
-            for (auto& it : elems)
-            {
-                uint32_t tmp = it;
-                it = sum;
-                sum += tmp;
-            }
-            return sum;
-        }
-
-        void testPrefixSum(GPUUnitTestContext& ctx, const PrefixSum::SharedPtr& pPrefixSum, uint32_t numElems)
-        {
-            // Create a buffer of random data to use as test data.
-            // We make sure the total sum fits in 32 bits.
-            assert(numElems > 0);
-            const uint32_t maxVal = std::numeric_limits<uint32_t>::max() / numElems;
-            std::vector<uint32_t> testData(numElems);
-            std::mt19937 r;
-            for (auto& it : testData) it = r() % maxVal;
-
-            Buffer::SharedPtr pTestDataBuffer = Buffer::create(numElems * sizeof(uint32_t), Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, testData.data());
-
-            // Allocate buffer for the total sum on the GPU.
-            uint32_t nullValue = 0;
-            Buffer::SharedPtr pSumBuffer = Buffer::create(4, ResourceBindFlags::ShaderResource, Buffer::CpuAccess::None, &nullValue);
-
-            // Execute prefix sum on the GPU.
-            uint32_t sum = 0;
-            bool retval = pPrefixSum->execute(ctx.getRenderContext(), pTestDataBuffer, numElems, &sum, pSumBuffer, 0);
-            EXPECT_EQ(retval, true);
-
-            // Compute prefix sum on the CPU for comparison.
-            const uint32_t refSum = prefixSum(testData);
-
-            // Compare results.
-            EXPECT_EQ(sum, refSum);
-
-            uint32_t* resultSum = (uint32_t*)pSumBuffer->map(Buffer::MapType::Read);
-            assert(resultSum);
-            EXPECT_EQ(resultSum[0], refSum);
-            pSumBuffer->unmap();
-
-            const uint32_t* result = (const uint32_t*)pTestDataBuffer->map(Buffer::MapType::Read);
-            assert(result);
-            for (uint32_t i = 0; i < numElems; i++)
-            {
-                EXPECT_EQ(testData[i], result[i]) << "i = " << i;
-            }
-            pTestDataBuffer->unmap();
-        }
+        uint32_t tmp = it;
+        it = sum;
+        sum += tmp;
     }
+    return sum;
+}
 
-    GPU_TEST(PrefixSum)
+void testPrefixSum(GPUUnitTestContext& ctx, PrefixSum& prefixSum, uint32_t numElems)
+{
+    ref<Device> pDevice = ctx.getDevice();
+
+    // Create a buffer of random data to use as test data.
+    // We make sure the total sum fits in 32 bits.
+    FALCOR_ASSERT(numElems > 0);
+    const uint32_t maxVal = std::numeric_limits<uint32_t>::max() / numElems;
+    std::vector<uint32_t> testData(numElems);
+    std::mt19937 r;
+    for (auto& it : testData)
+        it = r() % maxVal;
+
+    ref<Buffer> pTestDataBuffer =
+        pDevice->createBuffer(numElems * sizeof(uint32_t), ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, testData.data());
+
+    // Allocate buffer for the total sum on the GPU.
+    uint32_t nullValue = 0;
+    ref<Buffer> pSumBuffer =
+        pDevice->createBuffer(sizeof(uint32_t), ResourceBindFlags::ShaderResource, MemoryType::DeviceLocal, &nullValue);
+
+    // Execute prefix sum on the GPU.
+    uint32_t sum = 0;
+    prefixSum.execute(ctx.getRenderContext(), pTestDataBuffer, numElems, &sum, pSumBuffer, 0);
+
+    // Compute prefix sum on the CPU for comparison.
+    const uint32_t refSum = prefixSumRef(testData);
+
+    // Compare results.
+    EXPECT_EQ(sum, refSum);
+
+    uint32_t resultSum = pSumBuffer->getElement<uint32_t>(0);
+    EXPECT_EQ(resultSum, refSum);
+
+    std::vector<uint32_t> result = pTestDataBuffer->getElements<uint32_t>();
+    for (uint32_t i = 0; i < numElems; i++)
     {
-        // Quick test of our reference function.
-        std::vector<uint32_t> x({ 5, 17, 2, 9, 23 });
-        uint32_t sum = prefixSum(x);
-        assert(x[0] == 0 && x[1] == 5 && x[2] == 22 && x[3] == 24 && x[4] == 33);
-        assert(sum == 56);
-
-        // Create helper class.
-        PrefixSum::SharedPtr pPrefixSum = PrefixSum::create();
-
-        // Test prefix sums on varying size buffers.
-        testPrefixSum(ctx, pPrefixSum, 1);
-        testPrefixSum(ctx, pPrefixSum, 27);
-        testPrefixSum(ctx, pPrefixSum, 64);
-        testPrefixSum(ctx, pPrefixSum, 2049);
-        testPrefixSum(ctx, pPrefixSum, 10201);
-        testPrefixSum(ctx, pPrefixSum, 231917);
-        testPrefixSum(ctx, pPrefixSum, 1088921);
+        EXPECT_EQ(testData[i], result[i]) << "i = " << i;
     }
 }
+} // namespace
+
+GPU_TEST(PrefixSum)
+{
+    // Quick test of our reference function.
+    std::vector<uint32_t> x({5, 17, 2, 9, 23});
+    uint32_t sum = prefixSumRef(x);
+    FALCOR_ASSERT(x[0] == 0 && x[1] == 5 && x[2] == 22 && x[3] == 24 && x[4] == 33);
+    FALCOR_ASSERT(sum == 56);
+
+    // Create helper class.
+    PrefixSum prefixSum(ctx.getDevice());
+
+    // Test prefix sums on varying size buffers.
+    testPrefixSum(ctx, prefixSum, 1);
+    testPrefixSum(ctx, prefixSum, 27);
+    testPrefixSum(ctx, prefixSum, 64);
+    testPrefixSum(ctx, prefixSum, 2049);
+    testPrefixSum(ctx, prefixSum, 10201);
+    testPrefixSum(ctx, prefixSum, 231917);
+    testPrefixSum(ctx, prefixSum, 1088921);
+    testPrefixSum(ctx, prefixSum, 13912615);
+}
+} // namespace Falcor

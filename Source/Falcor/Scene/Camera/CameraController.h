@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,50 +26,84 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include <bitset>
 #include "Camera.h"
+#include "Core/Macros.h"
+#include "Utils/Math/Vector.h"
+#include "Utils/Math/Matrix.h"
+#include "Utils/Timing/CpuTimer.h"
+#include <bitset>
+#include <memory>
 
 namespace Falcor
 {
     struct MouseEvent;
     struct KeyboardEvent;
+    struct GamepadState;
 
     /** Camera controller interface. Camera controllers should inherit from this object.
     */
-    class dlldecl CameraController
+    class FALCOR_API CameraController
     {
     public:
-        using SharedPtr = std::shared_ptr<CameraController>;
+        enum class UpDirection
+        {
+            XPos, XNeg, YPos, YNeg, ZPos, ZNeg,
+        };
+
         virtual ~CameraController() = default;
 
         /** Handle mouse events
         */
         virtual bool onMouseEvent(const MouseEvent& mouseEvent) { return false; }
 
-        /* Handle keyboard events
+        /** Handle keyboard events
         */
         virtual bool onKeyEvent(const KeyboardEvent& keyboardEvent) { return false; }
+
+        /** Handle gamepad state.
+        */
+        virtual bool onGamepadState(const GamepadState& gamepadState) { return false; }
 
         /** Update the camera position and orientation.
             \return Whether the camera was updated/changed
         */
         virtual bool update() = 0;
 
+        /** Set the world up-direction.
+        */
+        void setUpDirection(UpDirection upDirection) { mUpDirection = upDirection; }
+
+        /** Get the world up-direction.
+        */
+        UpDirection getUpDirection() const { return mUpDirection; }
+
         /** Set the camera's speed
             \param[in] Speed Camera speed. Measured in WorldUnits per second.
         */
         void setCameraSpeed(float speed) { mSpeed = speed; }
 
-        bool mbAutomaticMovement = false;
-        double mInitialCameraTime = 0.0;
-        double mElapsedCameraTime = 0.0;
-        bool mIsFirstTime = true;
-        float3 originalTarget;
+        /** Get the camera's speed.
+        */
+        float getCameraSpeed() const { return mSpeed; }
+
+        /** Reset the key, mouse, and gamepad states to release all buttons.
+        */
+        virtual void resetInputState() {};
+
+        /** Set the camera's bounds
+            \param[in] aabb Camera bound AABB; position will be clipped to the interior.
+        */
+        void setCameraBounds(const AABB& aabb) { mBounds = aabb; }
 
     protected:
-        CameraController(const Camera::SharedPtr& pCamera) : mpCamera(pCamera) {}
-        Camera::SharedPtr mpCamera = nullptr;
+        CameraController(const ref<Camera>& pCamera) : mpCamera(pCamera) {}
+
+        float3 getUpVector() const;
+
+        ref<Camera> mpCamera;
+        UpDirection mUpDirection = UpDirection::YPos;
         float mSpeed = 1;
+        AABB mBounds;
     };
 
     /** An orbiter camera controller. Orbits around a given point.
@@ -77,15 +111,10 @@ namespace Falcor
         * Left mouse click + movement will orbit around the model.
         * Mouse wheel zooms in/out.
     */
-    class dlldecl OrbiterCameraController : public CameraController
+    class FALCOR_API OrbiterCameraController : public CameraController
     {
     public:
-        using SharedPtr = std::shared_ptr<OrbiterCameraController>;
-        OrbiterCameraController(const Camera::SharedPtr& pCamera) : CameraController(pCamera) {}
-
-        /** Create a new object
-        */
-        static SharedPtr create(const Camera::SharedPtr& pCamera) { return SharedPtr(new OrbiterCameraController(pCamera)); }
+        OrbiterCameraController(const ref<Camera>& pCamera) : CameraController(pCamera) {}
 
         /** Handle mouse events
         */
@@ -103,13 +132,17 @@ namespace Falcor
         */
         bool update() override;
 
+        /** Reset the mouse state to release all mouse buttons.
+        */
+        void resetInputState() override;
+
     private:
         float3 mModelCenter;
         float mModelRadius;
         float mCameraDistance;
         bool mbDirty;
 
-        glm::mat3x3 mRotation;
+        float3x3 mRotation = float3x3::identity();
         float3 mLastVector;
         bool mIsLeftButtonDown = false;
         bool mShouldRotate = false;
@@ -126,15 +159,10 @@ namespace Falcor
         - Ctrl for slower movement.
     */
     template<bool b6DoF>
-    class dlldecl FirstPersonCameraControllerCommon : public CameraController
+    class FALCOR_API FirstPersonCameraControllerCommon : public CameraController
     {
     public:
-        FirstPersonCameraControllerCommon(const Camera::SharedPtr& pCamera);
-        using SharedPtr = std::shared_ptr<FirstPersonCameraControllerCommon>;
-
-        /** Create a new object
-        */
-        static SharedPtr create(const Camera::SharedPtr& pCamera) { return SharedPtr(new FirstPersonCameraControllerCommon(pCamera)); }
+        FirstPersonCameraControllerCommon(const ref<Camera>& pCamera);
 
         /** Handle mouse events
         */
@@ -144,11 +172,18 @@ namespace Falcor
         */
         bool onKeyEvent(const KeyboardEvent& keyboardEvent) override;
 
+        /* Handle gamepad state.
+        */
+        bool onGamepadState(const GamepadState& gamepadState) override;
+
         /** Update the camera position and orientation.
             \return Whether the camera was updated/changed
         */
         bool update() override;
 
+        /** Reset the key, mouse, and gamepad states to release all buttons.
+        */
+        void resetInputState() override;
 
     private:
         bool mIsLeftButtonDown = false;
@@ -157,6 +192,12 @@ namespace Falcor
 
         float2 mLastMousePos;
         float2 mMouseDelta;
+
+        bool mGamepadPresent = false;
+        float2 mGamepadLeftStick;
+        float2 mGamepadRightStick;
+        float mGamepadLeftTrigger;
+        float mGamepadRightTrigger;
 
         CpuTimer mTimer;
 

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -34,17 +34,16 @@ using namespace Falcor;
 class SideBySidePass : public ComparisonPass
 {
 public:
-    using SharedPtr = std::shared_ptr<SideBySidePass>;
+    FALCOR_PLUGIN_CLASS(SideBySidePass, "SideBySidePass", "Allows the user to compare two inputs side-by-side.");
 
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
-    virtual std::string getDesc() override { return kDesc; }
-    virtual void execute(RenderContext* pContext, const RenderData& renderData) override;
+    static ref<SideBySidePass> create(ref<Device> pDevice, const Properties& props) { return make_ref<SideBySidePass>(pDevice, props); }
+
+    SideBySidePass(ref<Device> pDevice, const Properties& props);
+
+    virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
 
-    static const char* kDesc;
-
 private:
-    SideBySidePass();
     virtual void createProgram() override;
     uint32_t mImageLeftBound = 0; ///< Location of output left side in original input image in pixels
 };

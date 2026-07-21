@@ -27,8 +27,13 @@
  **************************************************************************/
 #include "VolumetricReSTIR.h"
 #include "RenderGraph/RenderPassHelpers.h"
+#include "RenderGraph/RenderPassStandardFlags.h"
 #include "Utils.h"
 #include <random>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 namespace
 {
@@ -38,7 +43,10 @@ namespace
 
     const Falcor::ChannelList kOutputChannels =
     {
-        { kAccumulatedColorOutput,     "gOutputFrame",    "accumulated output color (linear)", true /* optional */      },
+        // [8.0 port] accumulated_color is written as a UAV by FinalShading, so it needs an explicit
+        // UAV-capable format (RGBA32Float). Without a format it defaults to the swapchain's
+        // BGRA8UnormSrgb, which does not support UnorderedAccess.
+        { kAccumulatedColorOutput,     "gOutputFrame",    "accumulated output color (linear)", true /* optional */, ResourceFormat::RGBA32Float      },
         { kMotionVec,     "gMotionVec",    "motion vector", true /* optional */, ResourceFormat::RG32Float      }
     };
 
@@ -52,41 +60,30 @@ namespace
 };
 
 
-// Don't remove this. it's required for hot-reload to function properly
-extern "C" __declspec(dllexport) const char* getProjDir()
+extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
 {
-    return PROJECT_DIR;
+    registry.registerClass<RenderPass, VolumetricReSTIR>();
 }
 
-extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary& lib)
-{
-    lib.registerClass("VolumetricReSTIR", "Render Pass Template", VolumetricReSTIR::create);
-}
-
-VolumetricReSTIR::SharedPtr VolumetricReSTIR::create(RenderContext* pRenderContext, const Dictionary& dict)
-{
-    SharedPtr pPass = SharedPtr(new VolumetricReSTIR(dict));
-    return pPass;
-}
-
-VolumetricReSTIR::VolumetricReSTIR(const Dictionary& dict)
+VolumetricReSTIR::VolumetricReSTIR(ref<Device> pDevice, const Properties& props)
+    : RenderPass(pDevice)
 {
     mDefaultDefines.add("SAMPLE_GENERATOR_TYPE", "SAMPLE_GENERATOR_UNIFORM");
 
-    mpSampleGenerator = SampleGenerator::create(SAMPLE_GENERATOR_UNIFORM);
+    mpSampleGenerator = SampleGenerator::create(pDevice, SAMPLE_GENERATOR_UNIFORM);
 
     Sampler::Desc samplerDesc;
-    samplerDesc.setFilterMode(Sampler::Filter::Linear, Sampler::Filter::Linear, Sampler::Filter::Linear);
+    samplerDesc.setFilterMode(TextureFilteringMode::Linear, TextureFilteringMode::Linear, TextureFilteringMode::Linear);
     samplerDesc.setBorderColor(float4(0.f));
-    samplerDesc.setAddressingMode(Sampler::AddressMode::Border, Sampler::AddressMode::Border, Sampler::AddressMode::Border);
-    mpSampler = Sampler::create(samplerDesc);
+    samplerDesc.setAddressingMode(TextureAddressingMode::Border, TextureAddressingMode::Border, TextureAddressingMode::Border);
+    mpSampler = pDevice->createSampler(samplerDesc);
 
-    samplerDesc.setFilterMode(Sampler::Filter::Point, Sampler::Filter::Point, Sampler::Filter::Point);
-    mpPointSampler = Sampler::create(samplerDesc);
+    samplerDesc.setFilterMode(TextureFilteringMode::Point, TextureFilteringMode::Point, TextureFilteringMode::Point);
+    mpPointSampler = pDevice->createSampler(samplerDesc);
 
-	if (dict.size() > 0) hasExternalDict = true;
+	if (!props.empty()) hasExternalDict = true;
 
-	serializePass<true>(dict);
+	parseProperties(props);
 
     if (mEmissiveSamplerTypeId == 0)
     {
@@ -130,20 +127,59 @@ VolumetricReSTIR::VolumetricReSTIR(const Dictionary& dict)
 
     mLastMaxBounces = mParams.mMaxBounces;
 
-    mpTraceRaysPass = createSimpleComputePass(kShaderDirectory + "TraceRays.cs.slang", "main", mDefaultDefines);
-    mSpatialReusePass = createSimpleComputePass(kShaderDirectory + "SpatialReuse.cs.slang", "main", mDefaultDefines);
-    mTemporalReusePass = createSimpleComputePass(kShaderDirectory + "TemporalReuse.cs.slang", "main", mDefaultDefines);
-    mGenerateFeaturePass = createSimpleComputePass(kShaderDirectory + "GenerateFeatures.cs.slang", "main", mDefaultDefines);
-    mCopyReservoirPass = createSimpleComputePass(kShaderDirectory + "CopyReservoirs.cs.slang", "main", mDefaultDefines);
-    mFinalShadingPass = createSimpleComputePass(kShaderDirectory + "FinalShading.cs.slang", "main", mDefaultDefines);
-    mpPixelDebug = PixelDebug::create();
+    mpTraceRaysPass = createSimpleComputePass(pDevice, kShaderDirectory + "TraceRays.cs.slang", "main", mDefaultDefines);
+    mSpatialReusePass = createSimpleComputePass(pDevice, kShaderDirectory + "SpatialReuse.cs.slang", "main", mDefaultDefines);
+    mTemporalReusePass = createSimpleComputePass(pDevice, kShaderDirectory + "TemporalReuse.cs.slang", "main", mDefaultDefines);
+    mGenerateFeaturePass = createSimpleComputePass(pDevice, kShaderDirectory + "GenerateFeatures.cs.slang", "main", mDefaultDefines);
+    mCopyReservoirPass = createSimpleComputePass(pDevice, kShaderDirectory + "CopyReservoirs.cs.slang", "main", mDefaultDefines);
+    mFinalShadingPass = createSimpleComputePass(pDevice, kShaderDirectory + "FinalShading.cs.slang", "main", mDefaultDefines);
+    mpPixelDebug = std::make_unique<PixelDebug>(pDevice);
 }
 
-Dictionary VolumetricReSTIR::getScriptingDictionary()
+void VolumetricReSTIR::parseProperties(const Properties& props)
 {
-	Dictionary dict;
-	serializePass<false>(dict);
-	return dict;
+    props.getTo("mParams", mParams);
+    props.getTo("mCameraMoveScale", mCameraMoveScale);
+    props.getTo("mCameraForwardScale", mCameraForwardScale);
+    props.getTo("mCameraFrameInterval", mCameraFrameInterval);
+    props.getTo("mCameraPauseInterval", mCameraPauseInterval);
+    props.getTo("mCameraShakeTotalRounds", mCameraShakeTotalRounds);
+    props.getTo("mCameraShakeRoundsBeforePause", mCameraShakeRoundsBeforePause);
+    props.getTo("mCameraAnimationMode", mCameraAnimationMode);
+    props.getTo("mAnimateEnvLight", mAnimateEnvLight);
+    props.getTo("mAnimationFreezedFrame", mAnimationFreezedFrame);
+    props.getTo("mEnvLightRotationSpeed", mEnvLightRotationSpeed);
+    props.getTo("mFreezeFrame", mFreezeFrame);
+    props.getTo("mVolumeAnimationSelectedFrameId", mVolumeAnimationSelectedFrameId);
+    props.getTo("mEmissiveSamplerTypeId", mEmissiveSamplerTypeId);
+    props.getTo("volumeDensityScaleExtraControl", volumeDensityScaleExtraControl);
+    props.getTo("volumeAlbedoExtraControl", volumeAlbedoExtraControl);
+    props.getTo("volumeAnisotropyExtraControl", volumeAnisotropyExtraControl);
+    props.getTo("mOutputMotionVec", mOutputMotionVec);
+}
+
+Properties VolumetricReSTIR::getProperties() const
+{
+    Properties props;
+    props.set("mParams", mParams);
+    props.set("mCameraMoveScale", mCameraMoveScale);
+    props.set("mCameraForwardScale", mCameraForwardScale);
+    props.set("mCameraFrameInterval", mCameraFrameInterval);
+    props.set("mCameraPauseInterval", mCameraPauseInterval);
+    props.set("mCameraShakeTotalRounds", mCameraShakeTotalRounds);
+    props.set("mCameraShakeRoundsBeforePause", mCameraShakeRoundsBeforePause);
+    props.set("mCameraAnimationMode", mCameraAnimationMode);
+    props.set("mAnimateEnvLight", mAnimateEnvLight);
+    props.set("mAnimationFreezedFrame", mAnimationFreezedFrame);
+    props.set("mEnvLightRotationSpeed", mEnvLightRotationSpeed);
+    props.set("mFreezeFrame", mFreezeFrame);
+    props.set("mVolumeAnimationSelectedFrameId", mVolumeAnimationSelectedFrameId);
+    props.set("mEmissiveSamplerTypeId", mEmissiveSamplerTypeId);
+    props.set("volumeDensityScaleExtraControl", volumeDensityScaleExtraControl);
+    props.set("volumeAlbedoExtraControl", volumeAlbedoExtraControl);
+    props.set("volumeAnisotropyExtraControl", volumeAnisotropyExtraControl);
+    props.set("mOutputMotionVec", mOutputMotionVec);
+    return props;
 }
 
 RenderPassReflection VolumetricReSTIR::reflect(const CompileData& compileData)
@@ -166,7 +202,7 @@ bool VolumetricReSTIR::updateLights(RenderContext* pRenderContext)
     // Request the light collection if emissive lights are enabled.
     if (mParams.mUseEmissiveLights)
     {
-        mpScene->getLightCollection(pRenderContext);
+        mpScene->getILightCollection(pRenderContext);
     }
 
     bool lightingChanged = false;
@@ -182,26 +218,26 @@ bool VolumetricReSTIR::updateLights(RenderContext* pRenderContext)
             switch (mEmissiveSamplerType)
             {
             case EmissiveLightSamplerType::Uniform:
-                mpEmissiveSampler = EmissiveUniformSampler::create(pRenderContext, mpScene, mUniformSamplerOptions);
+                mpEmissiveSampler = std::make_unique<EmissiveUniformSampler>(pRenderContext, mpScene->getILightCollection(pRenderContext));
                 break;
             case EmissiveLightSamplerType::LightBVH:
-                mpEmissiveSampler = LightBVHSampler::create(pRenderContext, mpScene, mLightBVHSamplerOptions);
+                mpEmissiveSampler = std::make_unique<LightBVHSampler>(pRenderContext, mpScene->getILightCollection(pRenderContext), mLightBVHSamplerOptions);
                 break;
             case EmissiveLightSamplerType::Power:
-                mpEmissiveSampler = EmissivePowerSampler::create(pRenderContext, mpScene, mPowerSamplerOptions);
+                mpEmissiveSampler = std::make_unique<EmissivePowerSampler>(pRenderContext, mpScene->getILightCollection(pRenderContext));
                 break;
             default:
                 logError("Unknown emissive light sampler type");
             }
-            if (!mpEmissiveSampler) throw std::exception("Failed to create emissive light sampler");
+            if (!mpEmissiveSampler) FALCOR_THROW("Failed to create emissive light sampler");
 
             // need to recreate vars;
             mRequestRecreateVarsForEmissiveSampler = true;
         }
 
         // Update the emissive sampler to the current frame.
-        assert(mpEmissiveSampler);
-        lightingChanged = mpEmissiveSampler->update(pRenderContext);
+        FALCOR_ASSERT(mpEmissiveSampler);
+        lightingChanged = mpEmissiveSampler->update(pRenderContext, mpScene->getILightCollection(pRenderContext));
     }
 
     return lightingChanged;
@@ -277,7 +313,7 @@ void VolumetricReSTIR::resetCamera(bool useLastCameraPosition)
     mpScene->getCamera()->setTarget(useLastCameraPosition ? mBackedupCameraTarget : mInitialCameraTarget);
 }
 
-void VolumetricReSTIR::updateSceneDefines(Falcor::ComputePass::SharedPtr& pPass, const Falcor::Scene::SharedPtr& pScene)
+void VolumetricReSTIR::updateSceneDefines(ref<ComputePass>& pPass, const ref<Scene>& pScene)
 {
     if (!pScene) return;
 
@@ -289,6 +325,9 @@ void VolumetricReSTIR::updateSceneDefines(Falcor::ComputePass::SharedPtr& pPass,
         pPass->getProgram()->addDefine("SURFACE_SCENE");
         pPass->getProgram()->addDefine("VBUFFERDECLARE", "VBufferItem vItem,");
         pPass->getProgram()->addDefine("VBUFFERITEM", "vItem,");
+        // The surface path uses the scene's material system (IMaterial/IMaterialInstance); register the
+        // concrete material type conformances so Slang can generate code for them.
+        pPass->getProgram()->setTypeConformances(pScene->getTypeConformances());
     }
     else
     {
@@ -297,7 +336,7 @@ void VolumetricReSTIR::updateSceneDefines(Falcor::ComputePass::SharedPtr& pPass,
         pPass->getProgram()->addDefine("VBUFFERITEM", "");
     }
     pPass->setVars(nullptr);
-    pPass->getRootVar()["gScene"] = pScene->getParameterBlock();
+    pScene->bindShaderData(pPass->getRootVar()["gScene"]);
 }
 
 void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& renderData)
@@ -313,30 +352,30 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         // Create emissive light sampler if it doesn't already exist.
 
         // Update the emissive sampler to the current frame.
-        assert(mpEmissiveSampler);
+        FALCOR_ASSERT(mpEmissiveSampler);
 
-        bool isDirty = mpEmissiveSampler->prepareProgram(mSpatialReusePass->getProgram().get());
-        mpEmissiveSampler->prepareProgram(mTemporalReusePass->getProgram().get());
-        mpEmissiveSampler->prepareProgram(mFinalShadingPass->getProgram().get());
-        mpEmissiveSampler->prepareProgram(mpTraceRaysPass->getProgram().get());
-        mpEmissiveSampler->prepareProgram(mGenerateFeaturePass->getProgram().get());
+        mSpatialReusePass->getProgram()->addDefines(mpEmissiveSampler->getDefines());
+        mTemporalReusePass->getProgram()->addDefines(mpEmissiveSampler->getDefines());
+        mFinalShadingPass->getProgram()->addDefines(mpEmissiveSampler->getDefines());
+        mpTraceRaysPass->getProgram()->addDefines(mpEmissiveSampler->getDefines());
+        mGenerateFeaturePass->getProgram()->addDefines(mpEmissiveSampler->getDefines());
 
-        mSpatialReusePass->recreateVars();
-        mTemporalReusePass->recreateVars();
-        mFinalShadingPass->recreateVars();
-        mpTraceRaysPass->recreateVars();
-        mGenerateFeaturePass->recreateVars();
+        mSpatialReusePass->setVars(nullptr);
+        mTemporalReusePass->setVars(nullptr);
+        mFinalShadingPass->setVars(nullptr);
+        mpTraceRaysPass->setVars(nullptr);
+        mGenerateFeaturePass->setVars(nullptr);
 
-        mSpatialReusePass->getRootVar()["gScene"] = mpScene->getParameterBlock();
-        mTemporalReusePass->getRootVar()["gScene"] = mpScene->getParameterBlock();
-        mFinalShadingPass->getRootVar()["gScene"] = mpScene->getParameterBlock();
-        mpTraceRaysPass->getRootVar()["gScene"] = mpScene->getParameterBlock();
-        mGenerateFeaturePass->getRootVar()["gScene"] = mpScene->getParameterBlock();
+        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mSpatialReusePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mSpatialReusePass->getRootVar()["gScene"]);
+        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mTemporalReusePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mTemporalReusePass->getRootVar()["gScene"]);
+        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mFinalShadingPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mFinalShadingPass->getRootVar()["gScene"]);
+        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mpTraceRaysPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mpTraceRaysPass->getRootVar()["gScene"]);
+        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mGenerateFeaturePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mGenerateFeaturePass->getRootVar()["gScene"]);
     }
 
     if (mpScene->mNewEnvMapLoaded)
     {
-        mpEnvMapSampler = EnvMapSampler::create(pRenderContext, mpScene->getEnvMap());
+        mpEnvMapSampler = std::make_unique<EnvMapSampler>(mpDevice, mpScene->getEnvMap());
         mSavedEnvMapRotation = mpScene->getEnvMap()->getRotation();
         mpScene->mNewEnvMapLoaded = false;
     }
@@ -351,7 +390,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (mRandomizeFrameSpeed) mFrameCount = rand() % 65536;
         else mFrameCount = 0;
         mTemporalSampleAccumulated = 0;
-        InternalDictionary& dict = renderData.getDictionary();
+        Dictionary& dict = renderData.getDictionary();
         auto flags = dict.getValue(kRenderPassRefreshFlags, Falcor::RenderPassRefreshFlags::None);
         if (mOptionsChanged) flags |= Falcor::RenderPassRefreshFlags::RenderOptionsChanged;
         dict[Falcor::kRenderPassRefreshFlags] = flags;
@@ -364,12 +403,12 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
 
     if (mParams.mMaxBounces != mLastMaxBounces && !mParams.mUseReference)
     {
-        mSpatialReusePass->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
-        mTemporalReusePass->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
-        mGenerateFeaturePass->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
-        mCopyReservoirPass->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
-        mFinalShadingPass->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
-        mpTraceRaysPass->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
+        mSpatialReusePass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
+        mTemporalReusePass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
+        mGenerateFeaturePass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
+        mCopyReservoirPass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
+        mFinalShadingPass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
+        mpTraceRaysPass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
 		mLastMaxBounces = mParams.mMaxBounces;
     }
 
@@ -377,33 +416,33 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
     {
         if (mParams.mVertexReuse)
         {
-            mSpatialReusePass->addDefine("VERTEX_REUSE");
-            mTemporalReusePass->addDefine("VERTEX_REUSE");
-            mGenerateFeaturePass->addDefine("VERTEX_REUSE");
-            mFinalShadingPass->addDefine("VERTEX_REUSE");
-            mCopyReservoirPass->addDefine("VERTEX_REUSE");
-            mpTraceRaysPass->addDefine("VERTEX_REUSE");
+            mSpatialReusePass->getProgram()->addDefine("VERTEX_REUSE");
+            mTemporalReusePass->getProgram()->addDefine("VERTEX_REUSE");
+            mGenerateFeaturePass->getProgram()->addDefine("VERTEX_REUSE");
+            mFinalShadingPass->getProgram()->addDefine("VERTEX_REUSE");
+            mCopyReservoirPass->getProgram()->addDefine("VERTEX_REUSE");
+            mpTraceRaysPass->getProgram()->addDefine("VERTEX_REUSE");
 
-            mSpatialReusePass->addDefine("REUSETYPE", "inout");
-            mTemporalReusePass->addDefine("REUSETYPE", "inout");
-            mGenerateFeaturePass->addDefine("REUSETYPE", "inout");
-            mFinalShadingPass->addDefine("REUSETYPE", "inout");
-            mpTraceRaysPass->addDefine("REUSETYPE", "inout");
+            mSpatialReusePass->getProgram()->addDefine("REUSETYPE", "inout");
+            mTemporalReusePass->getProgram()->addDefine("REUSETYPE", "inout");
+            mGenerateFeaturePass->getProgram()->addDefine("REUSETYPE", "inout");
+            mFinalShadingPass->getProgram()->addDefine("REUSETYPE", "inout");
+            mpTraceRaysPass->getProgram()->addDefine("REUSETYPE", "inout");
         }
         else
         {
-            mSpatialReusePass->removeDefine("VERTEX_REUSE");
-            mTemporalReusePass->removeDefine("VERTEX_REUSE");
-            mGenerateFeaturePass->removeDefine("VERTEX_REUSE");
-            mCopyReservoirPass->removeDefine("VERTEX_REUSE");
-            mFinalShadingPass->removeDefine("VERTEX_REUSE");
-            mpTraceRaysPass->removeDefine("VERTEX_REUSE");
+            mSpatialReusePass->getProgram()->removeDefine("VERTEX_REUSE");
+            mTemporalReusePass->getProgram()->removeDefine("VERTEX_REUSE");
+            mGenerateFeaturePass->getProgram()->removeDefine("VERTEX_REUSE");
+            mCopyReservoirPass->getProgram()->removeDefine("VERTEX_REUSE");
+            mFinalShadingPass->getProgram()->removeDefine("VERTEX_REUSE");
+            mpTraceRaysPass->getProgram()->removeDefine("VERTEX_REUSE");
 
-            mSpatialReusePass->addDefine("REUSETYPE", "");
-            mTemporalReusePass->addDefine("REUSETYPE", "");
-            mGenerateFeaturePass->addDefine("REUSETYPE", "");
-            mFinalShadingPass->addDefine("REUSETYPE", "");
-            mpTraceRaysPass->addDefine("REUSETYPE", "");
+            mSpatialReusePass->getProgram()->addDefine("REUSETYPE", "");
+            mTemporalReusePass->getProgram()->addDefine("REUSETYPE", "");
+            mGenerateFeaturePass->getProgram()->addDefine("REUSETYPE", "");
+            mFinalShadingPass->getProgram()->addDefine("REUSETYPE", "");
+            mpTraceRaysPass->getProgram()->addDefine("REUSETYPE", "");
         }
         mLastVertexReuse = mParams.mVertexReuse;
     }
@@ -419,25 +458,25 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
     if (!mParams.mUseReference && (isScreenSizeChanged || !mPerPixelReservoirBuffer[0] || wasOptionsChanged && mPerPixelReservoirBuffer[0]->getSize() != totalReservoirCount * reservoirSize))
     {
         printf("Total Reservoir Count: %d\n", totalReservoirCount);
-        mPerPixelReservoirBuffer[0] = Buffer::createStructured(reservoirSize, totalReservoirCount);
-        mPerPixelReservoirBuffer[1] = Buffer::createStructured(reservoirSize, totalReservoirCount);
-        mTemporalReservoirBuffer = Buffer::createStructured(reservoirSize, totalReservoirCount);
-        mReservoirFeatureBuffer = Buffer::createStructured(sizeof(ReservoirFeatures), totalReservoirCount);
-        mTemporalReservoirFeatureBuffer = Buffer::createStructured(sizeof(ReservoirFeatures), totalReservoirCount);
+        mPerPixelReservoirBuffer[0] = mpDevice->createStructuredBuffer(reservoirSize, totalReservoirCount);
+        mPerPixelReservoirBuffer[1] = mpDevice->createStructuredBuffer(reservoirSize, totalReservoirCount);
+        mTemporalReservoirBuffer = mpDevice->createStructuredBuffer(reservoirSize, totalReservoirCount);
+        mReservoirFeatureBuffer = mpDevice->createStructuredBuffer(sizeof(ReservoirFeatures), totalReservoirCount);
+        mTemporalReservoirFeatureBuffer = mpDevice->createStructuredBuffer(sizeof(ReservoirFeatures), totalReservoirCount);
         printf("Reservoir size: %d\n", (int)reservoirSize);
     }
 
     if (mParams.mUseSurfaceScene && (isScreenSizeChanged || !mVBuffer || wasOptionsChanged || (mPerPixelReservoirBuffer[0] && mPerPixelReservoirBuffer[0]->getSize() != totalReservoirCount * reservoirSize)))
     {
-        mVBuffer = Buffer::createStructured(sizeof(VBufferItem), scrHeight * scrWidth);
-        mTemporalVBuffer = Buffer::createStructured(sizeof(VBufferItem), scrHeight * scrWidth);
+        mVBuffer = mpDevice->createStructuredBuffer(sizeof(VBufferItem), scrHeight * scrWidth);
+        mTemporalVBuffer = mpDevice->createStructuredBuffer(sizeof(VBufferItem), scrHeight * scrWidth);
     }
 
     if (!mParams.mUseReference && mParams.mMaxBounces > 1 && (isScreenSizeChanged || !mPerPixelExtraBounceReservoirBuffer[0] || wasOptionsChanged && mPerPixelExtraBounceReservoirBuffer[0]->getSize() != totalExtraBounceReservoirCount * ExtraBounceReservoirSizeCollection))
     {
-        mPerPixelExtraBounceReservoirBuffer[0] = Buffer::createStructured(ExtraBounceReservoirSizeCollection, totalExtraBounceReservoirCount);
-        mPerPixelExtraBounceReservoirBuffer[1] = Buffer::createStructured(ExtraBounceReservoirSizeCollection, totalExtraBounceReservoirCount);
-        mTemporalExtraBounceReservoirBuffer = Buffer::createStructured(ExtraBounceReservoirSizeCollection, totalExtraBounceReservoirCount);
+        mPerPixelExtraBounceReservoirBuffer[0] = mpDevice->createStructuredBuffer(ExtraBounceReservoirSizeCollection, totalExtraBounceReservoirCount);
+        mPerPixelExtraBounceReservoirBuffer[1] = mpDevice->createStructuredBuffer(ExtraBounceReservoirSizeCollection, totalExtraBounceReservoirCount);
+        mTemporalExtraBounceReservoirBuffer = mpDevice->createStructuredBuffer(ExtraBounceReservoirSizeCollection, totalExtraBounceReservoirCount);
     }
 
 
@@ -445,8 +484,8 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
     if (!mPerPixelColorBuffer[0] ||
         isScreenSizeChanged)
     {
-        mPerPixelColorBuffer[0] = Texture::create2D(scrWidth, scrHeight, ResourceFormat::RGBA32Float, 1, 1, nullptr, ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
-        mPerPixelColorBuffer[1] = Texture::create2D(scrWidth, scrHeight, ResourceFormat::RGBA32Float, 1, 1, nullptr, ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
+        mPerPixelColorBuffer[0] = mpDevice->createTexture2D(scrWidth, scrHeight, ResourceFormat::RGBA32Float, 1, 1, nullptr, ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
+        mPerPixelColorBuffer[1] = mpDevice->createTexture2D(scrWidth, scrHeight, ResourceFormat::RGBA32Float, 1, 1, nullptr, ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
     }
 
     int numInitialSamplingRounds = 1;
@@ -498,7 +537,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
     // Generate Feature Map
     if (!mFreezeFrame)
     {
-        Profiler::startEvent("Generate Features");
+        FALCOR_PROFILE(pRenderContext, "Generate Features");
 
         auto vars = mGenerateFeaturePass->getRootVar();
         mpPixelDebug->prepareProgram(mGenerateFeaturePass->getProgram(), vars);
@@ -514,17 +553,14 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (mParams.mUseSurfaceScene)
         {
             vars["gVBuffer"] = mVBuffer;
-            mpScene->setRaytracingAcceleraitonStructure(pRenderContext, vars["gAccelerationStructure"]);
         }
-        mGenerateFeaturePass->getRootVar()["gScene"] = mpScene->getParameterBlock();
+        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mGenerateFeaturePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mGenerateFeaturePass->getRootVar()["gScene"]);
         mGenerateFeaturePass->execute(pRenderContext, uint3(renderData.getDefaultTextureDims(), 1));
-
-        Profiler::endEvent("Generate Features");
     }
 
     if (!mFreezeFrame)
     {
-        Profiler::startEvent("Generate Samples");
+        FALCOR_PROFILE(pRenderContext, "Generate Samples");
         auto vars = mpTraceRaysPass->getRootVar();
 
         mpPixelDebug->prepareProgram(mpTraceRaysPass->getProgram(), vars);
@@ -555,16 +591,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         initialOptions.setShaderData(vars["CB"]["gInitialSamplingOptions"]);
         spatialOptions.setShaderData(vars["CB"]["gSpatialSamplingOptions"]);
 
-        if (mpEnvMapSampler) mpEnvMapSampler->setShaderData(vars["CB"]["envMapSampler"]);
-        if (mpEmissiveSampler) mpEmissiveSampler->setShaderData(vars["CB"]["emissiveSampler"]);
+        if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
+        if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
 
         if (mParams.mUseSurfaceScene)
-            mpScene->setRaytracingAcceleraitonStructure(pRenderContext, vars["gAccelerationStructure"]);
-        mpTraceRaysPass->getRootVar()["gScene"] = mpScene->getParameterBlock();
+        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mpTraceRaysPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mpTraceRaysPass->getRootVar()["gScene"]);
 
         mpTraceRaysPass->execute(pRenderContext, uint3(renderData.getDefaultTextureDims(), 1));
-
-        Profiler::endEvent("Generate Samples");
     }
 
     int totalRoundId = 0;
@@ -575,7 +608,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
     if (!mFreezeFrame)
         if (!mParams.mUseReference && mParams.mEnableTemporalReuse)
         {
-            Profiler::startEvent("Temporal Reuse");
+            FALCOR_PROFILE(pRenderContext, "Temporal Reuse");
             auto vars = mTemporalReusePass->getRootVar();
 
             mpPixelDebug->prepareProgram(mTemporalReusePass->getProgram(), vars);
@@ -617,12 +650,11 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             vars["CB"]["gOutputMotionVec"] = mOutputMotionVec;
             vars["CB"]["gReprojectionMipLevel"] = mParams.mTemporalReprojectionMipLevel;
 
-            if (mpEnvMapSampler) mpEnvMapSampler->setShaderData(vars["CB"]["envMapSampler"]);
-            if (mpEmissiveSampler) mpEmissiveSampler->setShaderData(vars["CB"]["emissiveSampler"]);
+            if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
+            if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
 
             if (mParams.mUseSurfaceScene)
-                mpScene->setRaytracingAcceleraitonStructure(pRenderContext, vars["gAccelerationStructure"]);
-            mTemporalReusePass->getRootVar()["gScene"] = mpScene->getParameterBlock();
+            if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mTemporalReusePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mTemporalReusePass->getRootVar()["gScene"]);
 
             mTemporalReusePass->execute(pRenderContext, (int)scrWidth , (int)scrHeight );
 
@@ -636,15 +668,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             pRenderContext->copyResource(mTemporalReservoirFeatureBuffer.get(), mReservoirFeatureBuffer.get());
             if (mParams.mUseSurfaceScene)
                 pRenderContext->copyResource(mTemporalVBuffer.get(), mVBuffer.get());
-
-            Profiler::endEvent("Temporal Reuse");
         }
 
     if (!mFreezeFrame)
         if (!mParams.mUseReference && mParams.mEnableSpatialReuse)
             // spatial reuse
         {
-            Profiler::startEvent("Spatial Reuse");
+            FALCOR_PROFILE(pRenderContext, "Spatial Reuse");
 
             int startRoundId = 0;
             int endRoundId = mParams.mSpatialReuseRounds;
@@ -683,24 +713,22 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
                 vars["CB"]["gSampleRadius"] = mParams.mSampleRadius;
                 vars["CB"]["gSampleCount"] = mParams.mSpatialSampleCount;
 
-                if (mpEnvMapSampler) mpEnvMapSampler->setShaderData(vars["CB"]["envMapSampler"]);
-                if (mpEmissiveSampler) mpEmissiveSampler->setShaderData(vars["CB"]["emissiveSampler"]);
+                if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
+                if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
 
                 if (mParams.mUseSurfaceScene)
-                    mpScene->setRaytracingAcceleraitonStructure(pRenderContext, vars["gAccelerationStructure"]);
-                mSpatialReusePass->getRootVar()["gScene"] = mpScene->getParameterBlock();
+                if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mSpatialReusePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mSpatialReusePass->getRootVar()["gScene"]);
 
                 mSpatialReusePass->execute(pRenderContext, (int)scrWidth , (int)scrHeight );
                 totalRoundId++;
             }
-            Profiler::endEvent("Spatial Reuse");
         }
 
     if (!mFreezeFrame)
         if (!mParams.mUseReference && mParams.mEnableTemporalReuse)
         {
             // launch a shader to copy resources
-            Profiler::startEvent("Copy resource");
+            FALCOR_PROFILE(pRenderContext, "Copy resource");
 
             auto vars = mCopyReservoirPass->getRootVar();
             vars["CB"]["gResolution"] = uint2(scrWidth, scrHeight);
@@ -713,12 +741,10 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             vars["gCurReservoirs"] = mPerPixelReservoirBuffer[totalRoundId % 2];
             vars["gTemporalReservoirs"] = mTemporalReservoirBuffer;
             mCopyReservoirPass->execute(pRenderContext, uint3(renderData.getDefaultTextureDims(), 1));
-
-            Profiler::endEvent("Copy resource");
         }
 
     {
-        Profiler::startEvent("Final Shading");
+        FALCOR_PROFILE(pRenderContext, "Final Shading");
 
         auto vars = mFinalShadingPass->getRootVar();
 
@@ -749,16 +775,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         vars["CB"]["gVisualizeTotalTransmittance"] = mParams.mVisualizeTotalTransmittance;
         vars["CB"]["gNoReuse"] = !mParams.mEnableSpatialReuse && !mParams.mEnableTemporalReuse;
 
-        if (mpEnvMapSampler) mpEnvMapSampler->setShaderData(vars["CB"]["envMapSampler"]);
-        if (mpEmissiveSampler) mpEmissiveSampler->setShaderData(vars["CB"]["emissiveSampler"]);
+        if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
+        if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
 
         if (mParams.mUseSurfaceScene)
-            mpScene->setRaytracingAcceleraitonStructure(pRenderContext, vars["gAccelerationStructure"]);
-        mFinalShadingPass->getRootVar()["gScene"] = mpScene->getParameterBlock();
+        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mFinalShadingPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mFinalShadingPass->getRootVar()["gScene"]);
 
         mFinalShadingPass->execute(pRenderContext, scrWidth, scrHeight);
-
-        Profiler::endEvent("Final Shading");
     }
 
 
@@ -766,7 +789,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
 
     mPrevViewMat = mpScene->getCamera()->getViewMatrix();
     mPrevProjMat = mpScene->getCamera()->getProjMatrix();
-    mpScene->getCamera()->getRayTracingFrames(mPrevCameraU, mPrevCameraV, mPrevCameraW, mPrevCameraPosW);
+    {
+        const CameraData& cd = mpScene->getCamera()->getData();
+        mPrevCameraU = cd.cameraU;
+        mPrevCameraV = cd.cameraV;
+        mPrevCameraW = cd.cameraW;
+        mPrevCameraPosW = cd.posW;
+    }
 
     if (!mFreezeFrame)
         mFrameCount++;
@@ -936,17 +965,11 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
                 // Get the latest options for the current sampler. We need these to re-create the sampler at scene changes and for pass serialization.
                 switch (mEmissiveSamplerType)
                 {
-                case EmissiveLightSamplerType::Uniform:
-                    mUniformSamplerOptions = std::static_pointer_cast<EmissiveUniformSampler>(mpEmissiveSampler)->getOptions();
-                    break;
                 case EmissiveLightSamplerType::LightBVH:
-                    mLightBVHSamplerOptions = std::static_pointer_cast<LightBVHSampler>(mpEmissiveSampler)->getOptions();
-                    break;
-                case EmissiveLightSamplerType::Power:
-                    mPowerSamplerOptions = std::static_pointer_cast<EmissivePowerSampler>(mpEmissiveSampler)->getOptions();
+                    mLightBVHSamplerOptions = dynamic_cast<LightBVHSampler*>(mpEmissiveSampler.get())->getOptions();
                     break;
                 default:
-                    should_not_get_here();
+                    break;
                 }
                 dirty = true;
             }
@@ -961,7 +984,7 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
         if (isDirty && mAnimateEnvLight) {
             mAnimationFrameCount = 0;
             mpScene->getEnvMap()->setRotation(mSavedEnvMapRotation);
-            mAnimationStartTime = gpFramework->getGlobalClock().getTime();
+            mAnimationStartTime = 0;
         }
         isDirty |= widget.var("Env Light Animation Speed", mEnvLightRotationSpeed);
         dirty |= isDirty;
@@ -1215,16 +1238,33 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
     if (dirty) mOptionsChanged = true;
 }
 
-inline void VolumetricReSTIR::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene)
+void VolumetricReSTIR::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene)
 {
     if (pScene)
     {
         mpScene = pScene;
+
+        // [8.0 surface-scene] The surface path uses the scene's material system, so its programs must
+        // link the scene's shader modules + material type conformances. Recreate them here (the scene
+        // isn't available at construction time). Volume-only scenes keep the plain passes.
+        if (mParams.mUseSurfaceScene)
+        {
+            mpTraceRaysPass = createSceneComputePass(mpDevice, kShaderDirectory + "TraceRays.cs.slang", "main", mDefaultDefines, pScene);
+            mSpatialReusePass = createSceneComputePass(mpDevice, kShaderDirectory + "SpatialReuse.cs.slang", "main", mDefaultDefines, pScene);
+            mTemporalReusePass = createSceneComputePass(mpDevice, kShaderDirectory + "TemporalReuse.cs.slang", "main", mDefaultDefines, pScene);
+            mGenerateFeaturePass = createSceneComputePass(mpDevice, kShaderDirectory + "GenerateFeatures.cs.slang", "main", mDefaultDefines, pScene);
+            mCopyReservoirPass = createSceneComputePass(mpDevice, kShaderDirectory + "CopyReservoirs.cs.slang", "main", mDefaultDefines, pScene);
+            mFinalShadingPass = createSceneComputePass(mpDevice, kShaderDirectory + "FinalShading.cs.slang", "main", mDefaultDefines, pScene);
+        }
+
         this->updateSceneDefines(mpTraceRaysPass, pScene);
         this->updateSceneDefines(mSpatialReusePass, pScene);
         this->updateSceneDefines(mTemporalReusePass, pScene);
         this->updateSceneDefines(mGenerateFeaturePass, pScene);
         this->updateSceneDefines(mFinalShadingPass, pScene);
+        // [8.0 port] CopyReservoirs also needs its vars created (compute passes are created with
+        // createVars=false); without this its getRootVar() null-derefs during temporal reuse.
+        this->updateSceneDefines(mCopyReservoirPass, pScene);
 
         mpScene->getCurrentVolumeDesc().usePrevGridForReproj = mParams.mUsePrevVolumeForReproj;
 
@@ -1234,16 +1274,16 @@ inline void VolumetricReSTIR::setScene(RenderContext* pRenderContext, const Scen
         mGenerateFeaturePass->getProgram()->addDefines(mpSampleGenerator->getDefines());
         mFinalShadingPass->getProgram()->addDefines(mpSampleGenerator->getDefines());
 
-        bool success = mpSampleGenerator->setShaderData(mpTraceRaysPass->getRootVar());
-        success |= mpSampleGenerator->setShaderData(mSpatialReusePass->getRootVar());
-        success |= mpSampleGenerator->setShaderData(mTemporalReusePass->getRootVar());
-        success |= mpSampleGenerator->setShaderData(mGenerateFeaturePass->getRootVar());
-        success |= mpSampleGenerator->setShaderData(mFinalShadingPass->getRootVar());
+        mpSampleGenerator->bindShaderData(mpTraceRaysPass->getRootVar());
+        mpSampleGenerator->bindShaderData(mSpatialReusePass->getRootVar());
+        mpSampleGenerator->bindShaderData(mTemporalReusePass->getRootVar());
+        mpSampleGenerator->bindShaderData(mGenerateFeaturePass->getRootVar());
+        mpSampleGenerator->bindShaderData(mFinalShadingPass->getRootVar());
 
         if (pScene->getEnvMap())
         {
             mSavedEnvMapRotation = mpScene->getEnvMap()->getRotation();
-            mpEnvMapSampler = EnvMapSampler::create(pRenderContext, pScene->getEnvMap());
+            mpEnvMapSampler = std::make_unique<EnvMapSampler>(mpDevice, pScene->getEnvMap());
         }
 
         mpEmissiveSampler = nullptr;
@@ -1262,14 +1302,14 @@ bool VolumetricReSTIR::onMouseEvent(const MouseEvent& mouseEvent)
 
 bool VolumetricReSTIR::onKeyEvent(const KeyboardEvent& keyEvent)
 {
-    if (keyEvent.type == KeyboardEvent::Type::KeyPressed && keyEvent.key == KeyboardEvent::Key::R)
+    if (keyEvent.type == KeyboardEvent::Type::KeyPressed && keyEvent.key == Input::Key::R)
     {
         resetCamera(false);
         mOptionsChanged = true;
         return true;
     }
 
-    if (keyEvent.type == KeyboardEvent::Type::KeyPressed && keyEvent.key == KeyboardEvent::Key::B)
+    if (keyEvent.type == KeyboardEvent::Type::KeyPressed && keyEvent.key == Input::Key::B)
     {
         toggleCameraAnimation();
     }
@@ -1277,9 +1317,9 @@ bool VolumetricReSTIR::onKeyEvent(const KeyboardEvent& keyEvent)
     return false;
 }
 
-void VolumetricReSTIR::updateDict(const Dictionary& dict)
+void VolumetricReSTIR::setProperties(const Properties& props)
 {
-    serializePass<true>(dict);
+    parseProperties(props);
 
     if ((int)mEmissiveSamplerType != mEmissiveSamplerTypeId)
     {
@@ -1314,23 +1354,23 @@ void VolumetricReSTIR::updateDict(const Dictionary& dict)
     mAnimationFrameCount = 0;
     mpScene->getEnvMap()->setRotation(mSavedEnvMapRotation);
 
-    if (dict.keyExists("ToggleCameraAnimation"))
+    if (props.has("ToggleCameraAnimation"))
     {
         toggleCameraAnimation();
     }
 
-    if (dict.keyExists("moveCameraRight"))
+    if (props.has("moveCameraRight"))
     {
-        float distance = dict["moveCameraRight"];
+        float distance = props.get<float>("moveCameraRight");
         moveCameraRight(distance, mInitialCameraPosition);
     }
 
-    if (dict.keyExists("resetCamera"))
+    if (props.has("resetCamera"))
     {
         resetCamera(false);
     }
 
-    if (dict.keyExists("randomizeFrameSeed"))
+    if (props.has("randomizeFrameSeed"))
     {
         if (!mRandomizeFrameSpeed) srand(123);
         mRandomizeFrameSpeed = true;
@@ -1338,98 +1378,10 @@ void VolumetricReSTIR::updateDict(const Dictionary& dict)
 
     mOptionsChanged = true;
 
-    if (dict.keyExists("moveCameraRight"))
+    if (props.has("moveCameraRight"))
     {
         mOptionsChanged = false;
     }
 
     printf("update pass!\n");
-}
-
-SCRIPT_BINDING(VolumetricReSTIR)
-{
-    namespace py = pybind11;
-
-    // If the type is already registered in this Python module, skip re-registration
-    if (py::hasattr(m, "VolumetricReSTIRParams"))
-        return;
-	// Register our parameters struct.
-	ScriptBindings::SerializableStruct<VolumetricReSTIR::VolumetricReSTIRParams> params(m, "VolumetricReSTIRParams");
-#define field(f_) field(#f_, &VolumetricReSTIR::VolumetricReSTIRParams::f_)
-	// General
-
-    params.field(mMaxBounces);
-
-    params.field(mVertexReuse);
-    params.field(mVertexReuseStartBounce);
-
-    params.field(mEnableTemporalReuse);
-    params.field(mEnableSpatialReuse);
-    params.field(mUseReference);
-
-    params.field(mUseEnvironmentLights);
-    params.field(mUseAnalyticLights);
-    params.field(mUseEmissiveLights);
-
-    // Lower-res reservoirs
-    params.field(mBaselineSamplePerPixel);
-
-    // Alternatives
-    params.field(mVisualizeTotalTransmittance);
-    params.field(mUseSurfaceScene);
-
-    /////////////////////
-    /// Initial Sampling
-    /////////////////////
-    params.field(mInitialBaseMipLevel);
-    params.field(mInitialM);
-    params.field(mInitialLightSamples);
-    params.field(mInitialLightingMipLevel);
-    params.field(mInitialLightingUseLinearSampler);
-    params.field(mInitialVisibilityUseLinearSampler);
-    params.field(mInitialLightingTrackingMethod);
-    params.field(mInitialVisibilityTStepScale);
-    params.field(mInitialLightingTStepScale);
-    params.field(mInitialUseCoarserGridForIndirectBounce);
-    params.field(mInitialUseRussianRoulette);
-
-    /////////////////////
-    /// Temporal Reuse
-    /////////////////////
-    params.field(mTemporalReuseMThreshold);
-    params.field(mTemporalReprojectionMode);
-    params.field(mTemporalMISMethod);
-    params.field(mTemporalReprojectionMipLevel);
-
-    /////////////////////
-    /// Spatial Reuse
-    /////////////////////
-    params.field(mSpatialReuseRounds);
-    params.field(mSpatialVisibilityMipLevel);
-    params.field(mSpatialLightingMipLevel);
-    params.field(mSpatialVisibilityUseLinearSampler);
-    params.field(mSpatialLightingUseLinearSampler);
-    params.field(mSpatialVisibilityTStepScale);
-    params.field(mSpatialLightingTStepScale);
-    params.field(mSpatialVisibilityTrackingMethod);
-    params.field(mSpatialLightingTrackingMethod);
-    params.field(mRandomSamplerType);
-    params.field(mSampleRadius);
-
-    params.field(mSpatialSampleCount);
-    params.field(mEnableVisibilitySimilarityRejection);
-    params.field(mSpatialMISMethod);
-
-    /////////////////////
-    /// Final Shading
-    /////////////////////
-    params.field(mFinalLightSamples);
-    params.field(mFinalVisibilitySamples);
-    params.field(mFinalVisibilityTrackingMethod);
-    params.field(mFinalLightTrackingMethod);
-    params.field(mFinalRandomSamplerType);
-    params.field(mFinalTStepScale);
-
-#undef field
-
 }

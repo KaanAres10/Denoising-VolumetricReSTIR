@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,307 +25,465 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "Buffer.h"
 #include "Device.h"
+#include "GFXAPI.h"
+#include "GFXHelpers.h"
+#include "NativeHandleTraits.h"
+#include "PythonHelpers.h"
+#include "Core/Error.h"
+#include "Core/ObjectPython.h"
+#include "Core/Program/Program.h"
+#include "Core/Program/ShaderVar.h"
+#include "Utils/Logger.h"
+#include "Utils/Scripting/ScriptBindings.h"
+#include "Utils/Scripting/ndarray.h"
+
+#if FALCOR_HAS_CUDA
+#include "Utils/CudaUtils.h"
+#endif
 
 namespace Falcor
 {
-    namespace
-    {
-        Buffer::SharedPtr createStructuredFromType(
-            const ReflectionType* pType,
-            const std::string& varName,
-            uint32_t elementCount,
-            ResourceBindFlags bindFlags,
-            Buffer::CpuAccess cpuAccess,
-            const void* pInitData,
-            bool createCounter)
-        {
-            const ReflectionResourceType* pResourceType = pType->unwrapArray()->asResourceType();
-            if (!pResourceType || pResourceType->getType() != ReflectionResourceType::Type::StructuredBuffer)
-            {
-                throw std::exception(("Can't create a structured buffer from the variable '" + varName + "'. The variable is not a structured buffer.").c_str());
-            }
+// TODO: Replace with include?
+void getGFXResourceState(ResourceBindFlags flags, gfx::ResourceState& defaultState, gfx::ResourceStateSet& allowedStates);
 
-            assert(pResourceType->getSize() <= std::numeric_limits<uint32_t>::max());
-            return Buffer::createStructured((uint32_t)pResourceType->getSize(), elementCount, bindFlags, cpuAccess, pInitData, createCounter);
-        }
+static void prepareGFXBufferDesc(
+    gfx::IBufferResource::Desc& bufDesc,
+    size_t size,
+    size_t elementSize,
+    ResourceFormat format,
+    ResourceBindFlags bindFlags,
+    MemoryType memoryType
+)
+{
+    bufDesc.sizeInBytes = size;
+    bufDesc.elementSize = elementSize;
+    bufDesc.format = getGFXFormat(format);
+    switch (memoryType)
+    {
+    case MemoryType::DeviceLocal:
+        bufDesc.memoryType = gfx::MemoryType::DeviceLocal;
+        break;
+    case MemoryType::ReadBack:
+        bufDesc.memoryType = gfx::MemoryType::ReadBack;
+        break;
+    case MemoryType::Upload:
+        bufDesc.memoryType = gfx::MemoryType::Upload;
+        break;
+    default:
+        FALCOR_UNREACHABLE();
+        break;
+    }
+    getGFXResourceState(bindFlags, bufDesc.defaultState, bufDesc.allowedStates);
+    bufDesc.isShared = is_set(bindFlags, ResourceBindFlags::Shared);
+}
+
+// TODO: This is also used in GpuMemoryHeap
+Slang::ComPtr<gfx::IBufferResource> createBufferResource(
+    ref<Device> pDevice,
+    Buffer::State initState,
+    size_t size,
+    size_t elementSize,
+    ResourceFormat format,
+    ResourceBindFlags bindFlags,
+    MemoryType memoryType
+)
+{
+    FALCOR_ASSERT(pDevice);
+
+    // Create the buffer
+    gfx::IBufferResource::Desc bufDesc = {};
+    prepareGFXBufferDesc(bufDesc, size, elementSize, format, bindFlags, memoryType);
+
+    Slang::ComPtr<gfx::IBufferResource> pApiHandle;
+    FALCOR_GFX_CALL(pDevice->getGfxDevice()->createBufferResource(bufDesc, nullptr, pApiHandle.writeRef()));
+    FALCOR_ASSERT(pApiHandle);
+
+    return pApiHandle;
+}
+
+Buffer::Buffer(
+    ref<Device> pDevice,
+    size_t size,
+    size_t structSize,
+    ResourceFormat format,
+    ResourceBindFlags bindFlags,
+    MemoryType memoryType,
+    const void* pInitData
+)
+    : Resource(pDevice, Type::Buffer, bindFlags, size), mMemoryType(memoryType)
+{
+    FALCOR_CHECK(size > 0, "Can't create GPU buffer of size zero");
+
+    // Check that buffer size is within 4GB limit. Larger buffers are currently not well supported in D3D12.
+    // TODO: Revisit this check in the future.
+    FALCOR_CHECK(size <= (1ull << 32), "Creating GPU buffer of size {} bytes. Buffers above 4GB are not currently well supported.", size);
+
+    if (mMemoryType != MemoryType::DeviceLocal && is_set(mBindFlags, ResourceBindFlags::Shared))
+    {
+        FALCOR_THROW("Can't create shared resource with CPU access other than 'None'.");
     }
 
-    size_t getBufferDataAlignment(const Buffer* pBuffer);
-    void* mapBufferApi(const Buffer::ApiHandle& apiHandle, size_t size);
+    mSize = align_to(mpDevice->getBufferDataAlignment(bindFlags), mSize);
+    mStructSize = structSize;
+    mFormat = format;
 
-    Buffer::Buffer(size_t size, BindFlags bindFlags, CpuAccess cpuAccess)
-        : Resource(Type::Buffer, bindFlags, size)
-        , mCpuAccess(cpuAccess)
+    if (mMemoryType == MemoryType::DeviceLocal)
     {
+        mState.global = Resource::State::Common;
+        if (is_set(mBindFlags, ResourceBindFlags::AccelerationStructure))
+            mState.global = Resource::State::AccelerationStructure;
+    }
+    else if (mMemoryType == MemoryType::Upload)
+    {
+        mState.global = Resource::State::GenericRead;
+    }
+    else if (mMemoryType == MemoryType::ReadBack)
+    {
+        mState.global = Resource::State::CopyDest;
     }
 
-    Buffer::SharedPtr Buffer::create(size_t size, BindFlags bindFlags, CpuAccess cpuAccess, const void* pInitData, uint32_t offset, bool maximizeResidencyPriority)
+    mGfxBufferResource = createBufferResource(mpDevice, mState.global, mSize, mStructSize, mFormat, mBindFlags, mMemoryType);
+
+    if (pInitData)
+        setBlob(pInitData, 0, size);
+
+    mElementCount = uint32_t(size);
+}
+
+Buffer::Buffer(ref<Device> pDevice, size_t size, ResourceBindFlags bindFlags, MemoryType memoryType, const void* pInitData)
+    : Buffer(pDevice, size, 0, ResourceFormat::Unknown, bindFlags, memoryType, pInitData)
+{}
+
+Buffer::Buffer(
+    ref<Device> pDevice,
+    ResourceFormat format,
+    uint32_t elementCount,
+    ResourceBindFlags bindFlags,
+    MemoryType memoryType,
+    const void* pInitData
+)
+    : Buffer(pDevice, (size_t)getFormatBytesPerBlock(format) * elementCount, 0, format, bindFlags, memoryType, pInitData)
+{
+    mElementCount = elementCount;
+}
+
+Buffer::Buffer(
+    ref<Device> pDevice,
+    uint32_t structSize,
+    uint32_t elementCount,
+    ResourceBindFlags bindFlags,
+    MemoryType memoryType,
+    const void* pInitData,
+    bool createCounter
+)
+    : Buffer(pDevice, (size_t)structSize * elementCount, structSize, ResourceFormat::Unknown, bindFlags, memoryType, pInitData)
+{
+    mElementCount = elementCount;
+    static const uint32_t zero = 0;
+    if (createCounter)
     {
-        Buffer::SharedPtr pBuffer = SharedPtr(new Buffer(size, bindFlags, cpuAccess));
-        pBuffer->apiInit(pInitData != nullptr, maximizeResidencyPriority);
-        if (pInitData) pBuffer->setBlob((uint8_t*)pInitData + offset, 0, size);
-        return pBuffer;
-    }
-
-    Buffer::SharedPtr Buffer::createTyped(ResourceFormat format, uint32_t elementCount, BindFlags bindFlags, CpuAccess cpuAccess, const void* pInitData)
-    {
-        size_t size = elementCount * getFormatBytesPerBlock(format);
-        SharedPtr pBuffer = create(size, bindFlags, cpuAccess, pInitData);
-        assert(pBuffer);
-
-        pBuffer->mFormat = format;
-        pBuffer->mElementCount = elementCount;
-        return pBuffer;
-    }
-
-    Buffer::SharedPtr Buffer::createStructured(
-        uint32_t structSize,
-        uint32_t elementCount,
-        ResourceBindFlags bindFlags,
-        CpuAccess cpuAccess,
-        const void* pInitData,
-        bool createCounter,
-        uint32_t offset,
-        bool maximizeResidencyPriority)
-    {
-        size_t size = structSize * elementCount;
-        Buffer::SharedPtr pBuffer = create(size, bindFlags, cpuAccess, pInitData, offset);
-        assert(pBuffer);
-
-        pBuffer->mElementCount = elementCount;
-        pBuffer->mStructSize = structSize;
-        static const uint32_t zero = 0;
-        if (createCounter)
-        {
-            pBuffer->mpUAVCounter = Buffer::create(sizeof(uint32_t), Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess, Buffer::CpuAccess::None, &zero, 0, maximizeResidencyPriority);
-        }
-        return pBuffer;
-    }
-
-    Buffer::SharedPtr Buffer::createStructured(
-        const ShaderVar& shaderVar,
-        uint32_t elementCount,
-        ResourceBindFlags bindFlags,
-        CpuAccess cpuAccess,
-        const void* pInitData,
-        bool createCounter)
-    {
-        return createStructuredFromType(shaderVar.getType().get(), "<Unknown ShaderVar>", elementCount, bindFlags, cpuAccess, pInitData, createCounter);
-    }
-
-    Buffer::SharedPtr Buffer::createStructured(
-        const Program* pProgram,
-        const std::string& name,
-        uint32_t elementCount,
-        ResourceBindFlags bindFlags,
-        CpuAccess cpuAccess,
-        const void* pInitData,
-        bool createCounter)
-    {
-        const auto& pDefaultBlock = pProgram->getReflector()->getDefaultParameterBlock();
-        const ReflectionVar* pVar = pDefaultBlock ? pDefaultBlock->getResource(name).get() : nullptr;
-        if (pVar == nullptr)
-        {
-            throw std::exception(("Can't find a structured buffer named '" + name + "' in the program").c_str());
-        }
-        return createStructuredFromType(pVar->getType().get(), name, elementCount, bindFlags, cpuAccess, pInitData, createCounter);
-    }
-
-    Buffer::SharedPtr Buffer::aliasResource(Resource::SharedPtr pBaseResource, GpuAddress offset, size_t size, Resource::BindFlags bindFlags)
-    {
-        assert(pBaseResource->asBuffer()); // Only aliasing buffers for now
-        CpuAccess cpuAccess = pBaseResource->asBuffer() ? pBaseResource->asBuffer()->getCpuAccess() : CpuAccess::None;
-        if (cpuAccess != CpuAccess::None)
-        {
-            logError("Buffer::aliasResource() - trying to alias a buffer with CpuAccess::" + to_string(cpuAccess) + " which is illegal. Aliased resource must have CpuAccess::None");
-            return nullptr;
-        }
-
-        if ((pBaseResource->getBindFlags() & bindFlags) != bindFlags)
-        {
-            logError("Buffer::aliasResource() - requested buffer bind-flags don't match the aliased resource bind flags.\nRequested = " + to_string(bindFlags) + "\nAliased = " + to_string(pBaseResource->getBindFlags()));
-            return nullptr;
-        }
-
-        if (offset >= pBaseResource->getSize() || (offset + size) >= pBaseResource->getSize())
-        {
-            logError("Buffer::aliasResource() - requested offset and size don't fit inside the alias resource dimensions. Requested size = " +
-                std::to_string(size) + ", offset = " + std::to_string(offset) + ". Aliased resource size = " + std::to_string(pBaseResource->getSize()));
-            return nullptr;
-        }
-
-        SharedPtr pBuffer = SharedPtr(new Buffer(size, bindFlags, CpuAccess::None));
-        pBuffer->mpAliasedResource = pBaseResource;
-        pBuffer->mApiHandle = pBaseResource->getApiHandle();
-        pBuffer->mGpuVaOffset = offset;
-        return pBuffer;
-    }
-
-    Buffer::SharedPtr Buffer::createFromApiHandle(ApiHandle handle, size_t size, Resource::BindFlags bindFlags, CpuAccess cpuAccess)
-    {
-        assert(handle);
-        Buffer::SharedPtr pBuffer = SharedPtr(new Buffer(size, bindFlags, cpuAccess));
-        pBuffer->mApiHandle = handle;
-        return pBuffer;
-    }
-
-    Buffer::~Buffer()
-    {
-        if (mpAliasedResource) return;
-
-        if (mDynamicData.pResourceHandle)
-        {
-            gpDevice->getUploadHeap()->release(mDynamicData);
-        }
-        else
-        {
-            gpDevice->releaseResource(mApiHandle);
-        }
-    }
-
-    template<typename ViewClass>
-    using CreateFuncType = std::function<typename ViewClass::SharedPtr(Buffer* pBuffer, uint32_t firstElement, uint32_t elementCount)>;
-
-    template<typename ViewClass, typename ViewMapType>
-    typename ViewClass::SharedPtr findViewCommon(Buffer* pBuffer, uint32_t firstElement, uint32_t elementCount, ViewMapType& viewMap, CreateFuncType<ViewClass> createFunc)
-    {
-        ResourceViewInfo view = ResourceViewInfo(firstElement, elementCount);
-
-        if (viewMap.find(view) == viewMap.end())
-        {
-            viewMap[view] = createFunc(pBuffer, firstElement, elementCount);
-        }
-
-        return viewMap[view];
-    }
-
-    ShaderResourceView::SharedPtr Buffer::getSRV(uint32_t firstElement, uint32_t elementCount)
-    {
-        auto createFunc = [](Buffer* pBuffer, uint32_t firstElement, uint32_t elementCount)
-        {
-            return ShaderResourceView::create(std::static_pointer_cast<Buffer>(pBuffer->shared_from_this()), firstElement, elementCount);
-        };
-
-        return findViewCommon<ShaderResourceView>(this, firstElement, elementCount, mSrvs, createFunc);
-    }
-
-    ShaderResourceView::SharedPtr Buffer::getSRV()
-    {
-        return getSRV(0);
-    }
-
-    UnorderedAccessView::SharedPtr Buffer::getUAV(uint32_t firstElement, uint32_t elementCount)
-    {
-        auto createFunc = [](Buffer* pBuffer, uint32_t firstElement, uint32_t elementCount)
-        {
-            return UnorderedAccessView::create(std::static_pointer_cast<Buffer>(pBuffer->shared_from_this()), firstElement, elementCount);
-        };
-
-        return findViewCommon<UnorderedAccessView>(this, firstElement, elementCount, mUavs, createFunc);
-    }
-
-    UnorderedAccessView::SharedPtr Buffer::getUAV()
-    {
-        return getUAV(0);
-    }
-
-    bool Buffer::setBlob(const void* pData, size_t offset, size_t size)
-    {
-        if (offset + size > mSize)
-        {
-            logError("Error when setting blob to buffer. Blob to large and will result in an overflow. Ignoring call");
-            return false;
-        }
-
-        if (mCpuAccess == CpuAccess::Write)
-        {
-            uint8_t* pDst = (uint8_t*)map(MapType::WriteDiscard) + offset;
-            std::memcpy(pDst, pData, size);
-        }
-        else
-        {
-            gpDevice->getRenderContext()->updateBuffer(this, pData, offset, size);
-        }
-        return true;
-    }
-
-    void* Buffer::map(MapType type)
-    {
-        if (type == MapType::Write)
-        {
-            if (mCpuAccess != CpuAccess::Write)
-            {
-                logError("Trying to map a buffer for write, but it wasn't created with the write permissions");
-                return nullptr;
-            }
-            return mDynamicData.pData;
-        }
-        else if (type == MapType::WriteDiscard)
-        {
-            if (mCpuAccess != CpuAccess::Write)
-            {
-                logError("Trying to map a buffer for write, but it wasn't created with the write permissions");
-                return nullptr;
-            }
-
-            // Allocate a new buffer
-            if (mDynamicData.pResourceHandle)
-            {
-                gpDevice->getUploadHeap()->release(mDynamicData);
-            }
-            mpCBV = nullptr;
-            mDynamicData = gpDevice->getUploadHeap()->allocate(mSize, getBufferDataAlignment(this));
-            mApiHandle = mDynamicData.pResourceHandle;
-            mGpuVaOffset = mDynamicData.offset;
-            invalidateViews();
-            return mDynamicData.pData;
-        }
-        else
-        {
-            assert(type == MapType::Read);
-
-            if (mCpuAccess == CpuAccess::Write)
-            {
-                // Buffers on the upload heap are already mapped, just return the ptr.
-                assert(mDynamicData.pResourceHandle);
-                assert(mDynamicData.pData);
-                return mDynamicData.pData;
-            }
-            else if (mCpuAccess == CpuAccess::Read)
-            {
-                assert(mBindFlags == BindFlags::None);
-                return mapBufferApi(mApiHandle, mSize);
-            }
-            else
-            {
-                // For buffers without CPU access we must copy the contents to a staging buffer.
-                logWarning("Buffer::map() performance warning - using staging resource which require us to flush the pipeline and wait for the GPU to finish its work");
-                if (mpStagingResource == nullptr)
-                {
-                    mpStagingResource = Buffer::create(mSize, Buffer::BindFlags::None, Buffer::CpuAccess::Read, nullptr);
-                }
-
-                // Copy the buffer and flush the pipeline
-                RenderContext* pContext = gpDevice->getRenderContext();
-                assert(mGpuVaOffset == 0);
-                pContext->copyResource(mpStagingResource.get(), this);
-                pContext->flush(true);
-                return mpStagingResource->map(MapType::Read);
-            }
-        }
-    }
-
-    ConstantBufferView::SharedPtr Buffer::getCBV()
-    {
-        if (!mpCBV) mpCBV = ConstantBufferView::create(std::static_pointer_cast<Buffer>(shared_from_this()));
-        return mpCBV;
-    }
-
-    SCRIPT_BINDING(Buffer)
-    {
-        pybind11::class_<Buffer, Buffer::SharedPtr>(m, "Buffer");
+        FALCOR_CHECK(mStructSize > 0, "Can't create a counter buffer with struct size of 0.");
+        mpUAVCounter = make_ref<Buffer>(
+            mpDevice,
+            sizeof(uint32_t),
+            sizeof(uint32_t),
+            ResourceFormat::Unknown,
+            ResourceBindFlags::UnorderedAccess,
+            MemoryType::DeviceLocal,
+            &zero
+        );
     }
 }
+
+// TODO: Its wasteful to create a buffer just to replace it afterwards with the supplied one!
+Buffer::Buffer(ref<Device> pDevice, gfx::IBufferResource* pResource, size_t size, ResourceBindFlags bindFlags, MemoryType memoryType)
+    : Buffer(pDevice, size, 0, ResourceFormat::Unknown, bindFlags, memoryType, nullptr)
+{
+    FALCOR_ASSERT(pResource);
+    mGfxBufferResource = pResource;
+}
+
+inline Slang::ComPtr<gfx::IBufferResource> gfxResourceFromNativeHandle(
+    Device* pDevice,
+    NativeHandle handle,
+    size_t size,
+    ResourceBindFlags bindFlags,
+    MemoryType memoryType
+)
+{
+    gfx::IBufferResource::Desc bufDesc = {};
+    prepareGFXBufferDesc(bufDesc, size, 0, ResourceFormat::Unknown, bindFlags, memoryType);
+
+    gfx::InteropHandle gfxNativeHandle = {};
+#if FALCOR_HAS_D3D12
+    if (pDevice->getType() == Device::Type::D3D12 && handle.getType() == NativeHandleType::ID3D12Resource)
+    {
+        gfxNativeHandle.api = gfx::InteropHandleAPI::D3D12;
+        gfxNativeHandle.handleValue = reinterpret_cast<uint64_t>(handle.as<ID3D12Resource*>());
+    }
+#endif
+#if FALCOR_HAS_VULKAN
+    if (pDevice->getType() == Device::Type::Vulkan && handle.getType() == NativeHandleType::VkBuffer)
+    {
+        gfxNativeHandle.api = gfx::InteropHandleAPI::Vulkan;
+        gfxNativeHandle.handleValue = reinterpret_cast<uint64_t>(handle.as<VkBuffer>());
+    }
+#endif
+
+    if (gfxNativeHandle.api == gfx::InteropHandleAPI::Unknown)
+        FALCOR_THROW("Unknown native handle type");
+
+    Slang::ComPtr<gfx::IBufferResource> gfxBuffer;
+    FALCOR_GFX_CALL(pDevice->getGfxDevice()->createBufferFromNativeHandle(gfxNativeHandle, bufDesc, gfxBuffer.writeRef()));
+
+    return gfxBuffer;
+}
+
+Buffer::Buffer(ref<Device> pDevice, NativeHandle handle, size_t size, ResourceBindFlags bindFlags, MemoryType memoryType)
+    : Buffer(pDevice, gfxResourceFromNativeHandle(pDevice.get(), handle, size, bindFlags, memoryType), size, bindFlags, memoryType)
+{}
+
+Buffer::~Buffer()
+{
+    mpDevice->releaseResource(mGfxBufferResource);
+}
+
+gfx::IResource* Buffer::getGfxResource() const
+{
+    return mGfxBufferResource;
+}
+
+ref<ShaderResourceView> Buffer::getSRV(uint64_t offset, uint64_t size)
+{
+    ResourceViewInfo view = ResourceViewInfo(offset, size);
+
+    if (mSrvs.find(view) == mSrvs.end())
+        mSrvs[view] = ShaderResourceView::create(getDevice().get(), this, offset, size);
+
+    return mSrvs[view];
+}
+
+ref<ShaderResourceView> Buffer::getSRV()
+{
+    return getSRV(0);
+}
+
+ref<UnorderedAccessView> Buffer::getUAV(uint64_t offset, uint64_t size)
+{
+    ResourceViewInfo view = ResourceViewInfo(offset, size);
+
+    if (mUavs.find(view) == mUavs.end())
+        mUavs[view] = UnorderedAccessView::create(getDevice().get(), this, offset, size);
+
+    return mUavs[view];
+}
+
+ref<UnorderedAccessView> Buffer::getUAV()
+{
+    return getUAV(0);
+}
+
+void Buffer::setBlob(const void* pData, size_t offset, size_t size)
+{
+    FALCOR_CHECK(offset + size <= mSize, "'offset' ({}) and 'size' ({}) don't fit the buffer size {}.", offset, size, mSize);
+
+    if (mMemoryType == MemoryType::Upload)
+    {
+        bool wasMapped = mMappedPtr != nullptr;
+        uint8_t* pDst = (uint8_t*)map() + offset;
+        std::memcpy(pDst, pData, size);
+        if (!wasMapped)
+            unmap();
+        // TODO we should probably use a barrier instead
+        invalidateViews();
+    }
+    else if (mMemoryType == MemoryType::DeviceLocal)
+    {
+        mpDevice->getRenderContext()->updateBuffer(this, pData, offset, size);
+    }
+    else if (mMemoryType == MemoryType::ReadBack)
+    {
+        FALCOR_THROW("Cannot set data to a buffer that was created with MemoryType::ReadBack.");
+    }
+}
+
+void Buffer::getBlob(void* pData, size_t offset, size_t size) const
+{
+    FALCOR_CHECK(offset + size <= mSize, "'offset' ({}) and 'size' ({}) don't fit the buffer size {}.", offset, size, mSize);
+
+    if (mMemoryType == MemoryType::ReadBack)
+    {
+        bool wasMapped = mMappedPtr != nullptr;
+        const uint8_t* pSrc = (const uint8_t*)map() + offset;
+        std::memcpy(pData, pSrc, size);
+        if (!wasMapped)
+            unmap();
+    }
+    else if (mMemoryType == MemoryType::DeviceLocal)
+    {
+        mpDevice->getRenderContext()->readBuffer(this, pData, offset, size);
+    }
+    else if (mMemoryType == MemoryType::Upload)
+    {
+        FALCOR_THROW("Cannot get data from a buffer that was created with MemoryType::Upload.");
+    }
+}
+
+void* Buffer::map() const
+{
+    FALCOR_CHECK(
+        mMemoryType == MemoryType::Upload || mMemoryType == MemoryType::ReadBack,
+        "Trying to map a buffer that wasn't created with the upload or readback flags."
+    );
+
+    if (!mMappedPtr)
+        FALCOR_GFX_CALL(mGfxBufferResource->map(nullptr, &mMappedPtr));
+
+    return mMappedPtr;
+}
+
+void Buffer::unmap() const
+{
+    if (mMappedPtr)
+    {
+        FALCOR_GFX_CALL(mGfxBufferResource->unmap(nullptr));
+        mMappedPtr = nullptr;
+    }
+}
+
+bool Buffer::adjustSizeOffsetParams(size_t& size, size_t& offset) const
+{
+    if (offset >= mSize)
+    {
+        logWarning("Buffer::adjustSizeOffsetParams() - offset is larger than the buffer size.");
+        return false;
+    }
+
+    if (offset + size > mSize)
+    {
+        logWarning("Buffer::adjustSizeOffsetParams() - offset + size will cause an OOB access. Clamping size");
+        size = mSize - offset;
+    }
+    return true;
+}
+
+uint64_t Buffer::getGpuAddress() const
+{
+    return mGfxBufferResource->getDeviceAddress();
+}
+
+#if FALCOR_HAS_CUDA
+cuda_utils::ExternalMemory* Buffer::getCudaMemory() const
+{
+    if (!mCudaMemory)
+        mCudaMemory = make_ref<cuda_utils::ExternalMemory>(ref<Resource>(const_cast<Buffer*>(this)));
+    return mCudaMemory.get();
+}
+#endif
+
+inline pybind11::ndarray<pybind11::numpy> buffer_to_numpy(const Buffer& self)
+{
+    size_t bufferSize = self.getSize();
+    void* cpuData = new uint8_t[bufferSize];
+    self.getBlob(cpuData, 0, bufferSize);
+
+    pybind11::capsule owner(cpuData, [](void* p) noexcept { delete[] reinterpret_cast<uint8_t*>(p); });
+
+    if (auto dtype = resourceFormatToDtype(self.getFormat()))
+    {
+        uint32_t channelCount = getFormatChannelCount(self.getFormat());
+        if (channelCount == 1)
+        {
+            pybind11::size_t shape[1] = {self.getElementCount()};
+            return pybind11::ndarray<pybind11::numpy>(cpuData, 1, shape, owner, nullptr, *dtype, pybind11::device::cpu::value);
+        }
+        else
+        {
+            pybind11::size_t shape[2] = {self.getElementCount(), channelCount};
+            return pybind11::ndarray<pybind11::numpy>(cpuData, 2, shape, owner, nullptr, *dtype, pybind11::device::cpu::value);
+        }
+    }
+    else
+    {
+        pybind11::size_t shape[1] = {bufferSize};
+        return pybind11::ndarray<pybind11::numpy>(
+            cpuData, 1, shape, owner, nullptr, pybind11::dtype<uint8_t>(), pybind11::device::cpu::value
+        );
+    }
+}
+
+inline void buffer_from_numpy(Buffer& self, pybind11::ndarray<pybind11::numpy> data)
+{
+    FALCOR_CHECK(isNdarrayContiguous(data), "numpy array is not contiguous");
+
+    size_t bufferSize = self.getSize();
+    size_t dataSize = getNdarrayByteSize(data);
+    FALCOR_CHECK(dataSize <= bufferSize, "numpy array is larger than the buffer ({} > {})", dataSize, bufferSize);
+
+    self.setBlob(data.data(), 0, dataSize);
+}
+
+#if FALCOR_HAS_CUDA
+inline pybind11::ndarray<pybind11::pytorch> buffer_to_torch(const Buffer& self, std::vector<size_t> shape, DataType dtype)
+{
+    cuda_utils::ExternalMemory* cudaMemory = self.getCudaMemory();
+
+    return pybind11::ndarray<pybind11::pytorch>(
+        cudaMemory->getMappedData(), shape.size(), shape.data(), nullptr, nullptr, dataTypeToDtype(dtype), pybind11::device::cuda::value
+    );
+}
+
+inline void buffer_from_torch(Buffer& self, pybind11::ndarray<pybind11::pytorch> data)
+{
+    FALCOR_CHECK(isNdarrayContiguous(data), "torch tensor is not contiguous");
+    FALCOR_CHECK(data.device_type() == pybind11::device::cuda::value, "torch tensor is not on the device");
+
+    cuda_utils::ExternalMemory* cudaMemory = self.getCudaMemory();
+    size_t dataSize = getNdarrayByteSize(data);
+    FALCOR_CHECK(dataSize <= cudaMemory->getSize(), "torch tensor is larger than the buffer ({} > {})", dataSize, cudaMemory->getSize());
+
+    cuda_utils::memcpyDeviceToDevice(cudaMemory->getMappedData(), data.data(), dataSize);
+}
+
+inline void buffer_copy_to_torch(Buffer& self, pybind11::ndarray<pybind11::pytorch>& data)
+{
+    FALCOR_CHECK(isNdarrayContiguous(data), "torch tensor is not contiguous");
+    FALCOR_CHECK(data.device_type() == pybind11::device::cuda::value, "torch tensor is not on the device");
+
+    cuda_utils::ExternalMemory* cudaMemory = self.getCudaMemory();
+    size_t dataSize = getNdarrayByteSize(data);
+    FALCOR_CHECK(dataSize >= cudaMemory->getSize(), "torch tensor is smaller than the buffer ({} < {})", dataSize, cudaMemory->getSize());
+
+    cuda_utils::memcpyDeviceToDevice(data.data(), cudaMemory->getMappedData(), dataSize);
+}
+#endif
+
+FALCOR_SCRIPT_BINDING(Buffer)
+{
+    using namespace pybind11::literals;
+
+    FALCOR_SCRIPT_BINDING_DEPENDENCY(Types)
+    FALCOR_SCRIPT_BINDING_DEPENDENCY(Resource)
+
+    pybind11::falcor_enum<MemoryType>(m, "MemoryType");
+
+    pybind11::class_<Buffer, Resource, ref<Buffer>> buffer(m, "Buffer");
+    buffer.def_property_readonly("memory_type", &Buffer::getMemoryType);
+    buffer.def_property_readonly("size", &Buffer::getSize);
+    buffer.def_property_readonly("is_typed", &Buffer::isTyped);
+    buffer.def_property_readonly("is_structured", &Buffer::isStructured);
+    buffer.def_property_readonly("format", &Buffer::getFormat);
+    buffer.def_property_readonly("element_count", &Buffer::getElementCount);
+    buffer.def_property_readonly("struct_size", &Buffer::getStructSize);
+
+    buffer.def("to_numpy", buffer_to_numpy);
+    buffer.def("from_numpy", buffer_from_numpy, "data"_a);
+#if FALCOR_HAS_CUDA
+    buffer.def("to_torch", buffer_to_torch, "shape"_a, "dtype"_a = DataType::float32);
+    buffer.def("from_torch", buffer_from_torch, "data"_a);
+    buffer.def("copy_to_torch", buffer_copy_to_torch, "data"_a);
+#endif
+}
+} // namespace Falcor

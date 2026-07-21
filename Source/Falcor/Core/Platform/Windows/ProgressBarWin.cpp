@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,103 +25,90 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
-#include "Core/Platform/ProgressBar.h"
+#include "../ProgressBar.h"
+#include "../OS.h"
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <CommCtrl.h>
 #include <random>
+#include <thread>
 
 namespace Falcor
 {
-    struct ProgressBarData
-    {
-        HWND hwnd;
-        std::random_device rd;
-        std::mt19937 rng;
-        std::uniform_int_distribution<int> dist;
-        std::thread thread;
-        bool running = true;
-    };
+struct ProgressBar::Window
+{
+    bool running;
+    std::thread thread;
 
-    void ProgressBar::close()
+    Window(const std::string& msg)
     {
-        if(spData)
-        {
-            spData->running = false;
-            spData->thread.join();
-            DestroyWindow(spData->hwnd);
-            safe_delete(spData);
-        }
+        running = true;
+        thread = std::thread(threadFunc, this, msg);
     }
 
-    bool ProgressBar::isActive()
+    ~Window()
     {
-        return spData != nullptr;
+        running = false;
+        thread.join();
     }
 
-    void progressBarThread(ProgressBarData* pData, const ProgressBar::MessageList& msgList, uint32_t delayInMs)
+    static void threadFunc(ProgressBar::Window* pThis, std::string msgText)
     {
-        if(delayInMs)
-        {
-            Sleep(delayInMs);
-        }
-        if (pData->running == false) return;
-
         // Create the window
         int w = 200;
         int h = 60;
         int x = (GetSystemMetrics(SM_CXSCREEN) - w) / 2;
         int y = (GetSystemMetrics(SM_CYSCREEN) - h) / 2;
-        pData->hwnd = CreateWindowEx(0, PROGRESS_CLASS, nullptr, WS_VISIBLE | PBS_MARQUEE, x, y, w, h, nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
+        HWND hwnd = CreateWindowEx(
+            0, PROGRESS_CLASS, nullptr, WS_VISIBLE | PBS_MARQUEE, x, y, w, h, nullptr, nullptr, GetModuleHandle(nullptr), nullptr
+        );
 
-        if (msgList.size())
-        {
-            SetWindowTextA(pData->hwnd, msgList[0].c_str());
-            // Initialize the random-number generator
-            pData->rng = std::mt19937(pData->rd());
-            pData->dist = std::uniform_int_distribution<int>(0, (int)msgList.size() - 1);
-        }
-        else
-        {
-            SetWindowTextA(pData->hwnd, "Loading...");
-        }
-        SetForegroundWindow(pData->hwnd);
-        setWindowIcon("Framework\\Nvidia.ico", pData->hwnd);
+        SetWindowTextA(hwnd, msgText.c_str());
+        SetForegroundWindow(hwnd);
+        setWindowIcon(getRuntimeDirectory() / "data/framework/nvidia.ico", hwnd);
 
         // Execute
-        int j = 0;
-        while (pData->running)
+        while (pThis->running)
         {
-            SendMessage(pData->hwnd, PBM_STEPIT, 0, 0);
-            SendMessage(pData->hwnd, WM_PAINT, 0, 0);
+            SendMessage(hwnd, PBM_STEPIT, 0, 0);
+            SendMessage(hwnd, WM_PAINT, 0, 0);
             Sleep(50);
-            if (j == 50 && msgList.size())
-            {
-                j = 0;
-                SetWindowTextA(pData->hwnd, msgList[pData->dist(pData->rng)].c_str());
-            }
             MSG msg;
-            while (PeekMessage(&msg, pData->hwnd, 0, 0, PM_REMOVE))
+            while (PeekMessage(&msg, hwnd, 0, 0, PM_REMOVE))
             {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
-
-            j++;
         }
+
+        DestroyWindow(hwnd);
     }
+};
 
-    void ProgressBar::platformInit(const MessageList& list, uint32_t delayInMs)
-    {
-        spData = new ProgressBarData;
-
-        // Initialize the common controls
-        INITCOMMONCONTROLSEX init;
-        init.dwSize = sizeof(INITCOMMONCONTROLSEX);
-        init.dwICC = ICC_PROGRESS_CLASS;
-        InitCommonControlsEx(&init);
-
-        // Start the thread
-        spData->thread = std::thread(progressBarThread, spData, list, delayInMs);
-
-    }
+ProgressBar::ProgressBar()
+{
+    // Initialize the common controls
+    INITCOMMONCONTROLSEX init;
+    init.dwSize = sizeof(INITCOMMONCONTROLSEX);
+    init.dwICC = ICC_PROGRESS_CLASS;
+    InitCommonControlsEx(&init);
 }
+
+ProgressBar::~ProgressBar()
+{
+    close();
+}
+
+void ProgressBar::show(const std::string& msg)
+{
+    close();
+    mpWindow = std::make_unique<Window>(msg);
+}
+
+void ProgressBar::close()
+{
+    mpWindow.reset();
+}
+} // namespace Falcor

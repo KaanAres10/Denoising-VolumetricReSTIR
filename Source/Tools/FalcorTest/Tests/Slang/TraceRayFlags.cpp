@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -29,48 +29,52 @@
 
 namespace Falcor
 {
-    namespace
-    {
-        uint32_t getRayFlags1_0()
-        {
-            return D3D12_RAY_FLAG_NONE |
-                D3D12_RAY_FLAG_FORCE_OPAQUE |
-                D3D12_RAY_FLAG_FORCE_NON_OPAQUE |
-                D3D12_RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
-                D3D12_RAY_FLAG_SKIP_CLOSEST_HIT_SHADER |
-                D3D12_RAY_FLAG_CULL_BACK_FACING_TRIANGLES |
-                D3D12_RAY_FLAG_CULL_FRONT_FACING_TRIANGLES |
-                D3D12_RAY_FLAG_CULL_OPAQUE |
-                D3D12_RAY_FLAG_CULL_NON_OPAQUE;
-        }
-#if 0
-        uint32_t getRayFlags1_1()
-        {
-            return getRayFlags1_0() |
-                D3D12_RAY_FLAG_SKIP_TRIANGLES |
-                D3D12_RAY_FLAG_SKIP_PROCEDURAL_PRIMITIVES;
-        }
-#endif
-        void testRayFlags(GPUUnitTestContext& ctx, uint32_t expected, const Program::DefineList& defines, const std::string& shaderModel)
-        {
-            ctx.createProgram("Tests/Slang/TraceRayFlags.cs.slang", "testRayFlags", defines, Shader::CompilerFlags::None, shaderModel);
-            ctx.allocateStructuredBuffer("result", 1);
-            ctx.runProgram(1, 1, 1);
+namespace
+{
+void testRayFlags(GPUUnitTestContext& ctx, bool useDXR_1_1)
+{
+    std::vector<uint32_t> expected = {
+        (uint32_t)RayFlags::None,
+        (uint32_t)RayFlags::ForceOpaque,
+        (uint32_t)RayFlags::ForceNonOpaque,
+        (uint32_t)RayFlags::AcceptFirstHitAndEndSearch,
+        (uint32_t)RayFlags::SkipClosestHitShader,
+        (uint32_t)RayFlags::CullBackFacingTriangles,
+        (uint32_t)RayFlags::CullFrontFacingTriangles,
+        (uint32_t)RayFlags::CullOpaque,
+        (uint32_t)RayFlags::CullNonOpaque,
+    };
 
-            const uint32_t result = *ctx.mapBuffer<const uint32_t>("result");
-            EXPECT_EQ(result, expected);
-            ctx.unmapBuffer("result");
-        }
+    DefineList defines;
+    ShaderModel shaderModel = ShaderModel::SM6_3;
+
+    if (useDXR_1_1)
+    {
+        expected.push_back((uint32_t)RayFlags::SkipTriangles);
+        expected.push_back((uint32_t)RayFlags::SkipProceduralPrimitives);
+        defines.add("DXR_1_1");
+        shaderModel = ShaderModel::SM6_5;
     }
 
-    GPU_TEST(TraceRayFlagsDXR1_0)
+    ctx.createProgram("Tests/Slang/TraceRayFlags.cs.slang", "testRayFlags", defines, SlangCompilerFlags::None, shaderModel);
+    ctx.allocateStructuredBuffer("result", (uint32_t)expected.size());
+    ctx.runProgram(1, 1, 1);
+
+    std::vector<uint32_t> result = ctx.readBuffer<uint32_t>("result");
+    for (size_t i = 0; i < expected.size(); ++i)
     {
-        testRayFlags(ctx, getRayFlags1_0(), {}, "6_3");
+        EXPECT_EQ(result[i], expected[i]);
     }
-#if 0
-    GPU_TEST(TraceRayFlagsDXR1_1, "Requires shader model 6.5")
-    {
-        testRayFlags(ctx, getRayFlags1_1(), { { "DXR_1_1", ""} }, "6_5");
-    }
-#endif
 }
+} // namespace
+
+GPU_TEST(TraceRayFlagsDXR1_0)
+{
+    testRayFlags(ctx, false);
+}
+
+GPU_TEST(TraceRayFlagsDXR1_1)
+{
+    testRayFlags(ctx, true);
+}
+} // namespace Falcor

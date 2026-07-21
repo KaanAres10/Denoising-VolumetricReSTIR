@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-21, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -35,15 +35,18 @@ BEGIN_NAMESPACE_FALCOR
 struct CameraData
 {
     float4x4 viewMat;                   ///< Camera view matrix.
-    float4x4 invViewMat;                ///< Inverse Camera view matrix.
+    float4x4 prevViewMat;               ///< Camera view matrix associated to previous frame.
     float4x4 projMat;                   ///< Camera projection matrix.
     float4x4 viewProjMat;               ///< Camera view-projection matrix.
     float4x4 invViewProj;               ///< Camera inverse view-projection matrix.
     float4x4 viewProjMatNoJitter;       ///< Camera view-projection matrix. No jittering is applied!
     float4x4 prevViewProjMatNoJitter;   ///< Camera view-projection matrix associated to previous frame. No jittering is applied!
+    float4x4 projMatNoJitter;           ///< Camera projection matrix. No jittering is applied!
 
     float3   posW                   = float3(0, 0, 0);          ///< Camera world-space position.
     float    focalLength            = 21.0f;                    ///< Camera focal length in mm. Default is 59 degree vertical, 90 horizontal FOV at 16:9 aspect ratio.
+    float3   prevPosW               = float3(0, 0, 0);          ///< Camera world-space position associated to previous frame.
+    float    _padding0;
     float3   up                     = float3(0, 1, 0);          ///< Camera world-space up vector.
     float    aspectRatio            = 1.7777777f;               ///< Camera film frame aspect ratio, equal to frameWidth / frameHeight
     float3   target                 = float3(0, 0, -1);         ///< Camera target point in world-space.
@@ -61,7 +64,8 @@ struct CameraData
     float    apertureRadius         = 0.0f;                     ///< Camera aperture radius in scene units.
     float    shutterSpeed           = 0.004f;                   ///< Camera shutter speed in seconds.
     float    ISOSpeed               = 100.0f;                   ///< Camera film speed based on ISO standards.
-    float2    _padding;
+    float   _padding1;
+    float   _padding2;
 };
 
 END_NAMESPACE_FALCOR

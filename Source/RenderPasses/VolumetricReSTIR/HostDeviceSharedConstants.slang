@@ -2,17 +2,17 @@
 #include "Falcor.h"
 #endif
 
-static const uint kMISNone = 0;
-static const uint kMISTalbot = 1;
+static const uint32_t kMISNone = 0;
+static const uint32_t kMISTalbot = 1;
 
-static const uint kHammersley = 0;
-static const uint kR2 = 1;
+static const uint32_t kHammersley = 0;
+static const uint32_t kR2 = 1;
 
-static const uint kRatioTracking = 0;
-static const uint kAnalyticTracking = 1;
-static const uint kRayMarching = 2;
-static const uint kResidualRatioTracking = 3;
-static const uint kAnalogResidualRatioTracking = 4;
+static const uint32_t kRatioTracking = 0;
+static const uint32_t kAnalyticTracking = 1;
+static const uint32_t kRayMarching = 2;
+static const uint32_t kResidualRatioTracking = 3;
+static const uint32_t kAnalogResidualRatioTracking = 4;
 
 static const int MaxInitialSampleCount = 4;
 

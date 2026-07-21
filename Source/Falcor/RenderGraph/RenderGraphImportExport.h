@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,30 +27,37 @@
  **************************************************************************/
 #pragma once
 #include "RenderGraph.h"
+#include "Core/Macros.h"
+#include <filesystem>
+#include <string>
+#include <vector>
 
 namespace Falcor
 {
-    class dlldecl RenderGraphImporter
-    {
-    public:
-        /** Import a graph from a file.
-            \param[in] graphName The name of the graph to import
-            \param[in] filename  The graphs filename. If the string is empty, the function will search for a file called `<graphName>.py`
-            \param[in] funcName  The function name inside the graph script. If the string is empty, will try invoking a function called `render_graph_<graphName>()`
-            \return A new render-graph object or nullptr if something went horribly wrong
-        */
-        static RenderGraph::SharedPtr import(std::string graphName, std::string filename = {}, std::string funcName = {});
+class FALCOR_API RenderGraphImporter
+{
+public:
+    /**
+     * Import a graph from a file.
+     * @param[in] graphName The name of the graph to import
+     * @param[in] path The graphs file path. If the path is empty, the function will search for a file called `<graphName>.py`
+     * @param[in] funcName The function name inside the graph script. If the string is empty, will try invoking a function called
+     * `render_graph_<graphName>()`
+     * @return A new render-graph object or nullptr if something went horribly wrong
+     */
+    static ref<RenderGraph> import(std::string graphName, std::filesystem::path path = {}, std::string funcName = {});
 
-        /** Import all the graphs found in the script's global namespace
-        */
-        static std::vector <RenderGraph::SharedPtr> importAllGraphs(const std::string& filename);
-    };
+    /**
+     * Import all the graphs found in the script's global namespace
+     */
+    static std::vector<ref<RenderGraph>> importAllGraphs(const std::filesystem::path& path);
+};
 
-    class dlldecl RenderGraphExporter
-    {
-    public:
-        static std::string getIR(const RenderGraph::SharedPtr& pGraph);
-        static std::string getFuncName(const std::string& graphName);
-        static bool save(const RenderGraph::SharedPtr& pGraph, std::string filename = {});
-    };
-}
+class FALCOR_API RenderGraphExporter
+{
+public:
+    static std::string getIR(const ref<RenderGraph>& pGraph);
+    static std::string getFuncName(const std::string& graphName);
+    static bool save(const ref<RenderGraph>& pGraph, std::filesystem::path path = {});
+};
+} // namespace Falcor

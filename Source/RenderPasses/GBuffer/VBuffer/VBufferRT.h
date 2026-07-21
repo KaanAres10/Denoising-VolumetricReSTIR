@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -31,37 +31,55 @@
 
 using namespace Falcor;
 
-/** Ray traced V-buffer pass.
-
-    This pass renders a visibility buffer using ray tracing.
-    The visibility buffer encodes the mesh instance ID and primitive index,
-    as well as the barycentrics at the hit point.
-*/
+/**
+ * Ray traced V-buffer pass.
+ *
+ * This pass renders a visibility buffer using ray tracing.
+ * The visibility buffer encodes the mesh instance ID and primitive index,
+ * as well as the barycentrics at the hit point.
+ */
 class VBufferRT : public GBufferBase
 {
 public:
-    using SharedPtr = std::shared_ptr<VBufferRT>;
+    FALCOR_PLUGIN_CLASS(VBufferRT, "VBufferRT", "Ray traced V-buffer generation pass.");
 
-    static SharedPtr create(RenderContext* pRenderContext, const Dictionary& dict);
+    static ref<VBufferRT> create(ref<Device> pDevice, const Properties& props) { return make_ref<VBufferRT>(pDevice, props); }
+
+    VBufferRT(ref<Device> pDevice, const Properties& props);
 
     RenderPassReflection reflect(const CompileData& compileData) override;
-    void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
     void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
-    std::string getDesc(void) override { return kDesc; }
+    void renderUI(Gui::Widgets& widget) override;
+    Properties getProperties() const override;
+    void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
 
 private:
-    VBufferRT(const Dictionary& dict);
+    void parseProperties(const Properties& props) override;
+
+    void executeRaytrace(RenderContext* pRenderContext, const RenderData& renderData);
+    void executeCompute(RenderContext* pRenderContext, const RenderData& renderData);
+
+    DefineList getShaderDefines(const RenderData& renderData) const;
+    void bindShaderData(const ShaderVar& var, const RenderData& renderData);
+    void recreatePrograms();
 
     // Internal state
-    SampleGenerator::SharedPtr mpSampleGenerator;
-    uint32_t mFrameCount = 0;
+
+    /// Flag indicating if depth-of-field is computed for the current frame.
+    bool mComputeDOF = false;
+    ref<SampleGenerator> mpSampleGenerator;
+
+    // UI variables
+
+    bool mUseTraceRayInline = false;
+    /// Option for enabling depth-of-field when camera's aperture radius is nonzero.
+    bool mUseDOF = true;
 
     struct
     {
-        RtProgram::SharedPtr pProgram;
-        RtProgramVars::SharedPtr pVars;
+        ref<Program> pProgram;
+        ref<RtProgramVars> pVars;
     } mRaytrace;
 
-    static const char* kDesc;
-    friend void getPasses(Falcor::RenderPassLibrary& lib);
+    ref<ComputePass> mpComputePass;
 };

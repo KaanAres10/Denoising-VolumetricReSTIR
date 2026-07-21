@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,35 +27,41 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
+#include "Core/SampleApp.h"
+#include "Core/Pass/RasterPass.h"
 
 using namespace Falcor;
 
-class HelloDXR : public IRenderer
+class HelloDXR : public SampleApp
 {
 public:
+    HelloDXR(const SampleAppConfig& config);
+    ~HelloDXR();
+
     void onLoad(RenderContext* pRenderContext) override;
-    void onFrameRender(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo) override;
-    void onResizeSwapChain(uint32_t width, uint32_t height) override;
+    void onResize(uint32_t width, uint32_t height) override;
+    void onFrameRender(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo) override;
+    void onGuiRender(Gui* pGui) override;
     bool onKeyEvent(const KeyboardEvent& keyEvent) override;
     bool onMouseEvent(const MouseEvent& mouseEvent) override;
-    void onGuiRender(Gui* pGui) override;
 
 private:
-    RasterScenePass::SharedPtr mpRasterPass;
-    Scene::SharedPtr mpScene;
+    void loadScene(const std::filesystem::path& path, const Fbo* pTargetFbo);
+    void setPerFrameVars(const Fbo* pTargetFbo);
+    void renderRaster(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo);
+    void renderRT(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo);
 
-    RtProgram::SharedPtr mpRaytraceProgram = nullptr;
-    Camera::SharedPtr mpCamera;
+    ref<Scene> mpScene;
+    ref<Camera> mpCamera;
+
+    ref<RasterPass> mpRasterPass;
+
+    ref<Program> mpRaytraceProgram;
+    ref<RtProgramVars> mpRtVars;
+    ref<Texture> mpRtOut;
 
     bool mRayTrace = true;
     bool mUseDOF = false;
-    RtProgramVars::SharedPtr mpRtVars;
-    //RtSceneRenderer::SharedPtr mpRtRenderer;
-    Texture::SharedPtr mpRtOut;
 
     uint32_t mSampleIndex = 0xdeadbeef;
-
-    void setPerFrameVars(const Fbo* pTargetFbo);
-    void renderRT(RenderContext* pContext, const Fbo* pTargetFbo);
-    void loadScene(const std::string& filename, const Fbo* pTargetFbo);
 };

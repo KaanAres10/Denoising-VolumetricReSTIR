@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,93 +27,31 @@
  **************************************************************************/
 #include "GBuffer.h"
 
+namespace Falcor
+{
+// Update 'mtlData' channel format if size changes.
+// Note: Currently, we only store the first 8 bytes of the material header.
+static_assert(sizeof(MaterialHeader) == 16);
+} // namespace Falcor
+
 // List of primary GBuffer channels. These correspond to the render targets
 // used in the GBufferRaster pixel shader. Note that channel order should
 // correspond to SV_TARGET index order.
-const ChannelList GBuffer::kGBufferChannels =
-{
-    { "posW",           "gPosW",            "world space position",         true /* optional */, ResourceFormat::RGBA32Float },
-    { "normW",          "gNormW",           "world space normal",           true /* optional */, ResourceFormat::RGBA32Float },
-    { "tangentW",       "gTangentW",        "world space tangent",          true /* optional */, ResourceFormat::RGBA32Float },
-    { "texC",           "gTexC",            "texture coordinates",          true /* optional */, ResourceFormat::RGBA32Float },
-    { "diffuseOpacity", "gDiffuseOpacity",  "diffuse color and opacity",    true /* optional */, ResourceFormat::RGBA32Float },
-    { "specRough",      "gSpecRough",       "specular color and roughness", true /* optional */, ResourceFormat::RGBA32Float },
-    { "emissive",       "gEmissive",        "emissive color",               true /* optional */, ResourceFormat::RGBA32Float },
-    { "matlExtra",      "gMatlExtra",       "additional material data",     true /* optional */, ResourceFormat::RGBA32Float },
+const ChannelList GBuffer::kGBufferChannels = {
+    // clang-format off
+    { "posW",           "gPosW",            "Position in world space",                           true /* optional */, ResourceFormat::RGBA32Float },
+    { "normW",          "gNormW",           "Shading normal in world space",                     true /* optional */, ResourceFormat::RGBA32Float },
+    { "tangentW",       "gTangentW",        "Shading tangent in world space (xyz) and sign (w)", true /* optional */, ResourceFormat::RGBA32Float },
+    { "faceNormalW",    "gFaceNormalW",     "Face normal in world space",                        true /* optional */, ResourceFormat::RGBA32Float },
+    { "texC",           "gTexC",            "Texture coordinate",                                true /* optional */, ResourceFormat::RG32Float   },
+    { "texGrads",       "gTexGrads",        "Texture gradients (ddx, ddy)",                      true /* optional */, ResourceFormat::RGBA16Float },
+    { "mvec",           "gMotionVector",    "Motion vector",                                     true /* optional */, ResourceFormat::RG32Float   },
+    { "mtlData",        "gMaterialData",    "Material data (ID, header.x, header.y, lobes)",     true /* optional */, ResourceFormat::RGBA32Uint  },
+    // clang-format on
 };
 
-namespace
+GBuffer::GBuffer(ref<Device> pDevice) : GBufferBase(pDevice)
 {
-    // Scripting options.
-    const char kForceCullMode[] = "forceCullMode";
-    const char kCullMode[] = "cull";
-
-    // UI variables.
-    const Gui::DropdownList kCullModeList =
-    {
-        { (uint32_t)RasterizerState::CullMode::None, "None" },
-        { (uint32_t)RasterizerState::CullMode::Back, "Back" },
-        { (uint32_t)RasterizerState::CullMode::Front, "Front" },
-    };
-}
-
-GBuffer::GBuffer() : mGBufferParams{}
-{
-    assert(kGBufferChannels.size() == 8); // The list of primary GBuffer channels should contain 8 entries, corresponding to the 8 render targets.
-}
-
-void GBuffer::parseDictionary(const Dictionary& dict)
-{
-    GBufferBase::parseDictionary(dict);
-
-    for (const auto& [key, value] : dict)
-    {
-        if (key == kForceCullMode) mForceCullMode = value;
-        else if (key == kCullMode) mCullMode = value;
-        // TODO: Check for unparsed fields, including those parsed in base classes.
-    }
-}
-
-Dictionary GBuffer::getScriptingDictionary()
-{
-    Dictionary dict = GBufferBase::getScriptingDictionary();
-    dict[kForceCullMode] = mForceCullMode;
-    dict[kCullMode] = mCullMode;
-    return dict;
-}
-
-void GBuffer::renderUI(Gui::Widgets& widget)
-{
-    // Render the base class UI first.
-    GBufferBase::renderUI(widget);
-
-    // Cull mode controls.
-    mOptionsChanged |= widget.checkbox("Force cull mode", mForceCullMode);
-    widget.tooltip("Enable this option to force the same cull mode for all geometry.\n\n"
-        "Otherwise the default for rasterization is to set the cull mode automatically based on triangle winding, and for ray tracing to disable culling.", true);
-
-    if (mForceCullMode)
-    {
-        uint32_t cullMode = (uint32_t)mCullMode;
-        if (widget.dropdown("Cull mode", kCullModeList, cullMode))
-        {
-            setCullMode((RasterizerState::CullMode)cullMode);
-            mOptionsChanged = true;
-        }
-    }
-}
-
-void GBuffer::compile(RenderContext* pContext, const CompileData& compileData)
-{
-    GBufferBase::compile(pContext, compileData);
-
-    mGBufferParams.frameSize = mFrameDim;
-    mGBufferParams.invFrameSize = mInvFrameDim;
-}
-
-void GBuffer::setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene)
-{
-    GBufferBase::setScene(pRenderContext, pScene);
-
-    mGBufferParams.frameCount = 0;
+    // The list of primary GBuffer channels should contain 8 entries, corresponding to the 8 render targets.
+    FALCOR_ASSERT(kGBufferChannels.size() == 8);
 }

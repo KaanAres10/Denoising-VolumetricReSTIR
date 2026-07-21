@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,46 +25,46 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-import Utils.Helpers;
+import Scene.Material.MaterialData;
+import Utils.Geometry.GeometryHelpers;
+import Utils.Math.ShadingFrame;
 
-/** This struct holds all the data for shading a specific hit point. This consists of:
-    - Geometric data
-    - Preprocessed material properties (fetched from constants/textures)
-    - BSDF lobes to be evaluated/sampled
+/** This struct holds information needed for shading a hit point.
+
+    This includes:
+    - Geometric properties of the surface.
+    - View direction.
+    - Texture coordinates.
+    - Material ID and header.
+    - Index of refraction of the surrounding medium.
+
+    Based on a ShadingData struct, the material system can be queried
+    for a material instance at the hit using `gScene.materials.getMaterialInstance()`.
+    The material instance has interfaces for sampling and evaluation, as well as for
+    querying its properties at the hit.
 */
-struct ShadingData
+struct ShadingData : IDifferentiable
 {
-    float3  posW;                   ///< Shading hit position in world space
-    float3  V;                      ///< Direction to the eye at shading hit
-    float3  N;                      ///< Shading normal at shading hit
-    float3  T;                      ///< Shading tangent at shading hit
-    float3  B;                      ///< Shading bitangent at shading hit
-    float2  uv;                     ///< Texture mapping coordinates
-    float   NdotV;                  // Unclamped, can be negative.
+    // Geometry data
+    float3  posW;                       ///< Shading hit position in world space.
+    float3  V;                          ///< View direction, -incident direction (-ray.dir)
+    float2  uv;                         ///< Texture mapping coordinates.
 
-    // Primitive data
-    float3  faceN;                  ///< Face normal in world space, always on the front-facing side.
-    bool    frontFacing;            ///< True if primitive seen from the front-facing side.
-    bool    doubleSided;            ///< Material double-sided flag, if false only shade front face.
+    ShadingFrame frame;                 ///< Smooth interpolated shading frame in world space at the shading point. The normal is *not* automatically flipped for backfacing hits.
+    no_diff float3  faceN;              ///< Face normal in world space, always on the front-facing side.
+    no_diff float4  tangentW;           ///< Geometric tangent (xyz) and sign (w) in world space. This is used for orthogonalization. Not normalized, but it is guaranteed to be nonzero and sign (w) is +-1.0.
+    bool            frontFacing;        ///< True if primitive seen from the front-facing side, i.e., dot(V, faceN) >= 0.0.
+    no_diff float   curveRadius;        ///< Curve cross-sectional radius. Valid only for geometry generated from curves.
 
-    // Pre-loaded texture data
-    uint    materialID;             ///< Material ID at shading location.
-    float3  diffuse;                ///< Diffuse albedo.
-    float   opacity;
-    float3  specular;               ///< Specular albedo.
-    float   linearRoughness;        ///< This is the original roughness, before re-mapping.
-    float   ggxAlpha;               ///< DEPRECATED: This is the re-mapped roughness value, which should be used for GGX computations. It equals `roughness^2`
-    float3  emissive;
-    float4  occlusion;
-    float   IoR;                    ///< Index of refraction of the medium "behind" the surface.
-    float   metallic;               ///< Metallic parameter, blends between dielectric and conducting BSDFs.
-    float   specularTransmission;   ///< Specular transmission, blends between opaque dielectric BRDF and specular transmissive BSDF.
-    float   eta;                    ///< Relative index of refraction (incident IoR / transmissive IoR).
+    // Material data
+    MaterialHeader mtl;                 ///< Material header data.
+    uint    materialID;                 ///< Material ID at shading location.
+    float   IoR;                        ///< Index of refraction for the medium on the front-facing side (i.e. "outside" the material at the hit).
 
-    // Sampling/evaluation data
-    uint    activeLobes;            ///< BSDF lobes to include for sampling and evaluation. See LobeType in BxDFTypes.slang.
+    uint materialGradOffset;            ///< Offset to the material gradient in the gradient buffer.
+    uint geometryGradOffset;            ///< Offset to the geometry gradient in the gradient buffer.
+    uint threadID;                      ///< Thread ID for gradient aggregation with a hash grid.
 
-    [mutating] void setActiveLobes(uint lobes) { activeLobes = lobes; }
 
     // Utility functions
 
@@ -74,8 +74,16 @@ struct ShadingData
         \param[in] viewside True if the origin should be on the view side (reflection) or false otherwise (transmission).
         \return Ray origin of the new ray.
     */
-    float3 computeNewRayOrigin(bool viewside = true)
+    float3 computeRayOrigin(bool viewside = true)
     {
         return computeRayOrigin(posW, (frontFacing == viewside) ? faceN : -faceN);
+    }
+
+    /** Returns the oriented face normal.
+        \return Face normal flipped to the same side as the view vector.
+    */
+    float3 getOrientedFaceNormal()
+    {
+        return frontFacing ? faceN : -faceN;
     }
 };

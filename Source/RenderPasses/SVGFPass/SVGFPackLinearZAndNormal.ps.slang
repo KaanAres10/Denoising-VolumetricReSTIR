@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,8 +25,6 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-import Scene.ShadingData;
-import Utils.Helpers;
 import Utils.Math.MathHelpers;
 import SVGFCommon;
 
@@ -44,4 +42,3 @@ float4 main(FullScreenPassVsOut vsOut) : SV_TARGET0
     const float2 nPacked = ndir_to_oct_snorm(gNormal[ipos].xyz);
     return float4(gLinearZ[ipos].xy, nPacked.x, nPacked.y);
 }
-

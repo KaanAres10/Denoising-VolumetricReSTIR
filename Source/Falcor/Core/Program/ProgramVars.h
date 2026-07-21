@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,125 +26,103 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include "Core/API/RootSignature.h"
-#include "ShaderVar.h"
+#include "RtBindingTable.h"
+#include "Core/Macros.h"
+#include "Core/API/fwd.h"
+#include "Core/API/ParameterBlock.h"
+#include "Core/API/ShaderTable.h"
+#include <memory>
+#include <vector>
 
 namespace Falcor
 {
-    class GraphicsProgram;
-    class ComputeProgram;
-    class ComputeContext;
+class Program;
+class ComputeContext;
 
-    class dlldecl EntryPointGroupVars  : public ParameterBlock
+/**
+ * This class manages a program's reflection and variable assignment.
+ * It's a high-level abstraction of variables-related concepts such as CBs, texture and sampler assignments, root-signature, descriptor
+ * tables, etc.
+ */
+class FALCOR_API ProgramVars : public ParameterBlock
+{
+public:
+    /**
+     * Create a new graphics vars object.
+     * @param[in] pDevice GPU device.
+     * @param[in] pReflector A program reflection object containing the requested declarations.
+     * @return A new object, or an exception is thrown if creation failed.
+     */
+    static ref<ProgramVars> create(ref<Device> pDevice, const ref<const ProgramReflection>& pReflector);
+
+    /**
+     * Create a new graphics vars object.
+     * @param[in] pDevice GPU device.
+     * @param[in] pProg A program containing the requested declarations. The active version of the program is used.
+     * @return A new object, or an exception is thrown if creation failed.
+     */
+    static ref<ProgramVars> create(ref<Device> pDevice, const Program* pProg);
+
+    /**
+     * Get the program reflection interface
+     */
+    const ref<const ProgramReflection>& getReflection() const { return mpReflector; }
+
+protected:
+    ProgramVars(ref<Device> pDevice, const ref<const ProgramReflection>& pReflector);
+
+    ref<const ProgramReflection> mpReflector;
+};
+
+class RtStateObject;
+
+/**
+ * This class manages a raytracing program's reflection and variable assignment.
+ */
+class FALCOR_API RtProgramVars : public ProgramVars
+{
+public:
+    /**
+     * Create a new ray tracing vars object.
+     * @param[in] pDevice GPU device.
+     * @param[in] pProgram The ray tracing program.
+     * @param[in] pBindingTable The raytracing binding table.
+     * @return A new object, or an exception is thrown if creation failed.
+     */
+    static ref<RtProgramVars> create(ref<Device> pDevice, const ref<Program>& pProgram, const ref<RtBindingTable>& pBindingTable);
+
+    bool prepareShaderTable(RenderContext* pCtx, RtStateObject* pRtso);
+
+    ShaderTablePtr getShaderTable() const { return mpShaderTable; }
+    uint32_t getMissVarsCount() const { return uint32_t(mMissVars.size()); }
+    uint32_t getTotalHitVarsCount() const { return uint32_t(mHitVars.size()); }
+    uint32_t getRayTypeCount() const { return mRayTypeCount; }
+    uint32_t getGeometryCount() const { return mGeometryCount; }
+
+    const std::vector<int32_t>& getUniqueEntryPointGroupIndices() const { return mUniqueEntryPointGroupIndices; }
+
+private:
+    struct EntryPointGroupInfo
     {
-    public:
-        using SharedPtr = ParameterBlockSharedPtr<EntryPointGroupVars>;
-        using SharedConstPtr = std::shared_ptr<const EntryPointGroupVars>;
-
-        /** Create a new entry point group vars object.
-            \param[in] pReflector The reflection object.
-            \param[in] groupIndexInProgram Group index.
-            \return New object, or throws an exception if creation failed.
-        */
-        static SharedPtr create(const EntryPointGroupReflection::SharedConstPtr& pReflector, uint32_t groupIndexInProgram)
-        {
-            assert(pReflector);
-            return SharedPtr(new EntryPointGroupVars(pReflector, groupIndexInProgram));
-        }
-
-        uint32_t getGroupIndexInProgram() const { return mGroupIndexInProgram; }
-
-    protected:
-        EntryPointGroupVars(const EntryPointGroupReflection::SharedConstPtr& pReflector, uint32_t groupIndexInProgram)
-            : ParameterBlock(pReflector->getProgramVersion(), pReflector)
-            , mGroupIndexInProgram(groupIndexInProgram)
-        {
-            assert(pReflector);
-        }
-
-    private:
-        uint32_t mGroupIndexInProgram;
+        int32_t entryPointGroupIndex = -1;
     };
 
-    /** This class manages a program's reflection and variable assignment.
-        It's a high-level abstraction of variables-related concepts such as CBs, texture and sampler assignments, root-signature, descriptor tables, etc.
-    */
-    class dlldecl ProgramVars : public ParameterBlock
-    {
-    public:
-        using SharedPtr = ParameterBlockSharedPtr<ProgramVars>;
-        using SharedConstPtr = std::shared_ptr<const ProgramVars>;
+    using VarsVector = std::vector<EntryPointGroupInfo>;
 
-        /** Get the program reflection interface
-        */
-        const ProgramReflection::SharedConstPtr& getReflection() const { return mpReflector; }
+    RtProgramVars(ref<Device> pDevice, const ref<Program>& pProgram, const ref<RtBindingTable>& pBindingTable);
 
-        virtual bool updateSpecializationImpl() const override;
+    void init(const ref<RtBindingTable>& pBindingTable);
 
-        uint32_t getEntryPointGroupCount() const { return uint32_t(mpEntryPointGroupVars.size()); }
-        EntryPointGroupVars* getEntryPointGroupVars(uint32_t index) const
-        {
-            return mpEntryPointGroupVars[index].get();
-        }
+    uint32_t mRayTypeCount = 0;                         ///< Number of ray types (= number of hit groups per geometry).
+    uint32_t mGeometryCount = 0;                        ///< Number of geometries.
+    std::vector<int32_t> mUniqueEntryPointGroupIndices; ///< Indices of all unique entry point groups that we use in the associated program.
 
-    protected:
-        ProgramVars(const ProgramReflection::SharedConstPtr& pReflector);
+    mutable ShaderTablePtr mpShaderTable;                    ///< GPU shader table.
+    mutable RtStateObject* mpCurrentRtStateObject = nullptr; ///< The RtStateObject used to create the current shader table.
 
-        ProgramReflection::SharedConstPtr mpReflector;
+    VarsVector mRayGenVars;
+    VarsVector mMissVars;
+    VarsVector mHitVars;
+};
 
-        void addSimpleEntryPointGroups();
-
-        std::vector<EntryPointGroupVars::SharedPtr> mpEntryPointGroupVars;
-    };
-
-    class dlldecl GraphicsVars : public ProgramVars
-    {
-    public:
-        using SharedPtr = ParameterBlockSharedPtr<GraphicsVars>;
-        using SharedConstPtr = std::shared_ptr<const GraphicsVars>;
-
-        /** Create a new graphics vars object.
-            \param[in] pReflector A program reflection object containing the requested declarations.
-            \return A new object, or an exception is thrown if creation failed.
-        */
-        static SharedPtr create(const ProgramReflection::SharedConstPtr& pReflector);
-
-        /** Create a new graphics vars object.
-            \param[in] pProg A program containing the requested declarations. The active version of the program is used.
-            \return A new object, or an exception is thrown if creation failed.
-        */
-        static SharedPtr create(const GraphicsProgram* pProg);
-
-        virtual bool apply(RenderContext* pContext, bool bindRootSig, RootSignature* pRootSignature);
-
-    protected:
-        GraphicsVars(const ProgramReflection::SharedConstPtr& pReflector);
-    };
-
-    template<bool forGraphics>
-    bool applyProgramVarsCommon(ParameterBlock* pVars, CopyContext* pContext, bool bindRootSig, RootSignature* pRootSignature);
-
-    class dlldecl ComputeVars : public ProgramVars
-    {
-    public:
-        using SharedPtr = ParameterBlockSharedPtr<ComputeVars>;
-        using SharedConstPtr = std::shared_ptr<const ComputeVars>;
-
-        /** Create a new compute vars object.
-            \param[in] pReflector A program reflection object containing the requested declarations.
-            \return A new object, or an exception is thrown if creation failed.
-        */
-        static SharedPtr create(const ProgramReflection::SharedConstPtr& pReflector);
-
-        /** Create a new compute vars object.
-            \param[in] pProg A program containing the requested declarations. The active version of the program is used.
-            \return A new object, or an exception is thrown if creation failed.
-        */
-        static SharedPtr create(const ComputeProgram* pProg);
-
-        virtual bool apply(ComputeContext* pContext, bool bindRootSig, RootSignature* pRootSignature);
-
-    protected:
-        ComputeVars(const ProgramReflection::SharedConstPtr& pReflector);
-    };
-}
+} // namespace Falcor

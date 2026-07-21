@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,29 +27,23 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
-#include "FalcorExperimental.h"
+#include "Core/Pass/FullScreenPass.h"
+#include "RenderGraph/RenderPass.h"
 
 using namespace Falcor;
 
-#ifdef BUILD_GAUSSIAN_PASS
-#define dllpassdecl __declspec(dllexport)
-#else
-#define dllpassdecl __declspec(dllimport)
-#endif
-
-extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary& lib);
-
-class dllpassdecl GaussianBlur : public RenderPass
+class GaussianBlur : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<GaussianBlur>;
+    FALCOR_PLUGIN_CLASS(GaussianBlur, "GaussianBlur", "Gaussian blur.");
 
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
+    static ref<GaussianBlur> create(ref<Device> pDevice, const Properties& props) { return make_ref<GaussianBlur>(pDevice, props); }
 
-    std::string getDesc() override { return kDesc; }
-    virtual Dictionary getScriptingDictionary() override;
+    GaussianBlur(ref<Device> pDevice, const Properties& props);
+
+    virtual Properties getProperties() const override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
-    virtual void compile(RenderContext* pContext, const CompileData& compileData) override;
+    virtual void compile(RenderContext* pRenderContext, const CompileData& compileData) override;
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
 
@@ -58,21 +52,18 @@ public:
     uint32_t getKernelWidth() { return mKernelWidth; }
     float getSigma() { return mSigma; }
 
+    static void registerBindings(pybind11::module& m);
+
 private:
-    GaussianBlur();
     uint32_t mKernelWidth = 5;
     float mSigma = 2.0f;
     bool mReady = false;
     void createTmpFbo(const Texture* pSrc);
     void updateKernel();
 
-    FullScreenPass::SharedPtr mpHorizontalBlur;
-    FullScreenPass::SharedPtr mpVerticalBlur;
-    Fbo::SharedPtr mpFbo;
-    Fbo::SharedPtr mpTmpFbo;
-    Sampler::SharedPtr mpSampler;
-
-    static const char* kDesc;
-    static void registerBindings(pybind11::module& m);
-    friend void getPasses(Falcor::RenderPassLibrary& lib);
+    ref<FullScreenPass> mpHorizontalBlur;
+    ref<FullScreenPass> mpVerticalBlur;
+    ref<Fbo> mpFbo;
+    ref<Fbo> mpTmpFbo;
+    ref<Sampler> mpSampler;
 };

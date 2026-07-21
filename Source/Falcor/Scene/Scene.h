@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,125 +26,113 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include "Core/API/VAO.h"
-#include "Animation/Animation.h"
-#include "Lights/Light.h"
-#include "Lights/LightProbe.h"
-#include "Camera/Camera.h"
-#include "Material/Material.h"
-#include "Utils/Math/AABB.h"
-#include "Animation/AnimationController.h"
-#include "Camera/CameraController.h"
-#include "Experimental/Scene/Lights/LightCollection.h"
-#include "Experimental/Scene/Lights/EnvMap.h"
+#include "SceneIDs.h"
 #include "SceneTypes.slang"
-#include "Scene/ParticleSystem/ParticleSystem.h"
-#include "Scene/ParticleSystemManager.h"
-#include "Scene/CurveFileLoader.h"
+#include "HitInfo.h"
+#include "IScene.h"
+#include "Animation/Animation.h"
+#include "Animation/AnimationController.h"
+#include "Displacement/DisplacementUpdateTask.slang"
+#include "Lights/Light.h"
+#include "Lights/LightCollection.h"
+#include "Lights/LightProfile.h"
+#include "Lights/EnvMap.h"
+#include "Camera/Camera.h"
+#include "Camera/CameraController.h"
+#include "Material/MaterialSystem.h"
+#include "Volume/GridVolume.h"
+#include "Volume/Grid.h"
+#include "SDFs/SDFGrid.h"
+
+#include "Core/Macros.h"
+#include "Core/Object.h"
+#include "Core/API/VAO.h"
+#include "Core/API/RtAccelerationStructure.h"
+#include "Utils/Math/AABB.h"
+#include "Utils/Math/Rectangle.h"
+#include "Utils/Math/Vector.h"
+#include "Utils/Math/Matrix.h"
+#include "Utils/UI/Gui.h"
+#include "Utils/Settings/Settings.h"
+#include "Utils/SplitBuffer.h"
+
+#include <sigs/sigs.h>
+
+#include <functional>
+#include <memory>
+#include <type_traits>
+#include <optional>
+#include <string>
+#include <filesystem>
+#include <vector>
+#include <pybind11/pybind11.h>
 
 namespace Falcor
 {
-    class RtProgramVars;
+    struct MouseEvent;
+    struct KeyboardEvent;
+    struct GamepadEvent;
+    struct GamepadState;
 
-    /** DXR Scene and Resources Layout:
-        - BLAS creation logic is similar to Falcor 3.0, and are grouped in the following order:
-            1) For non-instanced meshes, group them if they use the same scene graph transform matrix. One BLAS is created per group.
-                a) It is possible a non-instanced mesh has no other meshes to merge with. In that case, the mesh goes in its own BLAS.
-            2) For instanced meshes, one BLAS is created per mesh.
+    class RtProgramVars;
+    class GVDBVolumeManager; // Volumetric ReSTIR GVDB volume subsystem (Scene/GVDB/SceneGVDB.h)
+
+    /** This class is the main scene representation.
+        It holds all scene resources such as geometry, cameras, lights, and materials.
+
+        DXR Scene and Resources Layout:
+        - BLAS creation logic:
+            1) For static non-instanced meshes, pre-transform and group them into single BLAS.
+                a) This can be overridden by the 'RTDontMergeStatic' scene build flag.
+            2) For dynamic non-instanced meshes, group them if they use the same scene graph transform matrix. One BLAS is created per group.
+                a) This can be overridden by the 'RTDontMergeDynamic' scene build flag.
+                b) It is possible a non-instanced mesh has no other meshes to merge with. In that case, the mesh goes in its own BLAS.
+            3) For instanced meshes, one BLAS is created per group of mesh with identical instances.
+                a) This can be overridden by the 'RTDontMergeInstanced' scene build flag.
+            4) Procedural primitives are placed in their own BLAS at the end.
 
         - TLAS Construction:
             - Hit shaders use InstanceID() and GeometryIndex() to identify what was hit.
             - InstanceID is set like a starting offset so that (InstanceID + GeometryIndex) maps to unique indices.
-            - Shader table has one hit group per mesh. InstanceContribution is set accordingly for correct lookup.
+            - Shader table has one hit group per geometry and ray type. InstanceContribution is set accordingly for correct lookup.
 
-        Acceleration Structure Layout Example (Scene with 8 meshes, 10 instances total):
+        Acceleration Structure Layout Example (Scene with 11 geometries, 16 instances total):
 
-                               ----------------------------------------------------------------
-                               |                            Value(s)                          |
-        ---------------------------------------------------------------------------------------
-        | InstanceID           |  0                    |  4  |  5  |  6  |  7  |  8  |  9     |  7 INSTANCE_DESCs in TLAS
-        | InstanceContribution |  0                    |  4  |  5  |  6  |  7  |  7  |  7     |  Helps look up one hit group per MESH
-        | BLAS Geometry Index  |  0  ,  1  ,  2  ,  3  |  0  |  0  |  0  |  0                 |  5 BLAS's containing 8 meshes total
-        ---------------------------------------------------------------------------------------
-        | Notes                | Meshes merged into    | One instance    | Multiple instances |
-        |                      | one BLAS              | per mesh        | of a mesh          |
-        --------------------------------------------------------------------------------------|
+                               ----------------------------------------------------------------------------------------------
+                               |                                         Value(s)                                           |
+        ---------------------------------------------------------------------------------------------------------------------
+        | InstanceID           |  0                    |  4  |  5  |  6  |  7  |  8  |  9     |  10          |  13          |   9 INSTANCE_DESCs in TLAS
+        | InstanceContribution |  0                    |  4  |  5  |  6  |  7  |  7  |  7     |  8           |  8           |   Helps look up one hit group per geometry and ray type
+        | BLAS Geometry Index  |  0  ,  1  ,  2  ,  3  |  0  |  0  |  0  |  0                 |  0 , 1 , 2   |  0 , 1 , 2   |   6 BLAS's containing 11 geometries in total
+        ---------------------------------------------------------------------------------------------------------------------
+        | Notes                | Four geometries in    | One instance    | Multiple instances | Two instances of three      |
+        |                      | one BLAS              | per geom/BLAS   | of same geom/BLAS  | geometries in one BLAS      |
+        --------------------------------------------------------------------------------------------------------------------|
 
-        - "InstanceID() + GeometryIndex()" is used for indexing into MeshInstanceData.
-        - This is wrapped in getGlobalHitID() in Raytracing.slang.
+        - "InstanceID() + GeometryIndex()" is used for indexing into GeometryInstanceData.
+        - This is wrapped in getGeometryInstanceID() in Raytracing.slang.
     */
-
-    class dlldecl Scene : public std::enable_shared_from_this<Scene>
+    class FALCOR_API Scene : public IScene
     {
+        FALCOR_OBJECT(Scene)
     public:
-        friend class CurveFileLoader;
+        using GeometryType = ::Falcor::GeometryType;
+        using GeometryTypeFlags = ::Falcor::GeometryTypeFlags;
 
-        using SharedPtr = std::shared_ptr<Scene>;
-        using LightList = std::vector<Light::SharedPtr>;
-        static const uint32_t kMaxBonesPerVertex = 4;
+        using UpDirection = CameraController::UpDirection;
 
-        static const FileDialogFilterVec& getFileExtensionFilters();
+        using SplitVertexBuffer = SplitBuffer<PackedStaticVertexData, false>;
+        using SplitIndexBuffer = SplitBuffer<uint32_t, true>;
 
-        static SharedPtr create(const std::string& filename);
+        static constexpr uint32_t kMaxBonesPerVertex = 4;
+        static constexpr uint32_t kInvalidAttributeIndex = -1;
 
-        // #SCENE: we should get rid of this. We can't right now because we can't create a structured-buffer of materials (MaterialData contains textures)
-        Shader::DefineList getSceneDefines() const;
-
-        /** Render settings determining how the scene is rendered.
-            This is used primarily by the path tracer renderers.
-        */
-        struct RenderSettings
-        {
-            bool useEnvLight = true;        ///< Enable distant lighting from environment map.
-            bool useAnalyticLights = true;  ///< Enable lighting from analytic lights.
-            bool useEmissiveLights = true;  ///< Enable lighting from emissive lights.
-
-            bool operator==(const RenderSettings& other) const
-            {
-                return (useEnvLight == other.useEnvLight) &&
-                    (useAnalyticLights == other.useAnalyticLights) &&
-                    (useEmissiveLights == other.useEmissiveLights);
-            }
-
-            bool operator!=(const RenderSettings& other) const { return !(*this == other); }
-        };
-
-        enum class RenderFlags
-        {
-            None                    = 0x0,
-            UserRasterizerState     = 0x1,  ///< Use the rasterizer state currently bound to `pState`. If this flag is not set, the default rasterizer state will be used.
-                                            ///< Note that we need to change the rasterizer state during rendering because some meshes have a negative scale factor, and hence the triangles will have a different winding order.
-                                            ///< If such meshes exist, overriding the state may result in incorrect rendering output
-        };
-
-        /** Flags indicating if and what was updated in the scene
-        */
-        enum class UpdateFlags
-        {
-            None                        = 0x0,   ///< Nothing happened
-            MeshesMoved                 = 0x1,   ///< Meshes moved
-            CameraMoved                 = 0x2,   ///< The camera moved
-            CameraPropertiesChanged     = 0x4,   ///< Some camera properties changed, excluding position
-            CameraSwitched              = 0x8,   ///< Selected a different camera
-            LightsMoved                 = 0x10,  ///< Lights were moved
-            LightIntensityChanged       = 0x20,  ///< Light intensity changed
-            LightPropertiesChanged      = 0x40,  ///< Other light changes not included in LightIntensityChanged and LightsMoved
-            SceneGraphChanged           = 0x80,  ///< Any transform in the scene graph changed.
-            LightCollectionChanged      = 0x100, ///< Light collection changed (mesh lights)
-            MaterialsChanged            = 0x200, ///< Materials changed
-            EnvMapChanged               = 0x400, ///< Environment map changed (check EnvMap::getChanges() for more specific information)
-            LightCountChanged           = 0x800, ///< Number of active lights changed
-            RenderSettingsChanged       = 0x1000,///< Render settings changed
-
-            All                         = -1
-        };
-
-        /** Settings for how the scene is updated
+        /** Settings for how the scene ray tracing acceleration structures are updated.
         */
         enum class UpdateMode
         {
-            Rebuild,    ///< Recreate acceleration structure when updates are needed
-            Refit       ///< Update acceleration structure when updates are needed
+            Rebuild,    ///< Recreate acceleration structure when updates are needed.
+            Refit       ///< Update acceleration structure when updates are needed.
         };
 
         enum class CameraControllerType
@@ -154,9 +142,311 @@ namespace Falcor
             SixDOF
         };
 
+        enum class SDFGridIntersectionMethod : uint32_t
+        {
+            None = 0,
+            GridSphereTracing = 1,
+            VoxelSphereTracing = 2,
+        };
+
+        enum class SDFGridGradientEvaluationMethod : uint32_t
+        {
+            None = 0,
+            NumericDiscontinuous = 1,
+            NumericContinuous = 2,
+        };
+
+        struct SDFGridConfig
+        {
+            SDFGrid::Type implementation = SDFGrid::Type::None;
+            SDFGridIntersectionMethod intersectionMethod = SDFGridIntersectionMethod::None;
+            SDFGridGradientEvaluationMethod gradientEvaluationMethod = SDFGridGradientEvaluationMethod::None;
+            uint32_t solverMaxIterations = 0;
+            bool optimizeVisibilityRays = false;
+
+            // Implementation specific data.
+            union ImplementationData
+            {
+                struct
+                {
+                    uint32_t virtualBrickCoordsBitCount;
+                    uint32_t brickLocalVoxelCoordsBitCount;
+                } SBS;
+
+                struct
+                {
+                    uint32_t svoIndexBitCount;
+                } SVO;
+            } implementationData;
+
+            Gui::DropdownList intersectionMethodList;
+            Gui::DropdownList gradientEvaluationMethodList;
+
+            bool operator==(const SDFGridConfig& other) const
+            {
+                return
+                    (intersectionMethod == other.intersectionMethod) &&
+                    (gradientEvaluationMethod == other.gradientEvaluationMethod) &&
+                    (solverMaxIterations == other.solverMaxIterations) &&
+                    (optimizeVisibilityRays == other.optimizeVisibilityRays);
+            }
+
+            bool operator!=(const SDFGridConfig& other) const { return !(*this == other); }
+        };
+
+        /** Optional importer-provided rendering metadata
+         */
+        struct Metadata
+        {
+            std::optional<float> fNumber;                       ///< Lens aperture.
+            std::optional<float> filmISO;                       ///< Film speed.
+            std::optional<float> shutterSpeed;                  ///< (Reciprocal) shutter speed.
+            std::optional<uint32_t> samplesPerPixel;            ///< Number of primary samples per pixel.
+            std::optional<uint32_t> maxDiffuseBounces;          ///< Maximum number of diffuse bounces.
+            std::optional<uint32_t> maxSpecularBounces;         ///< Maximum number of specular bounces.
+            std::optional<uint32_t> maxTransmissionBounces;     ///< Maximum number of transmission bounces.
+            std::optional<uint32_t> maxVolumeBounces;           ///< Maximum number of volume bounces.
+        };
+
+        struct SDFGridDesc
+        {
+            SdfGridID  sdfGridID;               ///< The raw SDF grid ID.
+            MaterialID materialID;              ///< The material ID.
+            std::vector<NodeID> instances;      ///< All instances using this SDF grid desc.
+        };
+
+        /** Represents a group of meshes.
+            The meshes are geometries in the same ray tracing bottom-level acceleration structure (BLAS).
+        */
+        struct MeshGroup
+        {
+            std::vector<MeshID> meshList;       ///< List of meshId's that are part of the group.
+            bool isStatic = false;              ///< True if group represents static non-instanced geometry.
+            bool isDisplaced = false;           ///< True if group uses displacement mapping.
+        };
+
+        /** Scene graph node.
+        */
+        struct Node
+        {
+            Node() = default;
+            Node(const std::string& n, NodeID p, const float4x4& t, const float4x4& mb, const float4x4& l2b) : name(n), parent(p), transform(t), meshBind(mb), localToBindSpace(l2b) {};
+            std::string name;
+            NodeID parent{ NodeID::Invalid() };
+            float4x4 transform;         ///< The node's transformation matrix.
+            float4x4 meshBind;          ///< For skinned meshes. Mesh world space transform at bind time.
+            float4x4 localToBindSpace;  ///< For bones. Skeleton to bind space transformation. AKA the inverse-bind transform.
+        };
+
+        /** Full set of required data to create a scene object.
+            This data is typically prepared by SceneBuilder before creating a Scene object.
+        */
+        struct SceneData
+        {
+            using ImportDict = std::map<std::string, std::string>;
+            std::vector<std::filesystem::path> importPaths;         ///< Paths of the asset files the scene was loaded from.
+            std::vector<ImportDict> importDicts;                    ///< Dictionaries used to load each asset in importPaths.
+            RenderSettings renderSettings;                          ///< Render settings.
+            std::vector<ref<Camera>> cameras;                       ///< List of cameras.
+            uint32_t selectedCamera = 0;                            ///< Index of selected camera.
+            float cameraSpeed = 1.f;                                ///< Camera speed.
+            std::vector<ref<Light>> lights;                         ///< List of light sources.
+            std::unique_ptr<MaterialSystem> pMaterials;             ///< Material system. This holds data and resources for all materials.
+            std::vector<ref<GridVolume>> gridVolumes;               ///< List of grid volumes.
+            std::vector<ref<Grid>> grids;                           ///< List of grids.
+            ref<EnvMap> pEnvMap;                                    ///< Environment map.
+            std::vector<Node> sceneGraph;                           ///< Scene graph nodes.
+            std::vector<ref<Animation>> animations;                 ///< List of animations.
+            Metadata metadata;                                      ///< Scene meadata.
+
+            // Mesh data
+            std::vector<MeshDesc> meshDesc;                         ///< List of mesh descriptors.
+            std::vector<std::string> meshNames;                     ///< List of mesh names.
+            std::vector<AABB> meshBBs;                              ///< List of mesh bounding boxes in object space.
+            std::vector<GeometryInstanceData> meshInstanceData;     ///< List of mesh instances.
+            std::vector<std::vector<uint32_t>> meshIdToInstanceIds; ///< Mapping of what instances belong to which mesh.
+            std::vector<MeshGroup> meshGroups;                      ///< List of mesh groups. Each group maps to a BLAS for ray tracing.
+            std::vector<CachedMesh> cachedMeshes;                   ///< Cached data for vertex-animated meshes.
+            uint32_t prevVertexCount = 0;                           ///< Number of vertices that the AnimationController needs to allocate to store previous frame vertices.
+
+            bool useCompressedHitInfo = false;                      ///< True if scene should used compressed HitInfo (on scenes with triangles meshes only).
+            bool has16BitIndices = false;                           ///< True if 16-bit mesh indices are used.
+            bool has32BitIndices = false;                           ///< True if 32-bit mesh indices are used.
+            uint32_t meshDrawCount = 0;                             ///< Number of meshes to draw.
+
+            /// Vertex indices for all meshes in either 32-bit or 16-bit format packed tightly, decided per mesh.
+            SplitIndexBuffer meshIndexData;
+            /// Vertex attributes for all meshes in packed format.
+            SplitVertexBuffer meshStaticData;
+            /// Additional vertex attributes for skinned meshes.
+            std::vector<SkinningVertexData> meshSkinningData;
+
+            // Curve data
+            std::vector<CurveDesc> curveDesc;                       ///< List of curve descriptors.
+            std::vector<AABB> curveBBs;                             ///< List of curve bounding boxes in object space. Each curve consists of many segments, each with its own AABB. The bounding boxes here are the unions of those.
+            std::vector<GeometryInstanceData> curveInstanceData;    ///< List of curve instances.
+
+            std::vector<uint32_t> curveIndexData;                   ///< Vertex indices for all curves in 32-bit.
+            std::vector<StaticCurveVertexData> curveStaticData;     ///< Vertex attributes for all curves.
+            std::vector<CachedCurve> cachedCurves;                  ///< Vertex cache for dynamic (vertex animated) curves.
+
+            // SDF grid data
+            std::vector<ref<SDFGrid>> sdfGrids;                     ///< List of SDF grids.
+            std::vector<SDFGridDesc> sdfGridDesc;                   ///< List of SDF grid descriptors.
+            std::vector<GeometryInstanceData> sdfGridInstances;     ///< List of SDG grid instances.
+            uint32_t sdfGridMaxLODCount = 0;                        ///< The max LOD count of any SDF grid.
+
+            // Custom primitive data
+            std::vector<CustomPrimitiveDesc> customPrimitiveDesc;   ///< Custom primitive descriptors.
+            std::vector<AABB> customPrimitiveAABBs;                 ///< List of AABBs for custom primitives in world space. Each custom primitive consists of one AABB.
+        };
+
+        /** Statistics.
+        */
+        struct SceneStats
+        {
+            // Geometry stats
+            uint64_t meshCount = 0;                     ///< Number of meshes.
+            uint64_t meshInstanceCount = 0;             ///< Number if mesh instances.
+            uint64_t meshInstanceOpaqueCount = 0;       ///< Number if mesh instances that are opaque.
+            uint64_t transformCount = 0;                ///< Number of transform matrices.
+            uint64_t uniqueTriangleCount = 0;           ///< Number of unique triangles. A triangle can exist in multiple instances.
+            uint64_t uniqueVertexCount = 0;             ///< Number of unique vertices. A vertex can be referenced by multiple triangles/instances.
+            uint64_t instancedTriangleCount = 0;        ///< Number of instanced triangles. This is the total number of rendered triangles.
+            uint64_t instancedVertexCount = 0;          ///< Number of instanced vertices. This is the total number of vertices in the rendered triangles.
+            uint64_t indexMemoryInBytes = 0;            ///< Total memory in bytes used by the index buffer.
+            uint64_t vertexMemoryInBytes = 0;           ///< Total memory in bytes used by the vertex buffer.
+            uint64_t geometryMemoryInBytes = 0;         ///< Total memory in bytes used by the geometry data (meshes, curves, custom primitives, instances etc.).
+            uint64_t animationMemoryInBytes = 0;        ///< Total memory in bytes used by the animation system (transforms, skinning buffers).
+
+            // Curve stats
+            uint64_t curveCount = 0;                    ///< Number of curves.
+            uint64_t curveInstanceCount = 0;            ///< Number of curve instances.
+            uint64_t uniqueCurveSegmentCount = 0;       ///< Number of unique curve segments (linear tube segments by default). A segment can exist in multiple instances.
+            uint64_t uniqueCurvePointCount = 0;         ///< Number of unique curve points. A point can be referenced by multiple segments/instances.
+            uint64_t instancedCurveSegmentCount = 0;    ///< Number of instanced curve segments (linear tube segments by default). This is the total number of rendered segments.
+            uint64_t instancedCurvePointCount = 0;      ///< Number of instanced curve points. This is the total number of end points in the rendered segments.
+            uint64_t curveIndexMemoryInBytes = 0;       ///< Total memory in bytes used by the curve index buffer.
+            uint64_t curveVertexMemoryInBytes = 0;      ///< Total memory in bytes used by the curve vertex buffer.
+
+            // SDF grid stats
+            uint64_t sdfGridCount = 0;                  ///< Number of SDF grids.
+            uint64_t sdfGridDescriptorCount = 0;        ///< Number of SDF grid descriptors.
+            uint64_t sdfGridInstancesCount = 0;         ///< Number of SDF grid instances.
+            uint64_t sdfGridMemoryInBytes = 0;          ///< Total memory in bytes used by all SDF grids. Note that this depends on render mode is selected.
+
+            // Custom primitive stats
+            uint64_t customPrimitiveCount = 0;          ///< Number of custom primitives.
+
+            // Material stats
+            MaterialSystem::MaterialStats materials;
+
+            // Raytracing stats
+            uint64_t blasGroupCount = 0;                ///< Number of BLAS groups. There is one BLAS buffer per group.
+            uint64_t blasCount = 0;                     ///< Number of BLASes.
+            uint64_t blasCompactedCount = 0;            ///< Number of compacted BLASes.
+            uint64_t blasOpaqueCount = 0;               ///< Number of BLASes that contain only opaque geometry.
+            uint64_t blasGeometryCount = 0;             ///< Number of geometries.
+            uint64_t blasOpaqueGeometryCount = 0;       ///< Number of geometries that are opaque.
+            uint64_t blasMemoryInBytes = 0;             ///< Total memory in bytes used by the BLASes.
+            uint64_t blasScratchMemoryInBytes = 0;      ///< Additional memory in bytes kept around for BLAS updates etc.
+            uint64_t tlasCount = 0;                     ///< Number of TLASes.
+            uint64_t tlasMemoryInBytes = 0;             ///< Total memory in bytes used by the TLASes.
+            uint64_t tlasScratchMemoryInBytes = 0;      ///< Additional memory in bytes kept around for TLAS updates etc.
+
+            // Light stats
+            uint64_t activeLightCount = 0;              ///< Number of active lights.
+            uint64_t totalLightCount = 0;               ///< Number of lights in the scene.
+            uint64_t pointLightCount = 0;               ///< Number of point lights.
+            uint64_t directionalLightCount = 0;         ///< Number of directional lights.
+            uint64_t rectLightCount = 0;                ///< Number of rect lights.
+            uint64_t discLightCount = 0;                ///< Number of disc lights.
+            uint64_t sphereLightCount = 0;              ///< Number of sphere lights.
+            uint64_t distantLightCount = 0;             ///< Number of distant lights.
+            uint64_t lightsMemoryInBytes = 0;           ///< Total memory in bytes used by the analytic lights.
+            uint64_t envMapMemoryInBytes = 0;           ///< Total memory in bytes used by the environment map.
+            uint64_t emissiveMemoryInBytes = 0;         ///< Total memory in bytes used by the emissive lights.
+
+            // GridVolume stats
+            uint64_t gridVolumeCount = 0;               ///< Number of volumes.
+            uint64_t gridVolumeMemoryInBytes = 0;       ///< Total memory in bytes used by the volumes.
+
+            // Grid stats
+            uint64_t gridCount = 0;                     ///< Number of grids.
+            uint64_t gridVoxelCount = 0;                ///< Total number of voxels in all grids.
+            uint64_t gridMemoryInBytes = 0;             ///< Total memory in bytes used by the grids.
+
+            /** Get the total memory usage in bytes.
+            */
+            uint64_t getTotalMemory() const
+            {
+                return indexMemoryInBytes + vertexMemoryInBytes + geometryMemoryInBytes + animationMemoryInBytes +
+                    curveIndexMemoryInBytes + curveVertexMemoryInBytes + sdfGridMemoryInBytes + materials.materialMemoryInBytes + materials.textureMemoryInBytes +
+                    blasMemoryInBytes + blasScratchMemoryInBytes + tlasMemoryInBytes + tlasScratchMemoryInBytes +
+                    lightsMemoryInBytes + envMapMemoryInBytes + emissiveMemoryInBytes +
+                    gridVolumeMemoryInBytes + gridMemoryInBytes;
+            }
+        };
+
+        /** Return list of file extensions filters for all supported file formats.
+        */
+        static const FileDialogFilterVec& getFileExtensionFilters();
+
+        /** Create scene from file.
+            \param[in] pDevice GPU device.
+            \param[in] path Import the scene from this file path.
+            \param[in] settings Optional settings.
+            \return Scene object, or throws an ImporterError if import went wrong.
+        */
+        static ref<Scene> create(ref<Device> pDevice, const std::filesystem::path& path, const Settings& settings = Settings());
+
+        /** Create scene from in-memory representation.
+            \param[in] pDevice GPU device.
+            \param[in] sceneData All scene data.
+            \return Scene object or throws on error.
+        */
+        static ref<Scene> create(ref<Device> pDevice, SceneData&& sceneData);
+
+        /** Return the associated GPU device.
+        */
+        const ref<Device>& getDevice() const override { return mpDevice; }
+
+        /** Bind the scene to a given shader var.
+            Note that the scene may change between calls to update().
+            The caller should rebind the scene data before executing any program that accesses the scene.
+        */
+        void bindShaderData(const ShaderVar& sceneVar) const override { sceneVar = mpSceneBlock; }
+
+        /** Get scene defines.
+            These defines must be set on all programs that access the scene.
+            If the defines change at runtime, the update flag `SceneDefinesChanged` is set.
+            The user is responsible to check for this and update all programs that access the scene.
+            \return List of shader defines.
+        */
+        DefineList getSceneDefines() const;
+
+        /** Get type conformances.
+            These type conformances must be set on all programs that access the scene.
+            If the type conformances change at runtime, the update flag `TypeConformancesChanged` is set.
+            The user is responsible to check for this and update all programs that access the scene.
+            \return List of type conformances.
+        */
+        TypeConformanceList getTypeConformances() const;
+
+        /** Get shader modules required by the scene.
+            The shader modules must be added to any program using the scene.
+            The update() function must have been called before calling this function.
+            \return List of shader modules.
+        */
+        ProgramDesc::ShaderModuleList getShaderModules() const;
+
+        /** Get the current scene statistics.
+        */
+        const SceneStats& getSceneStats() const { return mSceneStats; }
+
         /** Get the render settings.
         */
-        const RenderSettings& getRenderSettings() const { return mRenderSettings; }
+        const RenderSettings& getRenderSettings() const override { return mRenderSettings; }
 
         /** Get the render settings.
         */
@@ -172,7 +462,7 @@ namespace Falcor
 
         /** Returns true if environment map is available and should be used as a distant light.
         */
-        bool useEnvLight() const;
+        bool useEnvLight() const override;
 
         /** Returns true if there are active analytic lights and they should be used for lighting.
         */
@@ -180,47 +470,98 @@ namespace Falcor
 
         /** Returns true if there are active emissive lights and they should be used for lighting.
         */
-        bool useEmissiveLights() const;
+        bool useEmissiveLights() const override;
+
+        /** Returns true if there are active grid volumes and they should be rendererd.
+        */
+        bool useGridVolumes() const;
+
+        /** Get the metadata.
+        */
+        const Metadata& getMetadata() { return mMetadata; }
 
         /** Access the scene's currently selected camera to change properties or to use elsewhere.
         */
-        const Camera::SharedPtr& getCamera() { return mCameras[mSelectedCamera]; }
+        const ref<Camera>& getCamera() const override;
+
+        // ------------------------------------------------------------------------------------
+        // Volumetric ReSTIR GVDB volume subsystem (ported from the Falcor 4.x fork).
+        // Thin public hooks used by the VolumetricReSTIR render pass. The heavy GVDB host
+        // state + .vbx loading are implemented in Scene/GVDB/SceneGVDB.cpp (SDK-gated).
+        // ------------------------------------------------------------------------------------
+        VolumeDesc& getCurrentVolumeDesc() { return mVolumeDesc; }
+        void updateVolumeDesc();
+        int getVolumeNumMips(int volumeId = -1);
+        float3 getSceneVolumeCenter() const;
+        bool renderVolumeUI(Gui::Widgets& widget);
+        void setVolumeShaderData(const ShaderVar& var, int volumeId = -1);
+        void setRaytracingAcceleraitonStructure(RenderContext* pContext, const ShaderVar& var);
+        /// Advance the animated GVDB volume sequence by one frame (no-op unless an animated volume
+        /// is loaded and not paused). Called once per frame from Scene::update().
+        void advanceVolumeAnimation();
+        uint32_t addGVDBVolume(int curFrameId, float3 sigma_a, float3 sigma_s, float g, std::string vbxFile, int numMips = 1, float DensityScale = 1.f, bool hasVelocityGrid = false, bool hasEmissionGrid = false, float LeScale = 0.005f, float temperatureCutOff = 1.f, float temperatureScale = 100.f, float3 worldTranslation = float3(0, 0, 0), float3 worldRotation = float3(0, 0, 0), float worldScaling = 1.f);
+        uint32_t addGVDBVolumeSequence(float3 sigma_a, float3 sigma_s, float g, std::string dataFilePrefix, int numberFixedLength, int startFrame, int numFrames, int numMips = 1, float DensityScale = 1.f, bool hasVelocityGrid = false, bool hasEmissionGrid = false, float LeScale = 0.005f, float temperatureCutOff = 1.f, float temperatureScale = 100.f, float3 worldTranslation = float3(0, 0, 0), float3 worldRotation = float3(0, 0, 0), float worldScaling = 1.f);
+
+        // Public flags used by the render pass for camera / VDB animation control.
+        bool mNewEnvMapLoaded = false;
+        bool mFreezeCamera = false;
+        bool mUseAnimatedVolume = false;
+        int mVDBAnimationFrameId = 0;
+        bool mPauseVDBAnimation = false;
+
+        // Backing state for the GVDB volume subsystem (host side). The heavy GVDB state lives in
+        // GVDBVolumeManager (Scene/GVDB/SceneGVDB.h); held via shared_ptr so the GVDB SDK stays
+        // out of Scene.h. Null until the first volume is added.
+        VolumeDesc mVolumeDesc = {};
+        AABB mSceneVolumeBB;
+        std::shared_ptr<GVDBVolumeManager> mpGVDB;
+
+        /** Get the camera bounds
+        */
+        AABB getCameraBounds() { return mCameraBounds; }
+
+        /** Set the camera bounds
+        */
+        void setCameraBounds(const AABB& aabb);
 
         /** Get a list of all cameras in the scene.
         */
-        const std::vector<Camera::SharedPtr>& getCameras() { return mCameras; };
+        const std::vector<ref<Camera>>& getCameras() { return mCameras; };
 
         /** Select a different camera to use. The camera must already exist in the scene.
         */
-        void setCamera(const Camera::SharedPtr& pCamera);
+        void setCamera(const ref<Camera>& pCamera);
 
-        /** Set the currently selected camera's aspect ratio
+        /** Set the currently selected camera's aspect ratio.
         */
         void setCameraAspectRatio(float ratio);
 
-        /** Set the camera controller type
+        /** Set the world up direction (used for first person camera).
+        */
+        void setUpDirection(UpDirection upDirection);
+
+        /** Get the world up direction.
+        */
+        UpDirection getUpDirection() const { return mUpDirection; }
+
+        /** Set the camera controller type.
         */
         void setCameraController(CameraControllerType type);
 
-        /** Get the camera controller type
+        /** Get the camera controller type.
         */
         CameraControllerType getCameraControllerType() const { return mCamCtrlType; }
-
-        /** Toggle whether the currently selected camera is animated.
-        */
-        deprecate("4.0.2", "Use Camera::setIsAnimated() instead.")
-        void toggleCameraAnimation(bool active) { mCameras[mSelectedCamera]->setIsAnimated(active); }
 
         /** Reset the currently selected camera.
             This function will place the camera at the center of scene and optionally set the depth range to some reasonable pre-determined values
         */
         void resetCamera(bool resetDepthRange = true);
 
-        /** Set the camera's speed
+        /** Set the camera's speed.
         */
         void setCameraSpeed(float speed);
 
-        /** Get the camera's speed
+        /** Get the camera's speed.
         */
         float getCameraSpeed() const { return mCameraSpeed; }
 
@@ -236,8 +577,14 @@ namespace Falcor
         */
         void selectCamera(std::string name);
 
-        deprecate("4.0.1", "Use addViewpoint() instead.")
-        void saveNewViewpoint() { addViewpoint(); }
+        /** Sets whether the camera controls are enabled or disabled.
+        */
+        void setCameraControlsEnabled(bool value);
+
+        /** Get whether the camera controls are enabled or disabled.
+            \return True if camera controls are enabled else false.
+        */
+        bool getCameraControlsEnabled() { return mCameraControlsEnabled; }
 
         /** Add a new viewpoint to the list of viewpoints.
         */
@@ -251,110 +598,320 @@ namespace Falcor
         */
         void selectViewpoint(uint32_t index);
 
-        deprecate("4.0.1", "Use selectViewpoint() instead.")
-        void gotoViewpoint(uint32_t index) { selectViewpoint(index); }
-
-        /** Returns true if there are saved viewpoints (used for dumping to config)
+        /** Returns true if there are saved viewpoints (used for dumping to config).
         */
         bool hasSavedViewpoints() { return mViewpoints.size() > 1; }
 
-
-        /** Get/Set global object alpha
+        /** Get the set of geometry types used in the scene.
+            \return A bit field containing the set of geometry types.
         */
+        GeometryTypeFlags getGeometryTypes() const { return mGeometryTypes; }
 
-        float getGlobalSurfaceAlphaMultipler() { return mSurfaceGlobalAlphaMultipler; }
-        void setGlobalSurfaceAlphaMultipler(float surfaceGlobalAlphaMultipler);
+        /** Check if scene has any geometry of the given types.
+            \param[in] types The types to check for.
+            \return True if scene has any geometry of these types.
+        */
+        bool hasGeometryTypes(GeometryTypeFlags types) const { return is_set(mGeometryTypes, types); }
 
-        float getGlobalParticleCurveAlphaMultipler() { return mParticleCurveGlobalAlphaMultipler; }
-        void setGlobalParticleCurveAlphaMultipler(float AlphaMultipler);
+        /** Check if scene has any geometry of the given type.
+            \param[in] type The type to check for.
+            \return True if scene has any geometry of this type.
+        */
+        bool hasGeometryType(GeometryType type) const { return hasGeometryTypes(GeometryTypeFlags(1u << (uint32_t)type)); }
 
-        /** Get the number of meshes
+        /** Check if scene has any procedural geometry types.
+        */
+        bool hasProceduralGeometry() const { return hasGeometryTypes(~GeometryTypeFlags::TriangleMesh); };
+
+        /** Get the number of geometries in the scene.
+            This includes all types of geometry that exist in the ray tracing acceleration structures.
+            \return Total number of geometries.
+        */
+        uint32_t getGeometryCount() const;
+
+        /** Get the number of geometry instances in the scene.
+            This includes all types of geometry instances that exist in the ray tracing acceleration structures.
+            \return Total number of geometry instances.
+        */
+        uint32_t getGeometryInstanceCount() const { return (uint32_t)mGeometryInstanceData.size(); }
+
+        /** Get the data of a geometry instance.
+            \param[in] instanceID Global geometry instance ID.
+            \return The data of the geometry instance.
+        */
+        const GeometryInstanceData &getGeometryInstance(uint32_t instanceID) const { return mGeometryInstanceData[instanceID]; }
+
+        /** Get a list of all geometry IDs for a given geometry type.
+            \param[in] geometryType The geometry type.
+            \return List of geometry IDs.
+        */
+        std::vector<GlobalGeometryID> getGeometryIDs(GeometryType geometryType) const;
+
+        /** Get a list of all geometry IDs for a given geometry and material type.
+            \param[in] geometryType The geometry type.
+            \param[in] materialType The material type.
+            \return List of geometry IDs.
+        */
+        std::vector<GlobalGeometryID> getGeometryIDs(GeometryType geometryType, MaterialType materialType) const;
+
+        /** Get a list of all geometry IDs for a given material.
+            \param[in] material The material.
+            \return List of geometry IDs.
+        */
+        std::vector<GlobalGeometryID> getGeometryIDs(const Material* material) const;
+
+        /** Given a geometryID, return the list of UV tiles accessed by this geometry, in as tight manner as possible.
+            Returns an empty list if the operation is not supported.
+            \param[in] geometryID The geometryID to get UV tiles for.
+            \return List of non-overlapping UVTiles that bound the UV set of the geometry.
+        */
+        std::vector<Rectangle> getGeometryUVTiles(GlobalGeometryID geometryID) const;
+
+        /** Get the type of a given geometry.
+            \param[in] geometryID Global geometry ID.
+            \return The type of the given geometry.
+        */
+        GeometryType getGeometryType(GlobalGeometryID geometryID) const;
+
+        /** Get the material of a given geometry.
+            \param[in] geometryID Global geometry ID.
+            \return The material or nullptr if geometry has no material.
+        */
+        ref<Material> getGeometryMaterial(GlobalGeometryID geometryID) const;
+
+        /** Get the number of triangle meshes.
         */
         uint32_t getMeshCount() const { return (uint32_t)mMeshDesc.size(); }
-        
+
+        /** Get a mesh desc.
+        */
+        const MeshDesc& getMesh(MeshID meshID) const { return mMeshDesc[meshID.get()]; }
+
+        /** Get mesh vertex and index data.
+            \param[in] meshID Mesh ID.
+            \param[in] buffers Map of buffers containing mesh data: "triangleIndices", "positions", and "texcrds" are required.
+        */
+        void getMeshVerticesAndIndices(MeshID meshID, const std::map<std::string, ref<Buffer>>& buffers);
+
+        /** Set mesh vertex data and update the acceleration structures.
+            \param[in] meshID Mesh ID.
+            \param[in] buffers Map of buffers containing mesh data: "positions", "normals", "tangents", and "texcrds" are required.
+        */
+        void setMeshVertices(MeshID meshID, const std::map<std::string, ref<Buffer>>& buffers);
+
+        /** Get the number of curves.
+        */
         uint32_t getCurveCount() const { return (uint32_t)mCurveDesc.size(); }
 
-        uint32_t getParticleSystemCount() const { return (uint32_t)mParticleSystemDesc.size(); }
-
-        /** Get a mesh desc
+        /** Get a curve desc.
         */
-        const MeshDesc& getMesh(uint32_t meshID) const { return mMeshDesc[meshID]; }
-        const CurveDesc& getCurve(uint32_t curveID) const { return mCurveDesc[curveID]; }
-        VolumeDesc& getCurrentVolumeDesc() { return mVolumeDesc; }
-        void updateVolumeDesc();
+        const CurveDesc& getCurve(CurveID curveID) const { return mCurveDesc[curveID.get()]; }
 
-        const ParticleSystemDesc& getParticleSystemDesc(uint32_t particleSystemID) const { return mParticleSystemDesc[particleSystemID]; }
-        const ParticleSystem::SharedPtr& getParticleSystem(uint32_t particleSystemID) const { return mParticleSystems[particleSystemID]; }
-
-        /** Get the number of mesh instances
+        /** Returns what SDF grid implementation is used for this scene.
         */
-        uint32_t getMeshInstanceCount() const { return (uint32_t)mMeshInstanceData.size(); }
+        SDFGrid::Type getSDFGridImplementation() const { return mSDFGridConfig.implementation; }
 
-        /** Get a mesh instance desc
+        /** Returns shared SDF grid implementation data used for this scene.
         */
-        const MeshInstanceData& getMeshInstance(uint32_t instanceID) const { return mMeshInstanceData[instanceID]; }
+        const SDFGridConfig::ImplementationData& getSDFGridImplementationData() const { return mSDFGridConfig.implementationData; }
+
+        /** Returns what SDF grid gradient intersection method is used for this scene.
+        */
+        SDFGridIntersectionMethod getSDFGridIntersectionMethod() const { return mSDFGridConfig.intersectionMethod; }
+
+        /** Returns what SDF grid gradient evaluation method is used for this scene.
+        */
+        SDFGridGradientEvaluationMethod getSDFGridGradientEvaluationMethod() const { return mSDFGridConfig.gradientEvaluationMethod; }
+
+        /** Get the number of SDF grid descriptors.
+        */
+        uint32_t getSDFGridDescCount() const { return (uint32_t)mSDFGridDesc.size(); }
+
+        /** Get a SDF grid desc.
+        */
+        const SDFGridDesc& getSDFGridDesc(SdfDescID sdfDescID) const { return mSDFGridDesc[sdfDescID.get()]; }
+
+        /** Get the number of SDF grids.
+        */
+        uint32_t getSDFGridCount() const { return (uint32_t)mSDFGrids.size(); }
+
+        /** Get an SDF grid.
+        */
+        const ref<SDFGrid>& getSDFGrid(SdfGridID sdfGridID) const { return mSDFGrids[mSDFGridDesc[sdfGridID.get()].sdfGridID.get()]; }
+
+        /** Get the number of SDF grid geometries.
+        */
+        uint32_t getSDFGridGeometryCount() const;
+
+        /** Get an SDF grid ID from a geometry instanceID.
+        *   \param[in] instanceID Geometry instance ID.
+        *   \return SDF grid ID if found else kInvalidSDFGrid.
+        */
+        SdfGridID findSDFGridIDFromGeometryInstanceID(uint32_t geometryInstanceID) const;
+
+        /** Get geometry instance IDs by geometry type.
+        *   \param[in] type Geometry type to search for.
+        *   \return Vector of geometry instance IDs.
+        */
+        std::vector<uint32_t> getGeometryInstanceIDsByType(GeometryType type) const;
+
+        /** Updates a node in the graph.
+        */
+        void updateNodeTransform(uint32_t nodeID, const float4x4& transform);
+
+        /** Get the number of custom primitives.
+        */
+        uint32_t getCustomPrimitiveCount() const { return (uint32_t)mCustomPrimitiveDesc.size(); }
+
+        /** Get the custom primitive index for a geometry.
+            \param[in] geometryID Global geometry ID.
+            \return The custom primitive index of the geometry that can be used with getCustomPrimitive().
+        */
+        uint32_t getCustomPrimitiveIndex(GlobalGeometryID geometryID) const;
+
+        /** Get a custom primitive.
+            \param[in] index Index of the custom primitive.
+        */
+        const CustomPrimitiveDesc& getCustomPrimitive(uint32_t index) const;
+
+        /** Get a custom primitive AABB.
+            \param[in] index Index of the custom primitive.
+        */
+        const AABB& getCustomPrimitiveAABB(uint32_t index) const;
+
+        /** Add a custom primitive.
+            Custom primitives are sequentially numbered in the scene. The function returns the index at
+            which the primitive was inserted. Note that this index may change if primitives are removed.
+            Adding/removing custom primitives is a slow operation as the acceleration structure is rebuilt.
+            \param[in] userID User ID of primitive.
+            \param[in] aabb AABB of the primitive.
+            \return Index of the custom primitive that was added.
+        */
+        uint32_t addCustomPrimitive(uint32_t userID, const AABB& aabb);
+
+        /** Remove a custom primitive.
+            Custom primitives are sequentially numbered in the scene. The function removes the primitive at
+            the given index. Note that the index of subsequent primtives will change.
+            Adding/removing custom primitives is a slow operation as the acceleration structure is rebuilt.
+            \param[in] index Index of custom primitive to remove.
+        */
+        void removeCustomPrimitive(uint32_t index) { removeCustomPrimitives(index, index + 1); }
+
+        /** Remove a range [first,last) of custom primitives.
+            Note that the last index is non-inclusive. If first == last no action is performed.
+            \param[in] first Index of first custom primitive to remove.
+            \param[in] last Index one past the last custom primitive to remove.
+        */
+        void removeCustomPrimitives(uint32_t first, uint32_t last);
+
+        /** Update a custom primitive.
+            \param[in] index Index of the custom primitive.
+            \param[in] aabb AABB of the primitive.
+        */
+        void updateCustomPrimitive(uint32_t index, const AABB& aabb);
+
+        /** Get the material system.
+        */
+        const MaterialSystem& getMaterialSystem() const override { return *mpMaterials; }
+
+        void replaceMaterial(const MaterialID materialID, const ref<Material>& pReplacement) const
+        {
+            mpMaterials->replaceMaterial(materialID, pReplacement);
+        }
+
+        void setDefaultTextureSampler(const ref<Sampler>& pSampler) override
+        {
+            mpMaterials->setDefaultTextureSampler(pSampler);
+        }
 
         /** Get a list of all materials in the scene.
         */
-        const std::vector<Material::SharedPtr>& getMaterials() const { return mMaterials; }
+        const std::vector<ref<Material>>& getMaterials() const { return mpMaterials->getMaterials(); }
 
-        /** Get the number of materials in the scene
+        /** Get the total number of materials in the scene.
         */
-        uint32_t getMaterialCount() const { return (uint32_t)mMaterials.size(); }
+        uint32_t getMaterialCount() const { return mpMaterials->getMaterialCount(); }
 
-        /** Get a material
+        /** Get the number of materials of the given type.
         */
-        const Material::SharedPtr& getMaterial(uint32_t materialID) const { return mMaterials[materialID]; }
+        uint32_t getMaterialCountByType(MaterialType type) const { return mpMaterials->getMaterialCountByType(type); }
 
-        /** Get a material by name
+        /** Get a material.
         */
-        Material::SharedPtr getMaterialByName(const std::string& name) const;
+        const ref<Material>& getMaterial(MaterialID materialID) const { return mpMaterials->getMaterial(materialID); }
 
-        /** Get the scene bounds
+        /** Get a material by name.
         */
-        const BoundingBox& getSceneBounds() const { return mSceneBB; }
+        ref<Material> getMaterialByName(const std::string& name) const { return mpMaterials->getMaterialByName(name); }
 
-        /** Get a mesh's bounds
+        /** Add a material.
+            \param pMaterial The material.
+            \return The ID of the material in the scene.
         */
-        const BoundingBox& getMeshBounds(uint32_t meshID) const { return mMeshBBs[meshID]; }
+        MaterialID addMaterial(const ref<Material>& pMaterial) { return mpMaterials->addMaterial(pMaterial); }
 
-        /** Get the number of lights in the scene
+        /** Get a list of all grid volumes in the scene.
+        */
+        const std::vector<ref<GridVolume>>& getGridVolumes() const { return mGridVolumes; }
+
+        /** Get a grid volume.
+        */
+        const ref<GridVolume>& getGridVolume(uint32_t gridVolumeID) const { return mGridVolumes[gridVolumeID]; }
+
+        /** Get a grid volume by name.
+        */
+        ref<GridVolume> getGridVolumeByName(const std::string& name) const;
+
+        /** Get the hit info requirements.
+        */
+        const HitInfo& getHitInfo() const { return mHitInfo; }
+
+        /** Get the scene bounds in world space.
+        */
+        const AABB& getSceneBounds() const override { return mSceneBB; }
+
+        /** Get a mesh's bounds in object space.
+        */
+        const AABB& getMeshBounds(uint32_t meshID) const { return mMeshBBs[meshID]; }
+
+        /** Get a curve's bounds in object space.
+        */
+        const AABB& getCurveBounds(uint32_t curveID) const { return mCurveBBs[curveID]; }
+
+        /** Get a list of all lights in the scene.
+        */
+        const std::vector<ref<Light>>& getLights() const { return mLights; };
+
+        /** Get the number of lights in the scene.
         */
         uint32_t getLightCount() const { return (uint32_t)mLights.size(); }
 
-        /** Get a light
+        /** Get a light.
         */
-        const Light::SharedPtr& getLight(uint32_t lightID) const { return mLights[lightID]; }
+        const ref<Light>& getLight(uint32_t lightID) const { return mLights[lightID]; }
 
-        /** Get a light by name
+        /** Get a light by name.
         */
-        Light::SharedPtr getLightByName(const std::string& name) const;
+        ref<Light> getLightByName(const std::string& name) const;
 
-        Light::SharedPtr getLightByID(int lightID) const;
+        /** Get a list of all active lights in the scene.
+        */
+        const std::vector<ref<Light>>& getActiveAnalyticLights() const { return mActiveLights; }
 
         /** Get the light collection representing all the mesh lights in the scene.
             The light collection is created lazily on the first call. It needs a render context.
             to run the initialization shaders.
-            \param[in] pContext Render context.
+            \param[in] pRenderContext Render context.
             \return Returns the light collection.
         */
-        const LightCollection::SharedPtr& getLightCollection(RenderContext* pContext);
+        const ref<LightCollection>& getLightCollection(RenderContext* pRenderContext);
 
         /** Get the environment map or nullptr if it doesn't exist.
         */
-        const EnvMap::SharedPtr& getEnvMap() const { return mpEnvMap; }
-
-        /** Get the light probe or nullptr if it doesn't exist.
-        */
-        const LightProbe::SharedPtr& getLightProbe() const { return mpLightProbe; }
-
-        /** Toggle whether the specified light is animated.
-        */
-        deprecate("4.0.2", "Use Light::setIsAnimated() instead.")
-        void toggleLightAnimation(int index, bool active) { mLights[index]->setIsAnimated(active); }
+        const ref<EnvMap>& getEnvMap() const override { return mpEnvMap; }
 
         /** Set how the scene's TLASes are updated when raytracing.
-            TLASes are REBUILT by default
+            TLASes are REBUILT by default.
         */
         void setTlasUpdateMode(UpdateMode mode) { mTlasUpdateMode = mode; }
 
@@ -363,7 +920,7 @@ namespace Falcor
         UpdateMode getTlasUpdateMode() { return mTlasUpdateMode; }
 
         /** Set how the scene's BLASes are updated when raytracing.
-            BLASes are REFIT by default
+            BLASes are REFIT by default.
         */
         void setBlasUpdateMode(UpdateMode mode);
 
@@ -372,71 +929,120 @@ namespace Falcor
         UpdateMode getBlasUpdateMode() { return mBlasUpdateMode; }
 
         /** Update the scene. Call this once per frame to update the camera location, animations, etc.
-            \param pContext
-            \param currentTime The current time in seconds
+            \param[in] pRenderContext The render context.
+            \param[in] currentTime The current time in seconds.
+            \return Flags indicating what changes happened in the update.
         */
-        UpdateFlags update(RenderContext* pContext, double currentTime);
+        IScene::UpdateFlags update(RenderContext* pRenderContext, double currentTime);
 
-        /** Get the changes that happened during the last update
-            The flags only change during an `update()` call, if something changed between calling `update()` and `getUpdates()`, the returned result will not reflect it
+        /** Get the changes that happened during the last update.
+            The flags only change during an `update()` call, if something changed between calling `update()` and `getUpdates()`, the returned result will not reflect it.
+            \return Flags indicating what changes happened in the last update.
         */
-        UpdateFlags getUpdates() const { return mUpdates; }
+        IScene::UpdateFlags getUpdates() const { return mUpdates; }
 
-        /** Render the scene using the rasterizer
+        /** Update material and geometry for inverse rendering applications.
+            This is a subset of the update() function.
+            \param[in] pRenderContext The render context.
+            \param[in] isMaterialChanged True if material parameters changed.
+            \param[in] isMeshChanged True if mesh parameters changed.
         */
-        void render(RenderContext* pContext, GraphicsState* pState, GraphicsVars* pVars, RenderFlags flags = RenderFlags::None);
+        void updateForInverseRendering(RenderContext* pRenderContext, bool isMaterialChanged, bool isMeshChanged);
 
-        /** Render the scene using raytracing
+        /** Render the scene using the rasterizer.
+            Note the rasterizer state bound to 'pState' is ignored.
+            \param[in] pRenderContext Render context.
+            \param[in] pState Graphics state.
+            \param[in] pVars Graphics vars.
+            \param[in] cullMode Optional rasterizer cull mode. The default is to cull back-facing primitives.
         */
-        void raytrace(RenderContext* pContext, RtProgram* pProgram, const std::shared_ptr<RtProgramVars>& pVars, uint3 dispatchDims);
+        void rasterize(RenderContext* pRenderContext, GraphicsState* pState, ProgramVars* pVars, RasterizerState::CullMode cullMode = RasterizerState::CullMode::Back);
 
-        /** Render the UI
+        /** Render the scene using the rasterizer.
+            This overload uses the supplied rasterizer states.
+            \param[in] pRenderContext Render context.
+            \param[in] pState Graphics state.
+            \param[in] pVars Graphics vars.
+            \param[in] pRasterizerStateCW Rasterizer state for meshes with clockwise triangle winding.
+            \param[in] pRasterizerStateCCW Rasterizer state for meshes with counter-clockwise triangle winding. Can be the same as for clockwise.
+        */
+        void rasterize(RenderContext* pRenderContext, GraphicsState* pState, ProgramVars* pVars, const ref<RasterizerState>& pRasterizerStateCW, const ref<RasterizerState>& pRasterizerStateCCW);
+
+        /** Get the required raytracing maximum attribute size for this scene.
+            Note: This depends on what types of geometry are used in the scene.
+            \return Max attribute size in bytes.
+        */
+        uint32_t getRaytracingMaxAttributeSize() const;
+
+        /** Render the scene using raytracing.
+        */
+        void raytrace(RenderContext* pRenderContext, Program* pProgram, const ref<RtProgramVars>& pVars, uint3 dispatchDims);
+
+        /** Render the UI.
         */
         void renderUI(Gui::Widgets& widget);
 
-        bool renderVolumeUI(Gui::Widgets& widget);
-
-        /** Bind a sampler to the materials
+        /** Get the scene's VAO for meshes.
+            The default VAO uses 32-bit vertex indices. For meshes with 16-bit indices, use getMeshVao16() instead.
+            \return VAO object or nullptr if no meshes using 32-bit indices.
         */
-        void bindSamplerToMaterials(const Sampler::SharedPtr& pSampler);
+        const ref<Vao>& getMeshVao() const { return mpMeshVao; }
 
-        /** Get the scene's VAO
+        /** Get the scene's VAO for 16-bit vertex indices.
+            \return VAO object or nullptr if no meshes using 16-bit indices.
         */
-        const Vao::SharedPtr& getVao() const { return mpVao; }
+        const ref<Vao>& getMeshVao16() const { return mpMeshVao16Bit; }
+
+        /** Get the scene's VAO for curves.
+        */
+        const ref<Vao>& getCurveVao() const { return mpCurveVao; }
 
         /** Set an environment map.
             \param[in] pEnvMap Environment map. Can be nullptr.
         */
-        void setEnvMap(EnvMap::SharedPtr pEnvMap);
+        void setEnvMap(ref<EnvMap> pEnvMap);
 
         /** Load an environment from an image.
-            \param[in] filename Texture filename.
+            \param[in] path Texture path.
+            \return True if environmant map was successfully loaded.
         */
-        void loadEnvMap(const std::string& filename);
+        bool loadEnvMap(const std::filesystem::path& path);
 
-        void setEnvMapIntensity(float intensity);
-
-        void setEmissiveIntensityMultiplier(float multiplier);
-
-        void setEnvMapRotation(const float3& rotDegrees);
-
-        /** Handle mouse events
+        /** Handle mouse events.
         */
         bool onMouseEvent(const MouseEvent& mouseEvent);
 
-        /** Handle keyboard events
+        /** Handle keyboard events.
         */
         bool onKeyEvent(const KeyboardEvent& keyEvent);
 
-        /** Get the filename that the scene was loaded from
+        /** Handle gamepad events.
         */
-        const std::string& getFilename() const { return mFilename; }
+        bool onGamepadEvent(const GamepadEvent& gamepadEvent);
+
+        /** Handle gamepad state.
+        */
+        bool onGamepadState(const GamepadState& gamepadState);
+
+        /** Get the last path that was loaded to create the scene.
+        */
+        std::filesystem::path getPath() const { return mImportPaths.empty() ? std::filesystem::path() : mImportPaths.back(); }
+
+        /** Get all of the paths that were loaded to create the scene.
+        */
+        std::vector<std::filesystem::path> getImportPaths() const { return mImportPaths; }
+
+        /** Get all of the dictionaries that were loaded to create the scene.
+        */
+        std::vector<std::map<std::string, std::string>> getImportDicts() const { return mImportDicts; }
 
         /** Get the animation controller.
         */
         const AnimationController* getAnimationController() const { return mpAnimationController.get(); }
 
-        AnimationController* getModifiableAnimationController() const { return mpAnimationController.get(); }
+        /** Get the scene's animations.
+        */
+        std::vector<ref<Animation>>& getAnimations() { return mpAnimationController->getAnimations(); }
 
         /** Returns true if scene has animation data.
         */
@@ -450,163 +1056,165 @@ namespace Falcor
         */
         bool isAnimated() const { return mpAnimationController->isEnabled(); };
 
+        /** Enable/disable global animation looping.
+        */
+        void setIsLooped(bool looped) { mpAnimationController->setIsLooped(looped); }
+
+        /** Returns true if scene animations are looped globally.
+        */
+        bool isLooped() { return mpAnimationController->isLooped(); }
+
         /** Toggle all animations on or off.
         */
         void toggleAnimations(bool animate);
 
-        /** Get the parameter block with all scene resources.
-            Note that the camera is not bound automatically.
-        */
-        const ParameterBlock::SharedPtr& getParameterBlock() const { return mpSceneBlock; }
-
-        /** Set the BLAS geometry index into the local vars for each geometry.
-            This is a workaround before GeometryIndex() is supported in shaders.
-        */
-        void setGeometryIndexIntoRtVars(const std::shared_ptr<RtProgramVars>& pVars);
-
         /** Set the scene ray tracing resources into a shader var.
             The acceleration structure is created lazily, which requires the render context.
-            \param[in] pContext Render context.
-            \param[in] var Shader variable to set data into, usually the root var.
+            \param[in] pRenderContext Render context.
+            \param[in] sceneVar Shader variable to set data into, usually the root var.
             \param[in] rayTypeCount Number of ray types in raygen program. Not needed for DXR 1.1.
         */
-        void setRaytracingShaderData(RenderContext* pContext, const ShaderVar& var, uint32_t rayTypeCount = 1);
+        void bindShaderDataForRaytracing(RenderContext* pRenderContext, const ShaderVar& sceneVar, uint32_t rayTypeCount = 0);
 
-        void setRaytracingAcceleraitonStructure(RenderContext* pContext, const ShaderVar& var);
+        /** Get the name of the mesh with the given ID.
+        */
+        std::string getMeshName(uint32_t meshID) const { FALCOR_ASSERT(meshID < mMeshNames.size());  return mMeshNames[meshID]; }
+
+        /** Return true if the given mesh ID is valid, false otherwise.
+        */
+        bool hasMesh(uint32_t meshID) const { return meshID < mMeshNames.size(); }
+
+        /** Get a list of raytracing BLAS IDs for all meshes. The list is arranged by mesh ID.
+        */
+        std::vector<uint32_t> getMeshBlasIDs() const;
+
+        /** Returns the scene graph parent node ID for a node.
+            \return Node ID of the parent node, or kInvalidNode if top-level node.
+        */
+        NodeID getParentNodeID(NodeID nodeID) const;
 
         std::string getScript(const std::string& sceneVar);
 
-        uint32_t addSimpleCurveModel(std::string filename, float width, float3 color);
+        uint64_t getMemoryUsageInBytes() const { return getSceneStats().getTotalMemory(); }
 
-        uint32_t addGVDBVolume(int curFrameId, float3 sigma_a, float3 sigma_s, float g, std::string vbxFile, int numMips = 1, float DensityScale = 1.f, bool hasVelocityGrid = false, bool hasEmissionGrid = false, float LeScale = 0.005f, float temperatureCutOff = 1.f, float temperatureScale = 100.f, float3 worldTranslation = float3(0,0,0), float3 worldRotation = float3(0,0,0), float worldScaling = 1.f );
+        /** Allows connecting to signal that signals IScene::UpdateFlags when they are changed.
+         */
+        UpdateFlagsSignal::Interface getUpdateFlagsSignal() override { return mUpdateFlagsSignal.getInterface(); }
 
-        uint32_t addGVDBVolumeSequence(float3 sigma_a, float3 sigma_s, float g, std::string dataFilePrefix, int numberFixedLength, int startFrame, int numFrames, int numMips = 1, float DensityScale = 1.f, bool hasVelocityGrid = false, bool hasEmissionGrid = false, float LeScale = 0.005f, float temperatureCutOff = 1.f, float temperatureScale = 100.f, float3 worldTranslation = float3(0, 0, 0), float3 worldRotation = float3(0, 0, 0), float worldScaling = 1.f);
-
-        Vao::SharedPtr getParticleVao() { return mpParticleVao; };
-
-        uint32_t addParticleSystem(ParticleSystem::SharedPtr pParticleSystem, const Material::SharedPtr& pMaterial);
-
-        void createParticleSystemIO(int32_t maxParticles, int32_t maxEmitPerFrame, float fixedInterval, uint32_t maxRenderFrames,
-            uint32_t shadingModel, bool shouldSort,
-            ParticleSystem::EmitterData* pEmitterData, ParticleSystemManager::ParticleMaterialDesc* pMaterialDesc, const std::string textureFile);
-
-        void deleteAllParticleSystems();
-
-        void bindParticlePoolVar(const ShaderVar& var);
-
-        void updateCurveDisplayWidth(float displayWidth);
-
-        uint32_t addLight(const Light::SharedPtr& pLight);
-
-        uint32_t addDirectionalLight(float3 worldDirection, float3 intensity);
-
-        uint32_t addPointLight(float3 worldPosition, float3 worldDirection, float openingAngle, float3 intensity);
-
-        BoundingBox getVDBBoundingBox(int volumeId)
+    public: /// IScene specific methods
+        void getShaderDefines(DefineList& defines) const override
         {
-            return mVDBVolumeBBs[volumeId];
+            defines.add(getSceneDefines());
         }
 
-        float3 getSceneVolumeCenter()
+        void getTypeConformances(TypeConformanceList& conformances, TypeConformancesKind kind = TypeConformancesKind::All) const override
         {
-            return mSceneVolumeBB.center;
+            /// We only have material conformances
+            if (is_set(kind, TypeConformancesKind::Material))
+                conformances.add(getTypeConformances());
         }
 
-        void setVolumeShaderData(ShaderVar const& var, int volumeId = -1);
-
-        void setGVDBShaderData(ShaderVar const& var, int volumeId = -1)
+        void getShaderModules(ProgramDesc::ShaderModuleList& shaderModuleList) const override
         {
-            if (volumeId == -1) volumeId = mVDBAnimationFrameId;
-
-            var["gvdb"] = mGVDBVolumes[volumeId].paramBlock;
-
-            if (mGVDBVolumes[volumeId].hasEmissionGrid)
-                var["gBlackBodyRadiationTex"] = mpBlackBodyRadiationTexture;
-
-            mVDBLastAnimationFrameId = volumeId;
+            auto localModuleList = getShaderModules();
+            shaderModuleList.insert(shaderModuleList.end(), localModuleList.begin(), localModuleList.end());
         }
 
-        int getVolumeNumMips(int volumeId = -1)
+        ref<ILightCollection> getILightCollection(RenderContext* renderContext) override
         {
-            if (volumeId == -1) volumeId = mVDBAnimationFrameId;
-            return mGVDBVolumes[volumeId].numMips;
+            return getLightCollection(renderContext);
         }
 
-        bool mFreezeCamera = false;
-
+        RtPipelineFlags getRtPipelineFlags() const override
+        {
+            if (!hasProceduralGeometry())
+                return RtPipelineFlags::SkipProceduralPrimitives;
+            return RtPipelineFlags::None;
+        }
     private:
-        friend class SceneBuilder;
         friend class AnimationController;
+        friend class AnimatedVertexCache;
 
         static constexpr uint32_t kStaticDataBufferIndex = 0;
-        static constexpr uint32_t kPrevVertexBufferIndex = kStaticDataBufferIndex + 1;
-        static constexpr uint32_t kDrawIdBufferIndex = kPrevVertexBufferIndex + 1;
+        static constexpr uint32_t kDrawIdBufferIndex = kStaticDataBufferIndex + 1;
         static constexpr uint32_t kVertexBufferCount = kDrawIdBufferIndex + 1;
 
-        static SharedPtr create();
+        void createMeshVao(uint32_t drawCount, const std::vector<SkinningVertexData>& skinningData);
+        void createCurveVao(const std::vector<uint32_t>& indexData, const std::vector<StaticCurveVertexData>& staticData);
+        void createMeshUVTiles(const std::vector<MeshDesc>& meshDesc);
 
-        void createCurveVao();
-        void calculateCurvePatchBoundingBoxes();
+        void updateSceneDefines();
+        DefineList getSceneSDFGridDefines() const;
 
-        void createParticleVao();
-
-        /** Create scene parameter block and retrieve pointers to buffers
+        /** Set the SDF grid config if this scene contains any SDF grid geometry.
         */
-        void initResources();
+        void setSDFGridConfig();
 
-        /** Uploads scene data to parameter block
+        /** Initializes SDF grids.
         */
-        void uploadResources();
+        void initSDFGrids();
 
-        /** Uploads a single material.
+        /** Create scene parameter block and retrieve pointers to buffers.
         */
-        void uploadMaterial(uint32_t materialID);
+        void createParameterBlock();
 
-        /** Uploads the currently selected camera.
+        /** Uploads geometry data.
         */
-        void uploadSelectedCamera();
+        void uploadGeometry();
 
         /** Update the scene's global bounding box.
         */
         void updateBounds();
 
-        /** Update mesh instances.
+        /** Update geometry instances.
         */
-        void updateMeshInstances(bool forceUpdate);
+        void updateGeometryInstances(bool forceUpdate);
+
+        /** Update geometry type flags.
+        */
+        void updateGeometryTypes();
 
         /** Do any additional initialization required after scene data is set and draw lists are determined.
         */
-        void finalize(bool isReinit = false);
+        void finalize();
 
-        /** Create the draw list for rasterization
+        /** Create the draw list for rasterization.
         */
         void createDrawList();
 
-        /** Sort meshes into groups by transform. Updates mMeshInstances and mMeshGroups.
+        /** Initialize geometry descs for each BLAS.
         */
-        void sortMeshes();
+        void initGeomDesc(RenderContext* pRenderContext);
 
-        /** Initialize geometry descs for each BLAS
+        /** Initialize pre-build information for each BLAS.
         */
-        void initGeomDesc();
+        void preparePrebuildInfo(RenderContext* pRenderContext);
 
-        /** Generate bottom level acceleration structures for all meshes
+        /** Compute BLAS groups.
         */
-        void buildBlas(RenderContext* pContext);
+        void computeBlasGroups();
+
+        /** Generate bottom level acceleration structures for all meshes.
+        */
+        void buildBlas(RenderContext* pRenderContext);
 
         /** Generate data for creating a TLAS.
-            #SCENE TODO: Add argument to build descs based off a draw list
+            #SCENE TODO: Add argument to build descs based off a draw list.
         */
-        void fillInstanceDesc(std::vector<D3D12_RAYTRACING_INSTANCE_DESC>& instanceDescs, uint32_t rayCount, bool perMeshHitEntry) const;
+        void fillInstanceDesc(std::vector<RtInstanceDesc>& instanceDescs, uint32_t rayTypeCount, bool perMeshHitEntry) const;
 
         /** Generate top level acceleration structure for the scene. Automatically determines whether to build or refit.
-            \param[in] rayCount Number of ray types in the shader. Required to setup how instances index into the Shader Table
+            \param[in] rayCount Number of ray types in the shader. Required to setup how instances index into the Shader Table.
         */
-        void buildTlas(RenderContext* pContext, uint32_t rayCount, bool perMeshHitEntry);
+        void buildTlas(RenderContext* pRenderContext, uint32_t rayTypeCount, bool perMeshHitEntry);
+
+        /** Invalidates the TLAS cache.
+        */
+        void invalidateTlasCache();
 
         /** Check whether scene has an index buffer.
         */
-        bool hasIndexBuffer() const { return mpVao->getIndexBuffer() != nullptr; }
+        bool hasIndexBuffer() const { return !mMeshIndexData.empty(); }
 
         /** Initialize all cameras in the scene through the animation controller using their corresponding scene graph nodes.
         */
@@ -620,262 +1228,152 @@ namespace Falcor
         */
         bool updateAnimatable(Animatable& animatable, const AnimationController& controller, bool force = false);
 
-        UpdateFlags updateSelectedCamera(bool forceUpdate);
-        UpdateFlags updateLights(bool forceUpdate);
-        UpdateFlags updateEnvMap(bool forceUpdate);
-        UpdateFlags updateMaterials(bool forceUpdate);
+        IScene::UpdateFlags updateSelectedCamera(bool forceUpdate);
+        IScene::UpdateFlags updateLights(bool forceUpdate);
+        IScene::UpdateFlags updateGridVolumes(bool forceUpdate);
+        IScene::UpdateFlags updateEnvMap(bool forceUpdate);
+        IScene::UpdateFlags updateMaterials(bool forceUpdate);
+        IScene::UpdateFlags updateGeometry(RenderContext* pRenderContext, bool forceUpdate);
+        IScene::UpdateFlags updateProceduralPrimitives(bool forceUpdate);
+        IScene::UpdateFlags updateRaytracingAABBData(bool forceUpdate);
+        IScene::UpdateFlags updateDisplacement(RenderContext* pRenderContext, bool forceUpdate);
+        IScene::UpdateFlags updateSDFGrids(RenderContext* pRenderContext);
 
         void updateGeometryStats();
-        void updateRaytracingStats();
+        void updateMaterialStats();
+        void updateRaytracingBLASStats();
+        void updateRaytracingTLASStats();
         void updateLightStats();
+        void updateGridVolumeStats();
 
-        struct SceneStats
-        {
-            // Geometry stats
-            size_t uniqueTriangleCount = 0;     ///< Number of unique triangles. A triangle can exist in multiple instances.
-            size_t uniqueVertexCount = 0;       ///< Number of unique vertices. A vertex can be referenced by multiple triangles/instances.
-            size_t instancedTriangleCount = 0;  ///< Number of instanced triangles. This is the total number of rendered triangles.
-            size_t instancedVertexCount = 0;    ///< Number of instanced vertices. This is the total number of vertices in the rendered triangles.
+        void bindGeometry();
+        void bindProceduralPrimitives();
+        void bindGridVolumes();
+        void bindSDFGrids();
+        void bindLights();
+        void bindSelectedCamera();
+        void bindParameterBlock();
 
-            // Raytracing stats
-            size_t blasCount = 0;               ///< Number of BLASes.
-            size_t blasCompactedCount = 0;      ///< Number of compacted BLASes.
-            size_t blasMemoryInBytes = 0;       ///< Total memory in bytes used by the BLASes.
+        Scene(ref<Device> pDevice, SceneData&& sceneData);
 
-            // Light stats
-            size_t activeLightCount = 0;        ///< Number of active lights.
-            size_t totalLightCount = 0;         ///< Number of lights in the scene.
-            size_t pointLightCount = 0;         ///< Number of point lights.
-            size_t directionalLightCount = 0;   ///< Number of directional lights.
-            size_t rectLightCount = 0;          ///< Number of rect lights.
-            size_t sphereLightCount = 0;        ///< Number of sphere lights.
-            size_t distantLightCount = 0;       ///< Number of distant lights.
-        };
-
-        Scene();
+        ref<Device> mpDevice; ///< GPU device the scene resides on.
 
         // Scene Geometry
-        Vao::SharedPtr mpParticleVao;
-        Vao::SharedPtr mpCurveVao;
-        Vao::SharedPtr mpVao;
+
         struct DrawArgs
         {
-            Buffer::SharedPtr pBuffer;
-            uint32_t count = 0;
-        } mDrawClockwiseMeshes, mDrawCounterClockwiseMeshes;
-
-        std::vector<CurveVertexData> mCPUCurveVertexBuffer;
-        Buffer::SharedPtr mpCurveVertexBuffer;
-
-        static const uint32_t kInvalidNode = -1;
-
-        struct Node
-        {
-            Node() = default;
-            Node(const std::string& n, uint32_t p, const glm::mat4& t, const glm::mat4& l2b) : parent(p), name(n), transform(t), localToBindSpace(l2b) {};
-            std::string name;
-            uint32_t parent = kInvalidNode;
-            glm::mat4 transform;  // The node's transformation matrix
-            glm::mat4 localToBindSpace; // Local to bind space transformation
+            ref<Buffer> pBuffer;            ///< Buffer holding the draw-indirect arguments.
+            uint32_t count = 0;             ///< Number of draws.
+            bool ccw = true;                ///< True if counterclockwise triangle winding.
+            ResourceFormat ibFormat = ResourceFormat::Unknown;  ///< Index buffer format.
         };
 
-        struct MeshGroup
+        GeometryTypeFlags mGeometryTypes;                           ///< Set of geometry types that exist in the scene.
+
+        std::vector<GeometryInstanceData> mGeometryInstanceData;    ///< Geometry instance data (for all types of geometry).
+
+        bool mUseCompressedHitInfo = false;                         ///< True if scene should used compressed HitInfo (on scenes with triangles meshes only).
+        bool mHas16BitIndices = false;                              ///< True if any meshes use 16-bit indices.
+        bool mHas32BitIndices = false;                              ///< True if any meshes use 32-bit indices.
+
+        ref<Vao> mpMeshVao;                               ///< Vertex array object for the global mesh vertex/index buffers.
+        ref<Vao> mpMeshVao16Bit;                          ///< VAO for drawing meshes with 16-bit vertex indices.
+        ref<Vao> mpCurveVao;                                        ///< Vertex array object for the global curve vertex/index buffers.
+        std::vector<DrawArgs> mDrawArgs;                            ///< List of draw arguments for rasterizing the meshes in the scene.
+
+        // Triangle meshes
+        std::vector<MeshDesc> mMeshDesc;                            ///< Copy of mesh data GPU buffer (mpMeshesBuffer).
+        std::vector<std::vector<Rectangle>> mMeshUVTiles;           ///< Bounding tiles for the mesh UVs
+        std::vector<MeshGroup> mMeshGroups;                         ///< Groups of meshes. Each group maps to a BLAS for ray tracing.
+        std::vector<std::string> mMeshNames;                        ///< Mesh names, indxed by mesh ID
+        std::vector<Node> mSceneGraph;                              ///< For each index i, the array element indicates the parent node. Indices are in relation to mLocalToWorldMatrices.
+
+        /// For Python bindings of triangle meshes.
+        ref<ComputePass> mpLoadMeshPass;
+        ref<ComputePass> mpUpdateMeshPass;
+
+        // Displacement mapping.
+        struct
         {
-            std::vector<uint32_t> meshList;     ///< List of meshId's that are part of the group.
-        };
+            bool needsUpdate = true;                                ///< True if displacement data has changed and a AABB update is required.
+            struct DisplacementMeshData { uint32_t AABBOffset = 0; uint32_t AABBCount = 0; };
+            std::vector<DisplacementMeshData> meshData;             ///< List of displacement mesh data (reference to AABBs).
+            std::vector<DisplacementUpdateTask> updateTasks;        ///< List of displacement AABB update tasks.
+            ref<Buffer> pUpdateTasksBuffer;                         ///< GPU Buffer with list of displacement AABB update tasks.
+            ref<ComputePass> pUpdatePass;                           ///< Comput epass to update displacement AABB data.
+            ref<Buffer> pAABBBuffer;                                ///< GPU Buffer of raw displacement AABB data. Used for acceleration structure creation, and bound to the Scene for access in shaders.
+        } mDisplacement;
 
-        // #SCENE We don't need those vectors on the host
-        std::vector<MeshDesc> mMeshDesc;                            ///< Copy of mesh data GPU buffer (mpMeshes)
-        std::vector<CurveDesc> mCurveDesc;                    ///< Copy of GPU buffer (mpCurves)
-        std::vector<ParticleSystemDesc> mParticleSystemDesc;
-        VolumeDesc mVolumeDesc;
-        std::vector<VolumeDesc> mVolumeDescArray; // for animated volume sequence
-        std::vector<MeshInstanceData> mMeshInstanceData;            ///< Mesh instance data.
-        std::vector<uint2> mTriangleInstanceMapping;
-        uint32_t mNumMeshInstances;
-        uint32_t mNumTriangleInstances;
-        std::vector<PackedMeshInstanceData> mPackedMeshInstanceData;///< Copy of packed mesh instance data GPU buffer (mpMeshInstances)
-        std::vector<MeshGroup> mMeshGroups;                         ///< Groups of meshes with identical transforms. Each group maps to a BLAS for ray tracing.
-        std::vector<Node> mSceneGraph;                              ///< For each index i, the array element indicates the parent node. Indices are in relation to mLocalToWorldMatrices
+        // Curves
+        std::vector<CurveDesc> mCurveDesc;                          ///< Copy of curve data GPU buffer (mpCurvesBuffer).
+        std::vector<uint32_t> mCurveIndexData;                      ///< Vertex indices for all curves in 32-bit.
+        std::vector<StaticCurveVertexData> mCurveStaticData;        ///< Vertex attributes for all curves.
 
-        std::vector<Material::SharedPtr> mMaterials;                ///< Bound to parameter block
-        std::vector<Light::SharedPtr> mLights;                      ///< Bound to parameter block
-        LightCollection::SharedPtr mpLightCollection;               ///< Bound to parameter block
-        LightProbe::SharedPtr mpLightProbe;                         ///< Bound to parameter block
-        EnvMap::SharedPtr mpEnvMap;                                 ///< Bound to parameter block
+        // SDF grids
+        std::vector<ref<SDFGrid>> mSDFGrids;                        ///< List of SDF grids.
+        std::vector<SDFGridDesc> mSDFGridDesc;                      ///< List of SDF grid descriptors.
+        uint32_t mSDFGridMaxLODCount;                               ///< The max LOD count of any SDF grid.
+        SDFGridConfig mSDFGridConfig;                               ///< SDF grid configuration.
+        SDFGridConfig mPrevSDFGridConfig;
 
-        // Scene Metadata (CPU Only)
-        std::vector<BoundingBox> mMeshBBs;                          ///< Bounding boxes for meshes (not instances)
-        std::vector<BoundingBox> mCurvePatchBBs;                    ///< Bounding boxes for curve patches
-        std::vector<BoundingBox> mParticleSystemBBs;
-        std::vector<BoundingBox> mVDBVolumeBBs;
+        // Custom primitives
+        std::vector<CustomPrimitiveDesc> mCustomPrimitiveDesc;      ///< Copy of custom primitive data GPU buffer (mpCustomPrimitivesBuffer).
+        std::vector<AABB> mCustomPrimitiveAABBs;                    ///< User-defined custom primitive AABBs.
+        uint32_t mCustomPrimitiveAABBOffset = 0;                    ///< Offset of custom primitive AABBs in global AABB list.
+        bool mCustomPrimitivesMoved = false;                        ///< Flag indicating that custom primitives were moved since last frame.
+        bool mCustomPrimitivesChanged = false;                      ///< Flag indicating that custom primitives were added/removed since last frame.
 
-        struct VDBBuffers
-        {
-            int numMips = 1;
-            bool hasEmissionGrid = false; // the last grid is emission grid
-            std::vector<Buffer::SharedPtr> kNodeLevel0s;
-            std::vector<Buffer::SharedPtr> kNodeLevel1s;
-            std::vector<Buffer::SharedPtr> kNodeLevel2s;
-            std::vector<Buffer::SharedPtr> kRootData_roots;
-            std::vector<Buffer::SharedPtr> kRootData_tiles;
-            std::vector<Buffer::SharedPtr> kGridDatas;
-        };
+        // The following array and buffer records the AABBs of all procedural primitives, including custom primitives, curves, etc.
+        std::vector<RtAABB> mRtAABBRaw;                             ///< Raw AABB data (min, max) for all procedural primitives.
+        ref<Buffer> mpRtAABBBuffer;                                 ///< GPU Buffer of raw AABB data. Used for acceleration structure creation, and bound to the Scene for access in shaders.
 
+        // Materials
+        std::unique_ptr<MaterialSystem> mpMaterials;                ///< Material system. This holds data and resources for all materials.
 
-        struct GVDBInfo
-        {
-            static const int MAX_LEVELS = 3;
-            static const int MAX_MIPS = 30; // mip 2*kNumMaxMips is reserved for temperature/emission, mip 2*kNumMaxMips+1 for velocity, mip 2*kNumMaxMips+2 for supervoxels
-            // mip 2 * kNumMaxMips + 3 -- 10  mip 0-7 of previous frame,  mip 2 * kNumMaxMips + 11 temperature grid of previous frame,  2*kNumMaxMips + 12 velocity of previous frame
-            static const int MAX_CHANNELS = 1;
+        // Lights
+        std::vector<ref<Light>> mLights;                            ///< All analytic lights. Note that not all may be active.
+        std::vector<ref<Light>> mActiveLights;                      ///< All active analytic lights.
+        std::vector<ref<GridVolume>> mGridVolumes;                  ///< All loaded grid volumes.
+        std::vector<ref<Grid>> mGrids;                              ///< All loaded grids.
+        std::unordered_map<ref<Grid>, SdfGridID> mGridIDs;          ///< Lookup table for grid IDs.
+        ref<LightCollection> mpLightCollection;                     ///< Class for managing emissive geometry. This is created lazily upon first use.
+        ref<EnvMap> mpEnvMap;                                       ///< Environment map or nullptr if not loaded.
+        bool mEnvMapChanged = false;                                ///< Flag indicating that the environment map has changed since last frame.
 
-            int			dim[MAX_LEVELS * MAX_MIPS]; // Log base 2 of lateral resolution of each node per level
-            int			res[MAX_LEVELS * MAX_MIPS]; // Lateral resolution of each node per level
-            float3		vdel[MAX_LEVELS * MAX_MIPS]; // How many voxels on a side a child of each level covers
-            int3		noderange[MAX_LEVELS * MAX_MIPS]; // How many voxels on a side a node of each level covers
-            int			nodecnt[MAX_LEVELS * MAX_MIPS]; // Total number of allocated nodes per level
-            int			nodewid[MAX_LEVELS * MAX_MIPS]; // Size of a node at each level in bytes
-            int			childwid[MAX_LEVELS * MAX_MIPS]; // Size of the child list per node at each level in bytes
-            Buffer::SharedPtr nodelist[MAX_LEVELS * MAX_MIPS];
-            Buffer::SharedPtr childlist[MAX_LEVELS * MAX_MIPS];
-            //Buffer::SharedPtr atlas_map;
-            //int3		atlas_cnt; // Number of bricks on each axis of the atlas
-            //int3		atlas_res; // Total resolution in voxels of the atlas
-            //int			atlas_apron; // Apron size
-            //int			brick_res; // Resolution of a single brick
-            //int			apron_table[8]; // Unused
-            int			top_lev[MAX_MIPS]; // Top level (i.e. tree spans from voxels to level 0 to level top_lev)
-            int			max_iter; // Unused
-            float		epsilon; // Epsilon used for voxel ray tracing
-            bool		update; // Whether this information needs to be updated from the latest volume data
-            //uchar		clr_chan; // Index of the color channel for rendering color information
-            uint        clr_chan;
-            float3		bmin[MAX_MIPS]; // Inclusive minimum of axis-aligned bounding box in voxels
-            float3		bmax[MAX_MIPS]; // Inclusive maximum of axis-aligned bounding box in voxels
-            Texture::SharedPtr	volIn[MAX_CHANNELS * MAX_MIPS]; // Texture reference (read plus interpolation) to atlas per channel
-            Texture::SharedPtr	volIn_part2[MAX_CHANNELS * MAX_MIPS]; //For depth slices that exceeds 2048
-            Texture::SharedPtr  velocityIn[2];
-            Texture::SharedPtr  velocityIn_part2[2];
-            float superVoxelWorldSpaceDiagonalLength;
-			int3 volInDimensions[MAX_CHANNELS * MAX_MIPS];
-            int3 volInDimensions_part2[MAX_CHANNELS * MAX_MIPS];
-            float3 invVolInDimensions[MAX_CHANNELS * MAX_MIPS];
-            float3 invVolInDimensions_part2[MAX_CHANNELS * MAX_MIPS];
-            float4x4 xform[MAX_MIPS];
-            float4x4 invxform[MAX_MIPS];
-            float4x4 invxrot[MAX_MIPS];
-            float maxValue[MAX_MIPS];
-            float invMaxValue[MAX_MIPS];
-            float densityCompressScaleFactor[MAX_MIPS];
-
-            void bindParameterBlock(ParameterBlock::SharedPtr block, int mipId);
-            void bindPrevParameterBlock(ParameterBlock::SharedPtr block, int mipId);
-
-        };
-
-        struct GVDBParamBlocks
-        {
-            ParameterBlock::SharedPtr paramBlock;
-            int numMips = 1;
-            bool hasEmissionGrid = false; // the last grid is emission grid
-            bool hasVelocityGrid = false;
-        };
-
-        public:
-
-        // Don't use, this is only for single mip level volumes
-        GVDBInfo getGVDBInfo(int volumeId)
-        {
-            return mGVDBInfos[volumeId];
-        }
-
-        bool mNewEnvMapLoaded = false;
-
-        private:
-
-        glm::mat4 computeVolumeExternalModelToWorldMatrix()
-        {
-            glm::mat4 externalModelToWorldMatrix;
-            externalModelToWorldMatrix = glm::translate(externalModelToWorldMatrix, mVolumeWorldTranslation);
-            externalModelToWorldMatrix = glm::rotate(externalModelToWorldMatrix, glm::radians(mVolumeWorldRotation.x), float3(1, 0, 0));
-            externalModelToWorldMatrix = glm::rotate(externalModelToWorldMatrix, glm::radians(mVolumeWorldRotation.y), float3(0, 1, 0));
-            externalModelToWorldMatrix = glm::rotate(externalModelToWorldMatrix, glm::radians(mVolumeWorldRotation.z), float3(0, 0, 1));
-            externalModelToWorldMatrix = glm::scale(externalModelToWorldMatrix, float3(mVolumeWorldScaling));
-            return externalModelToWorldMatrix;
-        }
-
-        std::vector<GVDBParamBlocks> mGVDBVolumes;
-        std::vector<GVDBInfo> mGVDBInfos;
-		std::vector<float4> mCPUBlackBodyRadiationTexture;
-        Texture::SharedPtr mpBlackBodyRadiationTexture;
-
-        std::vector<VDBBuffers> mVDBVolumes;
-
-        std::vector<std::vector<uint32_t>> mMeshIdToInstanceIds;    ///< Mapping of what instances belong to which mesh
-        BoundingBox mSceneBB;                                       ///< Bounding boxes of the entire scene
-		BoundingBox mSceneVolumeBB;                                 ///< Bounding boxes of volumes in the scene
-        std::vector<bool> mMeshHasDynamicData;                      ///< Whether a Mesh has dynamic data, meaning it is skinned
+        // Scene metadata (CPU only)
+        std::vector<AABB> mMeshBBs;                                 ///< Bounding boxes for meshes (not instances) in object space.
+        std::vector<std::vector<uint32_t>> mMeshIdToInstanceIds;    ///< Mapping of what instances belong to which mesh. The instanceID are sorted in ascending order.
+        std::vector<AABB> mCurveBBs;                                ///< Bounding boxes for curves (not instances) in object space.
+        std::vector<std::vector<uint32_t>> mCurveIdToInstanceIds;   ///< Mapping of what instances belong to which curve.
+        HitInfo mHitInfo;                                           ///< Geometry hit info requirements.
+        AABB mSceneBB;                                              ///< Bounding boxes of the entire scene in world space.
         SceneStats mSceneStats;                                     ///< Scene statistics.
+        Metadata mMetadata;                                         ///< Importer-provided metadata.
         RenderSettings mRenderSettings;                             ///< Render settings.
         RenderSettings mPrevRenderSettings;
+        DefineList mSceneDefines;                           ///< Current list of defines that need to be set on any program accessing the scene.
+        DefineList mPrevSceneDefines;                       ///< List of defines for the previous frame.
+        TypeConformanceList mTypeConformances;             ///< Current list of type conformances that need to be set on any program accessing the scene.
 
-        // Resources
-        Buffer::SharedPtr mpMeshesBuffer;
-        Buffer::SharedPtr mpCurvesBuffer;
-        Buffer::SharedPtr mpParticleSystemsBuffer;
-        public:
-        float3 mVolumeWorldTranslation = float3(0,0,0);
-        float3 mVolumeWorldRotation = float3(0, 0, 0);
-        float mVolumeWorldScaling = 1.f;
-        float mEmissiveIntensityMultiplier = 1.f;
-
-        bool mUseAnimatedVolume = false;
-        int mVDBAnimationFrameId = 0;
-        int mVDBLastAnimationFrameId = 0;
-        int mVDBAnimationFrames = 0;
-        bool mPauseVDBAnimation = false;
-
-        private:
-        Buffer::SharedPtr mpMeshInstancesBuffer;
-        Buffer::SharedPtr mpTriangleInstanceMappingBuffer;
-        Buffer::SharedPtr mpMaterialsBuffer;
-        Buffer::SharedPtr mpLightsBuffer;
-        ParameterBlock::SharedPtr mpSceneBlock;
-
-		//
-        float mSurfaceGlobalAlphaMultipler = 1.f;
-        float mParticleCurveGlobalAlphaMultipler = 1.f;
-
-        float mPrevSurfaceGlobalAlphaMultipler = 1.f;
-        float mPrevParticleCurveGlobalAlphaMultipler = 1.f;
-
-        // particle data
-
-        std::vector<ParticleSystem::SharedPtr> mParticleSystems;
-        Buffer::SharedPtr mpParticleAABBBuffer; //for procedural particles
-        ParticleSystemManager mParticleSystemManager;
-        public:
-            bool mNewParticleSystemAdded = false;
-        private:
-            uint32_t mTotalParticles = 0;
-            double mLastParticleTime = 0;
-
-        // Curve data
-        CurveFileLoader mCurveFileLoader;
-        Buffer::SharedPtr mpCurvePatchAABBBuffer;
-        float mCurveDisplayWidthMultiplier = 1.f;
-        bool mHasCurveDisplayWidthChanged = false;
+        // Scene block resources
+        ref<Buffer> mpGeometryInstancesBuffer;
+        ref<Buffer> mpMeshesBuffer;
+        ref<Buffer> mpCurvesBuffer;
+        ref<Buffer> mpCustomPrimitivesBuffer;
+        ref<Buffer> mpLightsBuffer;
+        ref<Buffer> mpGridVolumesBuffer;
+        ref<ParameterBlock> mpSceneBlock;
 
         // Camera
+        UpDirection mUpDirection = UpDirection::YPos;
         CameraControllerType mCamCtrlType = CameraControllerType::FirstPerson;
-        public:
-        CameraController::SharedPtr mpCamCtrl;
-        private:
-        std::vector<Camera::SharedPtr> mCameras;
+        std::unique_ptr<CameraController> mpCamCtrl;
+        std::vector<ref<Camera>> mCameras;
         uint32_t mSelectedCamera = 0;
         float mCameraSpeed = 1.0f;
         bool mCameraSwitched = false;
+        bool mCameraControlsEnabled = true;
+        AABB mCameraBounds;
 
         Gui::DropdownList mCameraList;
 
@@ -891,53 +1389,100 @@ namespace Falcor
         uint32_t mCurrentViewpoint = 0;
 
         // Rendering
-        RasterizerState::SharedPtr mpFrontClockwiseRS;
-        UpdateFlags mUpdates = UpdateFlags::All;
-        AnimationController::UniquePtr mpAnimationController;
+        std::map<RasterizerState::CullMode, ref<RasterizerState>> mFrontClockwiseRS;
+        std::map<RasterizerState::CullMode, ref<RasterizerState>> mFrontCounterClockwiseRS;
+        IScene::UpdateFlags mUpdates = IScene::UpdateFlags::All;
+        std::unique_ptr<AnimationController> mpAnimationController;
 
-        // Raytracing Data
-        UpdateMode mTlasUpdateMode = UpdateMode::Rebuild;   ///< How the TLAS should be updated when there are changes in the scene
-        UpdateMode mBlasUpdateMode = UpdateMode::Refit;     ///< How the BLAS should be updated when there are changes to meshes
+        // Raytracing data
+        UpdateMode mTlasUpdateMode = UpdateMode::Rebuild;   ///< How the TLAS should be updated when there are changes in the scene.
+        UpdateMode mBlasUpdateMode = UpdateMode::Refit;     ///< How the BLAS should be updated when there are changes to meshes.
 
-        std::vector<D3D12_RAYTRACING_INSTANCE_DESC> mInstanceDescs; ///< Shared between TLAS builds to avoid reallocating CPU memory
+        std::vector<RtInstanceDesc> mInstanceDescs;         ///< Shared between TLAS builds to avoid reallocating CPU memory.
 
         struct TlasData
         {
-            Buffer::SharedPtr pTlas;
-            ShaderResourceView::SharedPtr pSrv;             ///< Shader Resource View for binding the TLAS
-            Buffer::SharedPtr pInstanceDescs;               ///< Buffer holding instance descs for the TLAS
+            ref<RtAccelerationStructure> pTlasObject;
+            ref<Buffer> pTlasBuffer;
             UpdateMode updateMode = UpdateMode::Rebuild;    ///< Update mode this TLAS was created with.
         };
 
-        std::unordered_map<uint32_t, TlasData> mTlasCache;  ///< Top Level Acceleration Structure for scene data cached per shader ray count
-                                                            ///< Number of ray types in program affects Shader Table indexing
-        Buffer::SharedPtr mpTlasScratch;                    ///< Scratch buffer used for TLAS builds. Can be shared as long as instance desc count is the same, which for now it is.
-        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO mTlasPrebuildInfo; ///< This can be reused as long as the number of instance descs doesn't change.
+        std::unordered_map<uint32_t, TlasData> mTlasCache;  ///< Top Level Acceleration Structure for scene data cached per shader ray type count.
+                                                            ///< Number of ray types in program affects Shader Table indexing.
+        ref<Buffer> mpTlasScratch;                          ///< Scratch buffer used for TLAS builds. Can be shared as long as instance desc count is the same, which for now it is.
+        RtAccelerationStructurePrebuildInfo mTlasPrebuildInfo; ///< This can be reused as long as the number of instance descs doesn't change.
+        uint32_t mTlasLastBuiltRayCount = 0;                ///< RayTypeCount of the last built TLAS, zero if there is none
 
+        /** Describes one BLAS.
+        */
         struct BlasData
         {
-            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuildInfo;
-            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS buildInputs;
-            std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geomDescs;
+            RtAccelerationStructurePrebuildInfo prebuildInfo = {};
+            RtAccelerationStructureBuildInputs buildInputs = {};
+            std::vector<RtGeometryDesc> geomDescs;
 
-            uint64_t blasByteSize = 0;                      ///< Size of the final BLAS.
-            uint64_t blasByteOffset = 0;                    ///< Offset into the BLAS buffer to where it is stored.
-            uint64_t scratchByteOffset = 0;                 ///< Offset into the scratch buffer to use for updates/rebuilds.
+            uint32_t blasGroupIndex = 0;                    ///< Index of the BLAS group that contains this BLAS.
 
-            bool hasSkinnedMesh = false;                    ///< Whether the BLAS contains a skinned mesh, which means the BLAS may need to be updated.
+            uint64_t resultByteSize = 0;                    ///< Maximum result data size for the BLAS build, including padding.
+            uint64_t resultByteOffset = 0;                  ///< Offset into the BLAS result buffer.
+            uint64_t scratchByteSize = 0;                   ///< Maximum scratch data size for the BLAS build, including padding.
+            uint64_t scratchByteOffset = 0;                 ///< Offset into the BLAS scratch buffer.
+
+            uint64_t blasByteSize = 0;                      ///< Size of the final BLAS post-compaction, including padding.
+            uint64_t blasByteOffset = 0;                    ///< Offset into the final BLAS buffer.
+
+            bool hasProceduralPrimitives = false;           ///< True if the BLAS contains procedural primitives. Otherwise it is triangles.
+            bool hasDynamicMesh = false;                    ///< Whether the BLAS contains a skinned or vertex-animated mesh, which means the BLAS may need to be updated.
+            bool hasDynamicCurve = false;                   ///< Whether the BLAS contains an animated curve cache, which means the BLAS may need to be updated.
             bool useCompaction = false;                     ///< Whether the BLAS should be compacted after build.
             UpdateMode updateMode = UpdateMode::Refit;      ///< Update mode this BLAS was created with.
+
+            bool hasDynamicGeometry() const
+            {
+                return hasDynamicMesh || hasDynamicCurve;
+            }
         };
 
-        std::vector<BlasData> mBlasData;    ///< All data related to the scene's BLASes.
-        Buffer::SharedPtr mpBlas;           ///< Buffer containing all BLASes.
-        Buffer::SharedPtr mpBlasScratch;    ///< Scratch buffer used for BLAS builds.
-        bool mRebuildBlas = true;           ///< Flag to indicate BLASes need to be rebuilt.
-        bool mHasSkinnedMesh = false;       ///< Whether the scene has a skinned mesh at all.
+        /** Describes a group of BLASes.
+        */
+        struct BlasGroup
+        {
+            std::vector<uint32_t> blasIndices;              ///< Indices of all BLASes in the group.
 
-        std::string mFilename;
+            uint64_t resultByteSize = 0;                    ///< Maximum result data size for all BLASes in the group, including padding.
+            uint64_t scratchByteSize = 0;                   ///< Maximum scratch data size for all BLASes in the group, including padding.
+            uint64_t finalByteSize = 0;                     ///< Size of the final BLASes in the group post-compaction, including padding.
+
+            ref<Buffer> pBlas;                              ///< Buffer containing all final BLASes in the group.
+        };
+
+        // BLAS Data is ordered as all mesh BLAS's first, followed by one BLAS containing all AABBs.
+        std::vector<ref<RtAccelerationStructure>> mBlasObjects; ///< BLAS API objects.
+        std::vector<BlasData> mBlasData;                    ///< All data related to the scene's BLASes.
+        std::vector<BlasGroup> mBlasGroups;                 ///< BLAS group data.
+        ref<Buffer> mpBlasScratch;                          ///< Scratch buffer used for BLAS builds.
+        ref<Buffer> mpBlasStaticWorldMatrices;              ///< Object-to-world transform matrices in row-major format. Only valid for static meshes.
+        bool mBlasDataValid = false;                        ///< Flag to indicate if the BLAS data is valid. This will be reset when geometry is changed.
+        bool mRebuildBlas = true;                           ///< Flag to indicate BLASes need to be rebuilt.
+
+        std::vector<std::filesystem::path> mImportPaths;    ///< Vector of paths to assets loaded to create scene.
+        std::vector<SceneData::ImportDict> mImportDicts;    ///< Vector of dictionaries associated with each asset loaded to create scene.
+        bool mFinalized = false;                            ///< True if scene is ready to be bound to the GPU.
+
+        /// Used for very large scenes
+        SplitIndexBuffer mMeshIndexData;
+        SplitVertexBuffer mMeshStaticData;
+
+        UpdateFlagsSignal mUpdateFlagsSignal;
+    public:
+        SplitVertexBuffer& getMeshStaticData()
+        {
+            return mMeshStaticData;
+        }
+
+        const SplitVertexBuffer& getMeshStaticData() const
+        {
+            return mMeshStaticData;
+        }
     };
-
-    enum_class_operators(Scene::RenderFlags);
-    enum_class_operators(Scene::UpdateFlags);
 }

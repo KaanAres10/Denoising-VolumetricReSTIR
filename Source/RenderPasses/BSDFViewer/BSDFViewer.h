@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,55 +27,68 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
-#include "FalcorExperimental.h"
-#include "BSDFViewerParams.slang"
+#include "RenderGraph/RenderPass.h"
 #include "Utils/Sampling/SampleGenerator.h"
 #include "Utils/Debug/PixelDebug.h"
-#include "Experimental/Scene/Lights/EnvMap.h"
+#include "Scene/Lights/EnvMap.h"
+#include "BSDFViewerParams.slang"
 
 using namespace Falcor;
 
 class BSDFViewer : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<BSDFViewer>;
+    FALCOR_PLUGIN_CLASS(BSDFViewer, "BSDFViewer", "BSDF inspection utility.");
 
-    /** Create a new object
-    */
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
+    static ref<BSDFViewer> create(ref<Device> pDevice, const Properties& props) { return make_ref<BSDFViewer>(pDevice, props); }
 
-    virtual std::string getDesc() override { return sDesc; }
-    virtual Dictionary getScriptingDictionary() override;
+    BSDFViewer(ref<Device> pDevice, const Properties& props);
+
+    virtual Properties getProperties() const override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
-    virtual void compile(RenderContext* pContext, const CompileData& compileData) override;
+    virtual void compile(RenderContext* pRenderContext, const CompileData& compileData) override;
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
-    virtual void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
+    virtual void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
     virtual bool onMouseEvent(const MouseEvent& mouseEvent) override;
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override;
 
-    static const char* sDesc;
-
 private:
-    BSDFViewer(const Dictionary& dict);
-    bool loadEnvMap(const std::string& filename);
+    void parseProperties(const Properties& props);
+    bool loadEnvMap(const std::filesystem::path& path);
+    void readPixelData();
 
     // Internal state
-    Scene::SharedPtr                mpScene;                ///< Loaded scene if any, nullptr otherwise.
-    EnvMap::SharedPtr               mpEnvMap;               ///< Environment map if loaded, nullptr otherwise.
 
-    BSDFViewerParams                mParams;                ///< Parameters shared with the shaders.
-    SampleGenerator::SharedPtr      mpSampleGenerator;      ///< Random number generator for the integrator.
-    bool                            mOptionsChanged = false;
+    /// Loaded scene if any, nullptr otherwise.
+    ref<Scene> mpScene;
+    /// Environment map if loaded, nullptr otherwise.
+    ref<EnvMap> mpEnvMap;
+    /// Use environment map if available.
+    bool mUseEnvMap = true;
 
-    Buffer::SharedPtr               mPixelDataBuffer;       ///< Buffer for read back of data for the selected pixel.
-    PixelData                       mPixelData;             ///< Pixel data for the selected pixel (if valid).
-    bool                            mPixelDataValid = false;
+    /// Parameters shared with the shaders.
+    BSDFViewerParams mParams;
+    /// Random number generator for the integrator.
+    ref<SampleGenerator> mpSampleGenerator;
+    bool mOptionsChanged = false;
 
-    PixelDebug::SharedPtr           mpPixelDebug;           ///< Utility class for pixel debugging (print in shaders).
+    /// GPU fence for synchronizing readback.
+    ref<Fence> mpFence;
+    /// Buffer for data for the selected pixel.
+    ref<Buffer> mpPixelDataBuffer;
+    /// Staging buffer for readback of pixel data.
+    ref<Buffer> mpPixelStagingBuffer;
+    /// Pixel data for the selected pixel (if valid).
+    PixelData mPixelData;
+    bool mPixelDataValid = false;
+    bool mPixelDataAvailable = false;
 
-    ComputePass::SharedPtr          mpViewerPass;
+    /// Utility class for pixel debugging (print in shaders).
+    std::unique_ptr<PixelDebug> mpPixelDebug;
+
+    ref<ComputePass> mpViewerPass;
 
     // UI variables
-    Gui::DropdownList               mMaterialList;
+    Gui::DropdownList mMaterialList;
 };

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,25 +26,27 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #include "VertexAttrib.slangh"
-__exported import Scene.Scene;
+
 __exported import Scene.Shading;
 
 struct VSIn
 {
     // Packed vertex attributes, see PackedStaticVertexData
-    float3 pos                      : POSITION;
-    float3 packedNormalTangent      : PACKED_NORMAL_TANGENT;
-    float2 texC                     : TEXCOORD;
+    float3 pos                              : POSITION;
+    float3 packedNormalTangentCurveRadius   : PACKED_NORMAL_TANGENT_CURVE_RADIUS;
+    float2 texC                             : TEXCOORD;
 
     // Other vertex attributes
-    uint meshInstanceID             : DRAW_ID;
-    float3 prevPos                  : PREV_POSITION;
+    uint instanceID                         : DRAW_ID;
+
+    // System values
+    uint vertexID                           : SV_VertexID;
 
     StaticVertexData unpack()
     {
         PackedStaticVertexData v;
         v.position = pos;
-        v.packedNormalTangent = packedNormalTangent;
+        v.packedNormalTangentCurveRadius = packedNormalTangentCurveRadius;
         v.texCrd = texC;
         return v.unpack();
     }
@@ -56,16 +58,15 @@ struct VSIn
 
 struct VSOut
 {
-    INTERPOLATION_MODE float3 normalW    : NORMAL;
-    INTERPOLATION_MODE float4 tangentW   : TANGENT;
-    INTERPOLATION_MODE float2 texC       : TEXCRD;
-    INTERPOLATION_MODE float3 posW       : POSW;
-    INTERPOLATION_MODE float3 colorV     : COLOR;
-    INTERPOLATION_MODE float4 prevPosH   : PREVPOSH;
+    INTERPOLATION_MODE float3 normalW    : NORMAL;      ///< Shading normal in world space (not normalized!).
+    INTERPOLATION_MODE float4 tangentW   : TANGENT;     ///< Shading tangent in world space (not normalized!).
+    INTERPOLATION_MODE float2 texC       : TEXCRD;      ///< Texture coordinate.
+    INTERPOLATION_MODE float3 posW       : POSW;        ///< Position in world space.
+    INTERPOLATION_MODE float4 prevPosH   : PREVPOSH;    ///< Position in clip space for the previous frame.
 
     // Per-triangle data
-    nointerpolation uint meshInstanceID  : DRAW_ID;
-    nointerpolation uint materialID      : MATERIAL_ID;
+    nointerpolation GeometryInstanceID instanceID   : INSTANCE_ID;  ///< Geometry instance ID.
+    nointerpolation uint materialID                 : MATERIAL_ID;  ///< Material ID.
 
     float4 posH : SV_POSITION;
 };
@@ -73,23 +74,33 @@ struct VSOut
 VSOut defaultVS(VSIn vIn)
 {
     VSOut vOut;
-    float4x4 worldMat = gScene.getWorldMatrix(vIn.meshInstanceID);
-    float4 posW = mul(float4(vIn.pos, 1.f), worldMat);
-    vOut.posW = posW.xyz;
-    vOut.posH = mul(posW, gScene.camera.getViewProj());
+    const GeometryInstanceID instanceID = { vIn.instanceID };
 
-    vOut.meshInstanceID = vIn.meshInstanceID;
-    vOut.materialID = gScene.getMaterialID(vIn.meshInstanceID);
+    float4x4 worldMat = gScene.getWorldMatrix(instanceID);
+    float3 posW = mul(worldMat, float4(vIn.pos, 1.f)).xyz;
+    vOut.posW = posW;
+    vOut.posH = mul(gScene.camera.getViewProj(), float4(posW, 1.f));
+
+    vOut.instanceID = instanceID;
+    vOut.materialID = gScene.getMaterialID(instanceID);
 
     vOut.texC = vIn.texC;
-    vOut.normalW = mul(vIn.unpack().normal, gScene.getInverseTransposeWorldMatrix(vIn.meshInstanceID));
+    vOut.normalW = mul(gScene.getInverseTransposeWorldMatrix(instanceID), vIn.unpack().normal);
     float4 tangent = vIn.unpack().tangent;
-    vOut.tangentW = float4(mul(tangent.xyz, (float3x3)gScene.getWorldMatrix(vIn.meshInstanceID)), tangent.w);
+    vOut.tangentW = float4(mul((float3x3)gScene.getWorldMatrix(instanceID), tangent.xyz), tangent.w);
 
-    float4 prevPosW = mul(float4(vIn.prevPos, 1.f), gScene.getPrevWorldMatrix(vIn.meshInstanceID));
-    vOut.prevPosH = mul(prevPosW, gScene.camera.data.prevViewProjMatNoJitter);
+    // Compute the vertex position in the previous frame.
+    float3 prevPos = vIn.pos;
+    GeometryInstanceData instance = gScene.getGeometryInstance(instanceID);
+    if (instance.isDynamic())
+    {
+        uint prevVertexIndex = gScene.meshes[instance.geometryID].prevVbOffset + vIn.vertexID;
+        prevPos = gScene.prevVertices[prevVertexIndex].position;
+    }
+    float3 prevPosW = mul(gScene.getPrevWorldMatrix(instanceID), float4(prevPos, 1.f)).xyz;
+    vOut.prevPosH = mul(gScene.camera.data.prevViewProjMatNoJitter, float4(prevPosW, 1.f));
 
-  return vOut;
+    return vOut;
 }
 
 /** Setup vertex data based on interpolated vertex attributes.
@@ -104,18 +115,33 @@ VertexData prepareVertexData(VSOut vsOut, float3 faceNormalW)
     v.texC = vsOut.texC;
     v.normalW = normalize(vsOut.normalW);
     v.faceNormalW = faceNormalW;
-    // Handle invalid tangents gracefully (avoid NaN from normalization).
-    v.tangentW.xyz = vsOut.tangentW.w != 0.f ? normalize(vsOut.tangentW.xyz) : float3(0, 0, 0);
+    v.tangentW.xyz = normalize(vsOut.tangentW.xyz);
     v.tangentW.w = sign(vsOut.tangentW.w); // Preserve zero to indicate invalid tangent.
     return v;
 }
 
 /** Helper function that prepares the ShadingData struct based on VSOut.
-    This version uses implicit LOD and fetches material data directly from the scene.
+    \param[in] vsOut Interpolated vertex attributes.
+    \param[in] triangleIndex Triangle index.
+    \param[in] viewDir View direction. Points from the shading point towards the viewer.
+    \return Shading data struct.
 */
 ShadingData prepareShadingData(VSOut vsOut, uint triangleIndex, float3 viewDir)
 {
-    float3 faceNormal = gScene.getFaceNormalW(vsOut.meshInstanceID, triangleIndex);
+    float3 faceNormal = gScene.getFaceNormalW(vsOut.instanceID, triangleIndex);
     VertexData v = prepareVertexData(vsOut, faceNormal);
-    return prepareShadingData(v, vsOut.materialID, gScene.materials[vsOut.materialID], gScene.materialResources[vsOut.materialID], viewDir);
+    return gScene.materials.prepareShadingData(v, vsOut.materialID, viewDir);
+}
+
+/** Helper function to evaluate alpha testing based on VSOut.
+    \param[in] vsOut Interpolated vertex attributes.
+    \param[in] triangleIndex Triangle index.
+    \param[in] lod Method for computing texture level-of-detail, must implement the `ITextureSampler` interface.
+    \return True if hit should be ignored/discarded.
+*/
+bool alphaTest<L:ITextureSampler>(VSOut vsOut, uint triangleIndex, L lod)
+{
+    float3 faceNormal = gScene.getFaceNormalW(vsOut.instanceID, triangleIndex);
+    VertexData v = prepareVertexData(vsOut, faceNormal);
+    return gScene.materials.alphaTest(v, vsOut.materialID, lod);
 }

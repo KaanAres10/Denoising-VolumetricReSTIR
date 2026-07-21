@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,32 +27,36 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
-#include "FalcorExperimental.h"
+#include "RenderGraph/RenderPass.h"
 
 using namespace Falcor;
 
+/**
+ * Render pass that blits an input texture to an output texture.
+ *
+ * This pass is useful for format conversion.
+ */
 class BlitPass : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<BlitPass>;
+    FALCOR_PLUGIN_CLASS(BlitPass, "BlitPass", "Blit a texture into a different texture.");
 
-    static const char* kDesc;
+    static ref<BlitPass> create(ref<Device> pDevice, const Properties& props) { return make_ref<BlitPass>(pDevice, props); }
 
-    /** Create a new object
-    */
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
+    BlitPass(ref<Device> pDevice, const Properties& props);
 
+    virtual Properties getProperties() const override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
-    virtual void execute(RenderContext* pContext, const RenderData& renderData) override;
+    virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
-    virtual Dictionary getScriptingDictionary() override;
-    virtual std::string getDesc() override { return kDesc; }
 
-    void setFilter(Sampler::Filter filter) { mFilter = filter; }
+    // Scripting functions
+    TextureFilteringMode getFilter() const { return mFilter; }
+    void setFilter(TextureFilteringMode filter) { mFilter = filter; }
 
 private:
-    BlitPass(const Dictionary& dict);
-    void parseDictionary(const Dictionary& dict);
+    void parseProperties(const Properties& props);
 
-    Sampler::Filter mFilter = Sampler::Filter::Linear;
+    TextureFilteringMode mFilter = TextureFilteringMode::Linear;
+    ResourceFormat mOutputFormat = ResourceFormat::Unknown;
 };

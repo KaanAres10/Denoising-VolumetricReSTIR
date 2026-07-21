@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,6 +27,7 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
+#include "Utils/Timing/CpuTimer.h"
 #include "../ComparisonPass.h"
 
 using namespace Falcor;
@@ -34,29 +35,34 @@ using namespace Falcor;
 class SplitScreenPass : public ComparisonPass
 {
 public:
-    using SharedPtr = std::shared_ptr<SplitScreenPass>;
+    FALCOR_PLUGIN_CLASS(SplitScreenPass, "SplitScreenPass", "Allows the user to split the screen between two inputs.");
 
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
-    virtual std::string getDesc() override { return kDesc; }
-    virtual void execute(RenderContext* pContext, const RenderData& renderData) override;
+    static ref<SplitScreenPass> create(ref<Device> pDevice, const Properties& props) { return make_ref<SplitScreenPass>(pDevice, props); }
+
+    SplitScreenPass(ref<Device> pDevice, const Properties& props);
+
+    virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual bool onMouseEvent(const MouseEvent& mouseEvent) override;
     virtual void renderUI(Gui::Widgets& widget) override;
 
-    static const char* kDesc;
-
 private:
-    SplitScreenPass();
     virtual void createProgram() override;
-    Texture::SharedPtr mpArrowTex; // A texture storing a 16x16 grayscale arrow
+
+    /// A texture storing a 16x16 grayscale arrow
+    ref<Texture> mpArrowTex;
 
     // Mouse parameters
-    bool mMouseOverDivider = false; ///< Is the mouse over the divider?
-    int2 mMousePos = int2(0, 0); ///< Where was mouse in last mouse event processed
-    bool mDividerGrabbed = false; ///< Are we grabbing the divider?
 
-    bool mDrawArrows = false; ///< When hovering over divider, show arrows?
+    /// Is the mouse over the divider?
+    bool mMouseOverDivider = false;
+    /// Where was mouse in last mouse event processed
+    int2 mMousePos = int2(0, 0);
+    /// Are we grabbing the divider?
+    bool mDividerGrabbed = false;
 
-    // Double-click detection Parameters
-    Clock mClock; ///< Global clock used to track click times
-    double mTimeOfLastClick = 0; ///< Time since mouse was last clicked
+    /// When hovering over divider, show arrows?
+    bool mDrawArrows = false;
+
+    /// Time of last mouse click (double-click detection)
+    CpuTimer::TimePoint mTimeOfLastClick{};
 };

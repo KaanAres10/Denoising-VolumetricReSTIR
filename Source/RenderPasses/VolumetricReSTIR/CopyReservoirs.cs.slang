@@ -38,7 +38,7 @@
 
 #include "Utils/Math/MathConstants.slangh"
 __exported import Reservoir;
-#include "HostDeviceSharedDefinitions.h"
+#include "HostDeviceSharedDefinitions.slangh"
 
 cbuffer CB
 {

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-22, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,36 +26,41 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-// #TODO Implement MonitorInfo cross-platform. GLFW?
-#ifdef _WIN32
+#include "Core/Macros.h"
+#include "Utils/Math/Vector.h"
+#include <string>
+#include <vector>
 
 namespace Falcor
 {
-    /** A class to extract information about displays
-    */
-    class dlldecl MonitorInfo
+/**
+ * A class to extract information about displays
+ */
+class FALCOR_API MonitorInfo
+{
+public:
+    /**
+     * Description data structure
+     */
+    struct MonitorDesc
     {
-    public:
-        /** Description data structure
-        */
-        struct MonitorDesc
-        {
-            std::string mIdentifier;
-            float2 mResolution;
-            float2 mPhysicalSize;
-            float mPpi;
-            bool mIsPrimary;
-        };
-
-        /** Function to enumerate all monitors.
-            This function is _not_ thread-safe
-            \param monitorDescs An empty vector to receive the output list of monitor configurations.
-        */
-        static void getMonitorDescs(std::vector<MonitorDesc>& monitorDescs);
-
-        /** Display information on currently connected monitors
-        */
-        static void displayMonitorInfo();
+        std::string identifier; ///< Monitor identifier.
+        uint2 resolution;       ///< Resolution in pixels.
+        float2 physicalSize;    ///< Physical size in inches.
+        float ppi;              ///< Pixel density (points per inch).
+        bool isPrimary;         ///< True if primary monitor.
     };
-}
-#endif // _WIN32
+
+    /**
+     * Get a list of all monitors.
+     * This function is _not_ thread-safe
+     * @return Returns a list of monitor configurations.
+     */
+    static std::vector<MonitorDesc> getMonitorDescs();
+
+    /**
+     * Display information on currently connected monitors.
+     */
+    static void displayMonitorInfo();
+};
+} // namespace Falcor

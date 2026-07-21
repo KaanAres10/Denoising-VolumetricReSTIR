@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,34 +26,37 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 import Utils.Math.MathHelpers;
+import Utils.Sampling.TinyUniformSampleGenerator;
 
-Buffer<float4> spheres;   // xyz: center, w: radius
-RWStructuredBuffer<float> sinTheta, cosTheta;
+RWStructuredBuffer<float> result;
+StructuredBuffer<float> input;
 
-[numthreads(1, 1, 1)]
-void testBoundSphereAngle(uint3 threadId : SV_DispatchThreadID)
+[numthreads(1024, 1, 1)]
+void testSphericalCoordinates(uint3 threadId: SV_DispatchThreadID)
 {
-    const uint index = threadId.x;
-    float sqrRadius = spheres[index].w * spheres[index].w;
-    boundSphereSubtendedConeAngle(spheres[index].xyz, sqrRadius,
-                                  sinTheta[index], cosTheta[index]);
+    TinyUniformSampleGenerator sg = TinyUniformSampleGenerator(uint2(0), threadId.x);
+    float3 dir = normalize(sampleNext3D(sg) * 2.f - 1.f);
+    float2 uv = world_to_latlong_map(dir);
+    result[threadId.x] = dot(normalize(dir), latlong_map_to_world(uv));
 }
 
-Buffer<float3> origin, aabbMin, aabbMax;
-RWStructuredBuffer<float3> coneDir;
-
-[numthreads(1, 1, 1)]
-void testBoundingConeAngleAverage(uint3 threadId : SV_DispatchThreadID)
+[numthreads(1024, 1, 1)]
+void testSphericalCoordinatesRad(uint3 threadId: SV_DispatchThreadID)
 {
-    const uint index = threadId.x;
-    boundBoxSubtendedConeAngleAverage(origin[index], aabbMin[index], aabbMax[index],
-                                      coneDir[index], sinTheta[index], cosTheta[index]);
+    TinyUniformSampleGenerator sg = TinyUniformSampleGenerator(uint2(0), threadId.x);
+    float3 dir = normalize(sampleNext3D(sg) * 2.f - 1.f);
+    float2 sph = cartesian_to_spherical_rad(dir);
+    result[threadId.x] = dot(normalize(dir), spherical_to_cartesian_rad(sph));
 }
 
-[numthreads(1, 1, 1)]
-void testBoundingConeAngleCenter(uint3 threadId : SV_DispatchThreadID)
+[numthreads(25, 1, 1)]
+void testErrorFunction(uint3 threadId: SV_DispatchThreadID)
 {
-    const uint index = threadId.x;
-    boundBoxSubtendedConeAngleCenter(origin[index], aabbMin[index], aabbMax[index],
-                                     coneDir[index], sinTheta[index], cosTheta[index]);
+    result[threadId.x] = erf(input[threadId.x]);
+}
+
+[numthreads(25, 1, 1)]
+void testInverseErrorFunction(uint3 threadId: SV_DispatchThreadID)
+{
+    result[threadId.x] = erfinv(input[threadId.x]);
 }

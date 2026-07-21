@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -30,17 +30,10 @@
 #include "SideBySidePass/SideBySidePass.h"
 #include "ColorMapPass/ColorMapPass.h"
 
-extern "C" __declspec(dllexport) const char* getProjDir()
+extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
 {
-    return PROJECT_DIR;
-}
-
-extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary& lib)
-{
-    lib.registerClass("SplitScreenPass", SplitScreenPass::kDesc, SplitScreenPass::create);
-    lib.registerClass("InvalidPixelDetectionPass", InvalidPixelDetectionPass::kDesc, InvalidPixelDetectionPass::create);
-    lib.registerClass("SideBySidePass", SideBySidePass::kDesc, SideBySidePass::create);
-    lib.registerClass("ColorMapPass", ColorMapPass::kDesc, ColorMapPass::create);
-
-    ScriptBindings::registerBinding(ColorMapPass::registerScriptBindings);
+    registry.registerClass<RenderPass, SplitScreenPass>();
+    registry.registerClass<RenderPass, InvalidPixelDetectionPass>();
+    registry.registerClass<RenderPass, SideBySidePass>();
+    registry.registerClass<RenderPass, ColorMapPass>();
 }

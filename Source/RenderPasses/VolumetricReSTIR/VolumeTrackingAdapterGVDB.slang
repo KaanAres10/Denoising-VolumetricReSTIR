@@ -5,7 +5,7 @@ __exported import VolumeBase;
 
 interface IVolumeTrackingAdapterGVDB
 {
-    [mutating] void SetRayInfo(float tNear_, float tFar_, Ray ray_);
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_);
 
     [mutating] void InitializeValues();
 
@@ -23,7 +23,7 @@ struct MediumTrAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
     bool useLinearSampler;
     float tNear;
     float tFar;
-    Ray ray;
+    VolRay ray;
     bool hasInitialized = false;
 
     [mutating] void InitializeValues()
@@ -32,7 +32,7 @@ struct MediumTrAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
         hasInitialized = false;
     }
 
-    [mutating] void SetRayInfo(float tNear_, float tFar_, Ray ray_)
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
     {
         tNear = tNear_;
         tFar = tFar_;
@@ -143,7 +143,7 @@ struct MediumTrRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
     bool useLinearSampler;
     float tNear;
     float tFar;
-    Ray ray;
+    VolRay ray;
     float tStep; // ray marching step
 
     bool hasInitialized = false;
@@ -154,7 +154,7 @@ struct MediumTrRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
         hasInitialized = false;
     }
 
-    [mutating] void SetRayInfo(float tNear_, float tFar_, Ray ray_)
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
     {
         tNear = tNear_;
         tFar = tFar_;
@@ -218,7 +218,7 @@ struct SampleMediumAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
     float opticalThickness = 0.f;
     float tNear;
     float tFar;
-    Ray ray;
+    VolRay ray;
     bool hasInitialized = false;
     bool useLinearSampler = false;
 
@@ -236,7 +236,7 @@ struct SampleMediumAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
         hasInitialized = true;
     }
 
-    [mutating] void SetRayInfo(float tNear_, float tFar_, Ray ray_)
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
     {
         tNear = tNear_;
         tFar = tFar_;
@@ -442,7 +442,7 @@ struct SampleVolumeCellByDensityAdapterGVDB : IVolumeTrackingAdapterGVDB
     float2 selectedInterval = float2(-1, -1);
     float tNear;
     float tFar;
-    Ray ray;
+    VolRay ray;
     float runningSum = 0.f;
     float Tr = 0.f;
 
@@ -459,7 +459,7 @@ struct SampleVolumeCellByDensityAdapterGVDB : IVolumeTrackingAdapterGVDB
         selectedInterval = float2(-1, -1);
     }
 
-    [mutating] void SetRayInfo(float tNear_, float tFar_, Ray ray_)
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
     {
         tNear = tNear_;
         tFar = tFar_;
@@ -521,7 +521,7 @@ struct ReservoirFeatureRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
     float tNear;
     float tFar;
     float tSurface;
-    Ray ray;
+    VolRay ray;
     float farDepth; // need to provide farDepth
     float Tr = 0.f;
     bool useLinearSampler;
@@ -585,7 +585,7 @@ struct ReservoirFeatureRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
         return false;
     }
 
-    [mutating] void SetRayInfo(float tNear_, float tFar_, Ray ray_)
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
     {
         tNear = tNear_;
         tFar = tFar_;
@@ -607,9 +607,9 @@ struct DecompositionTrackingGVDBAdapter : IVolumeTrackingAdapterGVDB
 {
     float tNear;
     float tFar;
-    Ray ray; // ray in fine medium
-    Ray rMip0;
-    Ray rWorld;
+    VolRay ray; // ray in fine medium
+    VolRay rMip0;
+    VolRay rWorld;
     MediumInteraction mi;
 
     [mutating] void InitializeValues()
@@ -620,7 +620,7 @@ struct DecompositionTrackingGVDBAdapter : IVolumeTrackingAdapterGVDB
     {
     }
 
-    [mutating] void SetRayInfo(float tNear_, float tFar_, Ray ray_)
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
     {
         tNear = tNear_;
         tFar = tFar_;
@@ -711,8 +711,8 @@ struct ResidualRatioTrackingGVDBAdapter : IVolumeTrackingAdapterGVDB
 {
     float tNear;
     float tFar;
-    Ray ray; // ray in fine medium
-    Ray rMip0;
+    VolRay ray; // ray in fine medium
+    VolRay rMip0;
     float Tr;
     bool useAnalogResidual;
     bool useGlobalMajorant;
@@ -727,7 +727,7 @@ struct ResidualRatioTrackingGVDBAdapter : IVolumeTrackingAdapterGVDB
         if (useGlobalMajorant) useAnalogResidual = true;
     }
 
-    [mutating] void SetRayInfo(float tNear_, float tFar_, Ray ray_)
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
     {
         tNear = tNear_;
         tFar = tFar_;

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -30,37 +30,36 @@
 
 using namespace Falcor;
 
-/** Rasterized V-buffer pass.
-
-    This pass renders a visibility buffer using ray tracing.
-    The visibility buffer encodes the mesh instance ID and primitive index,
-    as well as the barycentrics at the hit point.
-*/
+/**
+ * Rasterized V-buffer pass.
+ *
+ * This pass renders a visibility buffer using ray tracing.
+ * The visibility buffer encodes the mesh instance ID and primitive index,
+ * as well as the barycentrics at the hit point.
+ */
 class VBufferRaster : public GBufferBase
 {
 public:
-    using SharedPtr = std::shared_ptr<VBufferRaster>;
+    FALCOR_PLUGIN_CLASS(VBufferRaster, "VBufferRaster", "Rasterized V-buffer generation pass.");
 
-    static SharedPtr create(RenderContext* pRenderContext, const Dictionary& dict);
+    static ref<VBufferRaster> create(ref<Device> pDevice, const Properties& props) { return make_ref<VBufferRaster>(pDevice, props); }
+
+    VBufferRaster(ref<Device> pDevice, const Properties& props);
 
     RenderPassReflection reflect(const CompileData& compileData) override;
-    void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
+    void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
     void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
-    std::string getDesc(void) override { return kDesc; }
 
 private:
-    VBufferRaster(const Dictionary& dict);
+    void recreatePrograms();
 
     // Internal state
-    Fbo::SharedPtr                  mpFbo;
+    ref<Fbo> mpFbo;
 
     struct
     {
-        GraphicsState::SharedPtr pState;
-        GraphicsProgram::SharedPtr pProgram;
-        GraphicsVars::SharedPtr pVars;
+        ref<GraphicsState> pState;
+        ref<Program> pProgram;
+        ref<ProgramVars> pVars;
     } mRaster;
-
-    static const char* kDesc;
-    friend void getPasses(Falcor::RenderPassLibrary& lib);
 };

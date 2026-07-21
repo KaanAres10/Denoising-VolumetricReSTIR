@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,14 +25,14 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "Animatable.h"
+#include "Utils/Scripting/ScriptBindings.h"
 
 namespace Falcor
 {
-    SCRIPT_BINDING(Animatable)
+    FALCOR_SCRIPT_BINDING(Animatable)
     {
-        pybind11::class_<Animatable, Animatable::SharedPtr> animatable(m, "Animatable");
+        pybind11::class_<Animatable, ref<Animatable>> animatable(m, "Animatable");
         animatable.def_property_readonly("hasAnimation", &Animatable::hasAnimation);
         animatable.def_property("animated", &Animatable::isAnimated, &Animatable::setIsAnimated);
     }

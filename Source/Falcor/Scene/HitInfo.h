@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,64 +26,47 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include "Falcor.h"
+#include "Core/Macros.h"
+#include "Core/API/Formats.h"
+#include "Core/Program/DefineList.h"
 
 namespace Falcor
 {
-    class HitInfo
+    class Scene;
+
+    /** Host side utility to setup the bit allocations for device side HitInfo.
+
+        By default, HitInfo is encoded in 128 bits. There is a compression mode
+        where HitInfo is encoded in 64 bits. This mode is only available in
+        scenes that exclusively use triangle meshes and are small enough so
+        the header information fits in 32 bits. In compression mode,
+        barycentrics are quantized to 16 bit unorms.
+
+        See HitInfo.slang for more information.
+    */
+    class FALCOR_API HitInfo
     {
     public:
-        static const uint32_t kInvalidIndex = 0xffffffff;
+        static constexpr uint32_t kMaxPackedSizeInBytes = 16;
+        static constexpr ResourceFormat kDefaultFormat = ResourceFormat::RGBA32Uint;
+
+        HitInfo() = default;
+        HitInfo(const Scene& scene, bool useCompression = false) { init(scene, useCompression); }
+        void init(const Scene& scene, bool useCompression);
 
         /** Returns defines needed packing/unpacking a HitInfo struct.
         */
-        static Shader::DefineList getDefines(const Scene* pScene)
-        {
-            // Setup bit allocations for encoding the meshInstanceID and primitive indices.
+        DefineList getDefines() const;
 
-            uint32_t meshInstanceCount = pScene->getMeshInstanceCount() + pScene->getParticleSystemCount() + pScene->getCurveCount();
-            uint32_t maxInstanceID = meshInstanceCount > 0 ? meshInstanceCount - 1 : 0;
-            uint32_t instanceIndexBits = maxInstanceID > 0 ? bitScanReverse(maxInstanceID) + 1 : 0;
+        /** Returns the resource format required for encoding packed hit information.
+        */
+        ResourceFormat getFormat() const;
 
-            uint32_t maxTriangleCount = 0;
-            for (uint32_t meshID = 0; meshID < pScene->getMeshCount(); meshID++)
-            {
-                uint32_t triangleCount = pScene->getMesh(meshID).getTriangleCount();
-                maxTriangleCount = std::max(triangleCount, maxTriangleCount);
-            }
+    private:
+        bool mUseCompression = false;       ///< Store in compressed format (64 bits instead of 128 bits).
 
-            for (uint32_t particleSystemID = 0; particleSystemID < pScene->getParticleSystemCount(); particleSystemID++)
-            {
-#ifdef PROCEDURAL_PARTICLE
-                uint32_t triangleCount = pScene->getParticleSystemDesc(particleSystemID).getParticleCount();
-#else
-                uint32_t triangleCount = 2 * pScene->getParticleSystemDesc(particleSystemID).getParticleCount();
-#endif
-                uint32_t maxParticleCount = pScene->getParticleSystem(particleSystemID)->getMaxParticles();
-                maxTriangleCount = std::max(maxParticleCount, std::max(triangleCount, maxTriangleCount));
-            }
-
-            for (uint32_t curveID = 0; curveID < pScene->getCurveCount(); curveID++)
-            {
-                uint32_t patchCount = pScene->getCurve(curveID).getPatchCount();
-                maxTriangleCount = std::max(2*patchCount, maxTriangleCount);
-            }
-
-            uint32_t maxTriangleID = maxTriangleCount > 0 ? maxTriangleCount - 1 : 0;
-            uint32_t triangleIndexBits = maxTriangleID > 0 ? bitScanReverse(maxTriangleID) + 1 : 0;
-
-            //if (instanceIndexBits + triangleIndexBits > 32 ||
-            //    (instanceIndexBits + triangleIndexBits == 32 && ((maxInstanceID << triangleIndexBits) | maxTriangleID) == kInvalidIndex))
-            //{
-            //    logError("Scene requires > 32 bits for encoding meshInstanceID/triangleIndex. This is currently not supported.");
-            //}
-
-            // Setup defines for the shader program.
-            Shader::DefineList defines;
-            defines.add("HIT_INSTANCE_INDEX_BITS", std::to_string(instanceIndexBits));
-            defines.add("HIT_TRIANGLE_INDEX_BITS", std::to_string(triangleIndexBits));
-
-            return defines;
-        }
+        uint32_t mTypeBits = 0;             ///< Number of bits to store hit type.
+        uint32_t mInstanceIDBits = 0;       ///< Number of bits to store instance ID.
+        uint32_t mPrimitiveIndexBits = 0;   ///< Number of bits to store primitive index.
     };
 }

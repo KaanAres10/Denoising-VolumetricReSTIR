@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,58 +27,66 @@
  **************************************************************************/
 #pragma once
 #include "SceneBuilder.h"
+#include "ImporterError.h"
+#include "Core/Macros.h"
+#include "Core/Error.h"
+#include "Core/Plugin.h"
+#include "Core/Platform/OS.h"
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace Falcor
 {
-    /** This class is a global registry for asset importers.
+    /** Base class for importers.
         Importers are bound to a set of file extensions. This allows the right importer to
         be called when importing an asset file.
     */
-    class dlldecl Importer
+    class FALCOR_API Importer
     {
     public:
-        using ExtensionList = std::vector<std::string>;
-        using ImportFunction = std::function<bool(const std::string& filename, SceneBuilder& builder, const SceneBuilder::InstanceMatrices& instances, const Dictionary& dict)>;
-
-        /** Description of an importer.
-        */
-        struct Desc
+        using PluginCreate = std::function<std::unique_ptr<Importer>()>;
+        struct PluginInfo
         {
-            std::string name;
-            ExtensionList extensions;
-            ImportFunction import;
+            std::string desc; ///< Importer description.
+            std::vector<std::string> extensions; ///< List of handled file extensions.
         };
 
-        /** Returns a list of file extensions filters for all supported file formats.
-        */
-        static const FileDialogFilterVec& getFileExtensionFilters();
+        FALCOR_PLUGIN_BASE_CLASS(Importer);
 
-        /** Import an asset.
-            \param[in] filename Filename.
+        virtual ~Importer() {}
+
+        /** Import a scene.
+            \param[in] path File path.
             \param[in] builder Scene builder.
-            \param[in] instances Optional list of instance transforms.
             \param[in] dict Optional dictionary.
-            \return True if asset was successfully imported, false otherwise.
+            Throws an ImporterError if something went wrong.
         */
-        static bool import(const std::string& filename, SceneBuilder& builder, const SceneBuilder::InstanceMatrices& instances, const Dictionary& dict);
+        virtual void importScene(const std::filesystem::path& path, SceneBuilder& builder, const std::map<std::string, std::string>& materialToShortName) = 0;
 
-        /** Registers an importer.
-            \param[in] desc Importer description.
+        /** Import a scene from memory.
+            \param[in] buffer Memory buffer.
+            \param[in] byteSize Size in bytes of memory buffer.
+            \param[in] extension File extension for the format the scene is stored in.
+            \param[in] builder Scene builder.
+            \param[in] dict Optional dictionary.
+            Throws an ImporterError if something went wrong.
         */
-        static void registerImporter(const Desc& desc);
+        virtual void importSceneFromMemory(const void* buffer, size_t byteSize, std::string_view extension, SceneBuilder& builder, const std::map<std::string, std::string>& materialToShortName);
+
+        // Importer factory
+
+        /** Create an importer for a file of an asset with the given file extension.
+            \param extension File extension.
+            \param pm Plugin manager.
+            \return Returns an instance of the importer or nullptr if no compatible importer was found.
+         */
+        static std::unique_ptr<Importer> create(std::string_view extension, const PluginManager& pm = PluginManager::instance());
+
+        /** Return a list of supported file extensions by the current set of loaded importer plugins.
+        */
+        static std::vector<std::string> getSupportedExtensions(const PluginManager& pm = PluginManager::instance());
     };
 }
-
-#ifndef _staticlibrary
-#define REGISTER_IMPORTER(_class_, _extensions_)                                    \
-    static struct RegisterImporter##_class_ {                                       \
-        RegisterImporter##_class_()                                                 \
-        {                                                                           \
-            Importer::registerImporter({#_class_, _extensions_, _class_::import});  \
-        }                                                                           \
-    } gRegisterImporter##_class_;
-#else
-#define REGISTER_IMPORTER(_class_, _extensions_) \
-    static_assert(false, "Using REGISTER_IMPORTER() in a static-library is not supported. The C++ linker usually doesn't pull static-initializers into the EXE. " \
-    "Call 'Importer::registerImporter()' yourself from code that is guarenteed to run.");
-#endif

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,165 +26,135 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include "pybind11/stl.h"
+#include "Core/Error.h"
+#include "Core/Enum.h"
+#include "Core/ObjectPython.h"
+#include <pybind11/pybind11.h>
+#include <pybind11/functional.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl/filesystem.h>
+#include <functional>
+#include <string>
+#include <type_traits>
 
 namespace Falcor::ScriptBindings
 {
-    using RegisterBindingFunc = std::function<void(pybind11::module& m)>;
+/**
+ * Callback function to add python bindings to a module.
+ */
+using RegisterBindingFunc = std::function<void(pybind11::module& m)>;
 
-    /** Register a script binding function.
-        This function will be called when scripting is initialized.
-        \param[in] f Function to be called for registering script bindings.
-    */
-    dlldecl void registerBinding(RegisterBindingFunc f);
+/**
+ * Initialize the binding module.
+ * This is called from the pybind11 module to initialize bindings (see FalcorPython.cpp).
+ * First, this function will go through the list of all deferred bindings and execute them.
+ * Next, it stores a reference to the python module to allow further bindings to be added at runtime.
+ * The reference to the module is automatically released when the module is unloaded.
+ */
+FALCOR_API void initModule(pybind11::module& m);
 
-    /************************************************************************/
-    /* Helpers                                                              */
-    /************************************************************************/
+/**
+ * Register a script binding function.
+ * The binding function will be called when scripting is initialized.
+ * @param[in] f Function to be called for registering the binding.
+ */
+FALCOR_API void registerBinding(RegisterBindingFunc f);
 
-    /** Adds binary and/or operators to a Python enum.
-        This allows the enum to be used as a set of flags instead of just a list of choices.
-        \param[in] e Enum to be extended.
-    */
-    template<typename T>
-    static void addEnumBinaryOperators(pybind11::enum_<T>& e)
-    {
-        e.def("__and__", [](const T& value1, const T& value2) { return T(int(value1) & int(value2)); });
-        e.def("__or__", [](const T& value1, const T& value2) { return T(int(value1) | int(value2)); });
-    }
+/**
+ * Register a deferred script binding function.
+ * This is used to register a script binding function before scripting is initialized.
+ * The execution of the binding function is deferred until scripting is finally initialized.
+ * Note: This is called from `registerBinding()` if called before scripting is initialized
+ * and from the FALCOR_SCRIPT_BINDING macro.
+ * @param[in] name Name if the binding.
+ * @param[in] f Function to be called for registering the binding.
+ */
+FALCOR_API void registerDeferredBinding(const std::string& name, RegisterBindingFunc f);
 
-    /** Returns the string representation of a value of a registered type.
-        \param[in] value Value to be converted to a string.
-        \return Returns the string representation.
-    */
-    template<typename T>
-    static std::string repr(const T& value)
-    {
-        return pybind11::repr(pybind11::cast(value));
-    }
+/**
+ * Resolve a deferred script binding by name.
+ * This immediately executes the deferred binding function registered to the given name
+ * and can be used to control the order of execution of the binding functions.
+ * Note: This is used by the FALCOR_SCRIPT_BINDING_DEPENDENCY macro to ensure dependent bindings
+ * are registered ahead of time.
+ * @param[in] name Name of the binding to resolve.
+ * @param[in] m Python module.
+ */
+FALCOR_API void resolveDeferredBinding(const std::string& name, pybind11::module& m);
 
-    /** This helper allows to register bindings for simple data structs.
-        This is accomplished by adding a __init__ (constructor) and a __repr__ implementation.
-        The __init__ function takes kwargs and populates all the structs fields that have been
-        registered with the field() method on this helper. The __repr__ implementation prints all
-        the fields registered with the field() method. Lets assume we have a C++ struct:
+/************************************************************************/
+/* Helpers                                                              */
+/************************************************************************/
 
-        struct Example
-        {
-            int foo;
-            std::string bar;
-        };
+/**
+ * Adds binary and/or operators to a Python enum.
+ * This allows the enum to be used as a set of flags instead of just a list of choices.
+ * @param[in] e Enum to be extended.
+ */
+template<typename T>
+static void addEnumBinaryOperators(pybind11::enum_<T>& e)
+{
+    e.def("__and__", [](const T& value1, const T& value2) { return T(int(value1) & int(value2)); });
+    e.def("__or__", [](const T& value1, const T& value2) { return T(int(value1) | int(value2)); });
+}
 
-        We can register bindings using:
-
-        SerializableStruct<Example> example(m, "Example");
-        example.field("foo", &Example::foo);
-        example.field("bar", &Example::bar);
-
-        In Python, we can then use the constructor like this:
-
-        example = Example(foo=123, bar="test")
-
-        Also, to serialize the instance into a string we can use repr:
-
-        repr(example)
-
-        which gives back a string like: Example(foo=123, bar="test")
-    */
-    template<typename T, typename... Options>
-    struct SerializableStruct : public pybind11::class_<T, Options...>
-    {
-        using This = SerializableStruct<T, Options...>;
-
-        static_assert(std::is_default_constructible_v<T> && std::is_copy_constructible_v<T>);
-
-        template <typename... Extra>
-        SerializableStruct(pybind11::handle scope, const char* name, const Extra&... extra)
-            : pybind11::class_<T, Options...>(scope, name, extra...)
-        {
-            This::info().name = name;
-            auto initFunc = [](const pybind11::kwargs& args) { return This::init(args); };
-            this->def(pybind11::init(initFunc));
-            this->def(pybind11::init<>());
-            this->def("__repr__", This::repr);
-        }
-
-        template<typename D, typename... Extra>
-        This& field(const char* name, D std::remove_pointer_t<T>::* pm, const Extra&... extra)
-        {
-            this->def_readwrite(name, pm, extra...);
-
-            auto setter = [pm](void* pObj, pybind11::handle h)
-            {
-                static_cast<T*>(pObj)->*pm = h.cast<D>();
-            };
-
-            std::string nameStr(name);
-            auto printer = [pm, nameStr](const void* pObj)
-            {
-                return nameStr + "=" + std::string(pybind11::repr(pybind11::cast(static_cast<const T*>(pObj)->*pm)));
-            };
-
-            This::info().fields[name] = { setter, printer };
-            return *this;
-        }
-
-    private:
-        static T init(const pybind11::kwargs& args)
-        {
-            T t;
-            const auto& fields = This::info().fields;
-            for (auto a : args) fields.at(a.first.cast<std::string>()).setter(&t, a.second);
-            return t;
-        }
-
-        static std::string repr(const T& t)
-        {
-            const auto& info = This::info();
-            std::string s = info.name + '(';
-            bool first = true;
-            for (const auto a : info.fields)
-            {
-                if (!first) s += ", ";
-                first = false;
-                s += a.second.printer(&t);
-            }
-            return s + ')';
-        }
-
-        struct Field
-        {
-            std::function<void(void*, pybind11::handle)> setter;
-            std::function<std::string(const void*)> printer;
-        };
-
-        struct Info
-        {
-            std::string name;
-            std::unordered_map<std::string, Field> fields;
-        };
-
-        static Info& info()
-        {
-            static Info staticInfo;
-            return staticInfo;
-        }
-    };
+/**
+ * Returns the string representation of a value of a registered type.
+ * @param[in] value Value to be converted to a string.
+ * @return Returns the string representation.
+ */
+template<typename T>
+static std::string repr(const T& value)
+{
+    return pybind11::repr(pybind11::cast(value));
+}
 
 #ifndef _staticlibrary
-#define SCRIPT_BINDING(Name) \
-    static void ScriptBinding##Name(pybind11::module& m);           \
-    struct ScriptBindingRegisterer##Name {                          \
-        ScriptBindingRegisterer##Name()                             \
-        {                                                           \
-            ScriptBindings::registerBinding(ScriptBinding##Name);   \
-        }                                                           \
-    } gScriptBinding##Name;                                         \
-    static void ScriptBinding##Name(pybind11::module& m) /* over to the user for the braces */
+#define FALCOR_SCRIPT_BINDING(_name)                                               \
+    static void ScriptBinding##_name(pybind11::module& m);                         \
+    struct ScriptBindingRegisterer##_name                                          \
+    {                                                                              \
+        ScriptBindingRegisterer##_name()                                           \
+        {                                                                          \
+            ScriptBindings::registerDeferredBinding(#_name, ScriptBinding##_name); \
+        }                                                                          \
+    } gScriptBinding##_name;                                                       \
+    static void ScriptBinding##_name(pybind11::module& m) /* over to the user for the braces */
+#define FALCOR_SCRIPT_BINDING_DEPENDENCY(_name) ScriptBindings::resolveDeferredBinding(#_name, m);
 #else
-#define SCRIPT_BINDING(Name) static_assert(false, "Using SCRIPT_BINDING() in a static-library is not supported. The C++ linker usually doesn't pull static-initializers into the EXE. " \
-    "Call 'registerBinding()' yourself from a code that is guarenteed to run.");
+#define FALCOR_SCRIPT_BINDING(_name)                                                                                                   \
+    static_assert(                                                                                                                     \
+        false,                                                                                                                         \
+        "Using FALCOR_SCRIPT_BINDING() in a static-library is not supported. The C++ linker usually doesn't pull static-initializers " \
+        "into the EXE. "                                                                                                               \
+        "Call 'registerBinding()' yourself from a code that is guarenteed to run."                                                     \
+    );
+#endif // _staticlibrary
 
-#endif // _library
+} // namespace Falcor::ScriptBindings
 
-}
+namespace pybind11
+{
+
+template<typename T>
+class falcor_enum : public enum_<T>
+{
+public:
+    static_assert(::Falcor::has_enum_info_v<T>, "pybind11::falcor_enum<> requires an enumeration type with infos!");
+
+    using Base = enum_<T>;
+
+    template<typename... Extra>
+    explicit falcor_enum(const handle& scope, const char* name, const Extra&... extra) : Base(scope, name, extra...)
+    {
+        for (const auto& item : ::Falcor::EnumInfo<T>::items())
+        {
+            const char* value_name = item.second.c_str();
+            // Handle reserved Python keywords.
+            if (item.second == "None")
+                value_name = "None_";
+            Base::value(value_name, item.first);
+        }
+    }
+};
+} // namespace pybind11

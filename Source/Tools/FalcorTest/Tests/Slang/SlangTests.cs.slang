@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -33,20 +33,20 @@ RWStructuredBuffer<uint> result;
 void testEnum()
 {
     // Store the enum values cast to uint.
-    result[0] = (uint) Type1::A;
-    result[1] = (uint) Type1::B;
-    result[2] = (uint) Type1::C;
-    result[3] = (uint) Type1::D;
+    result[0] = (uint)Type1::A;
+    result[1] = (uint)Type1::B;
+    result[2] = (uint)Type1::C;
+    result[3] = (uint)Type1::D;
 
-    result[4] = (uint) Type2::A;
-    result[5] = (uint) Type2::B;
-    result[6] = (uint) Type2::C;
-    result[7] = (uint) Type2::D;
+    result[4] = (uint)Type2::A;
+    result[5] = (uint)Type2::B;
+    result[6] = (uint)Type2::C;
+    result[7] = (uint)Type2::D;
 
-    result[8] = (uint) Type3::A;
-    result[9] = (uint) Type3::B;
-    result[10] = (uint) Type3::C;
-    result[11] = (uint) Type3::D;
+    result[8] = (uint)Type3::A;
+    result[9] = (uint)Type3::B;
+    result[10] = (uint)Type3::C;
+    result[11] = (uint)Type3::D;
 }
 
 [numthreads(1, 1, 1)]
@@ -74,8 +74,8 @@ void testScalarTypes()
 
     // 16/32/64-bit integer
     {
-        int16_t a = 30000;      // 0x00007530 -> 0x7530 (30000) in 16-bit.
-        int16_t b = -200000;    // 0xfffcf2c0 -> Truncated to 0xf2c0 (-3392) in 16-bit.
+        int16_t a = 30000;   // 0x00007530 -> 0x7530 (30000) in 16-bit.
+        int16_t b = -200000; // 0xfffcf2c0 -> Truncated to 0xf2c0 (-3392) in 16-bit.
         result[i++] = asuint((int)a);
         result[i++] = asuint((int)b);
     }
@@ -95,8 +95,8 @@ void testScalarTypes()
 
     // 16/32/64-bit unsigned integer
     {
-        uint16_t a = 59123;     // 0x0000e6f3 -> Truncated to 0xe6f3 (59123)
-        uint16_t b = -10;       // 0xfffffff6 -> Truncated to 0xfff6 (65526)
+        uint16_t a = 59123; // 0x0000e6f3 -> Truncated to 0xe6f3 (59123)
+        uint16_t b = -10;   // 0xfffffff6 -> Truncated to 0xfff6 (65526)
         result[i++] = (uint)a;
         result[i++] = (uint)b;
     }
@@ -131,6 +131,12 @@ struct Foo
     A f;
 };
 
+struct Foo2
+{
+    int a;
+    Type3 t = Type3::C;
+};
+
 [numthreads(1, 1, 1)]
 void testDefaultInitializers()
 {
@@ -161,19 +167,19 @@ void testDefaultInitializers()
         result[i++] = asuint(b);
         result[i++] = asuint(c);
     }
-#if 0
-    // Fails on SM5.1 probably due to fxc bug with asuint.
     {
         double a = 1, b = 2, c = {};
         a = {};
         b = c;
-        asuint(a, result[i], result[i + 1]); i += 2;
-        asuint(b, result[i], result[i + 1]); i += 2;
-        asuint(c, result[i], result[i + 1]); i += 2;
+        asuint(a, result[i], result[i + 1]);
+        i += 2;
+        asuint(b, result[i], result[i + 1]);
+        i += 2;
+        asuint(c, result[i], result[i + 1]);
+        i += 2;
     }
-#endif
 
-    // Vector/matrix types (i=9)
+    // Vector/matrix types (i=15)
     {
         float4 a = float4(1, 2, 3, 4), b = {};
         a = {};
@@ -199,7 +205,7 @@ void testDefaultInitializers()
         result[i++] = asuint(b[1][1]);
     }
 
-    // Struct (i=25)
+    // Struct (i=31)
     {
         A myA;
         myA.a = 1;
@@ -226,5 +232,26 @@ void testDefaultInitializers()
         result[i++] = asuint(foo.f.b);
     }
 
-    // All done (i=35)
+    // Struct with enum (i=41)
+    {
+        Foo2 foo;
+        foo.a = 1;
+        foo.t = Type3::B;
+
+        foo = {};
+
+        result[i++] = (uint)foo.a;
+        result[i++] = (uint)foo.t; // Enum should be initialized to its default value specified in the struct declaration (i=36)
+    }
+
+    // All done (i=43)
+}
+
+[numthreads(1, 1, 1)]
+void testHashedStrings()
+{
+    result[0] = getStringHash("Test String 0");
+    result[1] = getStringHash("Test String 1");
+    result[2] = getStringHash("Test String 2");
+    result[3] = getStringHash("Test String 3");
 }

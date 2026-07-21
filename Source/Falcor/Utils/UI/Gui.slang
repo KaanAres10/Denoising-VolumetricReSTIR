@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -29,7 +29,7 @@ SamplerState gSampler;
 Texture2D gFont;
 Texture2D guiImage;
 
-cbuffer PerFrameCB : register(b0)
+cbuffer PerFrameCB
 {
     float2 scale;
     float2 offset;
@@ -50,17 +50,17 @@ struct VsOut
     float4 pos : SV_POSITION;
 };
 
-VsOut vs(VsIn vIn)
+VsOut vsMain(VsIn vIn)
 {
     VsOut vOut;
     vOut.color = vIn.color;
     vOut.texC = vIn.texC;
     vOut.pos.xy = vIn.pos.xy * scale + offset;
-    vOut.pos.zw = float2(0,1);
+    vOut.pos.zw = float2(0, 1);
     return vOut;
 }
 
-float4 ps(VsOut vOut) : SV_TARGET
+float4 psMain(VsOut vOut) : SV_TARGET
 {
     float fontMask = gFont.Sample(gSampler, vOut.texC).r;
     float4 c = (useGuiImage ? float4(guiImage.Sample(gSampler, vOut.texC).xyzw) : vOut.color * fontMask);

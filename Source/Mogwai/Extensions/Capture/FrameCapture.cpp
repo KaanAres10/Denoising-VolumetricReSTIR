@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,15 +25,16 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
+#include "Falcor.h"
 #include "FrameCapture.h"
+#include "Utils/Scripting/ScriptWriter.h"
 #include <filesystem>
 
 namespace Mogwai
 {
     namespace
     {
-        const std::string kScriptVar = "fc";
+        const std::string kScriptVar = "frameCapture";
         const std::string kPrintFrames = "print";
         const std::string kFrames = "frames";
         const std::string kAddFrames = "addFrames";
@@ -58,13 +59,19 @@ namespace Mogwai
         return UniquePtr(new FrameCapture(pRenderer));
     }
 
+    FrameCapture::FrameCapture(Renderer* pRenderer)
+        : CaptureTrigger(pRenderer, "Frame Capture")
+    {
+        mpImageProcessing = std::make_unique<ImageProcessing>(pRenderer->getDevice());
+    }
+
     void FrameCapture::renderUI(Gui* pGui)
     {
         if (mShowUI)
         {
             auto w = Gui::Window(pGui, mName.c_str(), mShowUI, {}, { 800, 400 });
 
-            CaptureTrigger::renderUI(w);
+            CaptureTrigger::renderBaseUI(w);
 
             w.checkbox("Capture All Outputs", mCaptureAllOutputs);
             w.tooltip("Capture all available outputs instead of the marked ones only.");
@@ -73,18 +80,15 @@ namespace Mogwai
         }
     }
 
-    void FrameCapture::scriptBindings(Bindings& bindings)
+    void FrameCapture::registerScriptBindings(pybind11::module& m)
     {
-        CaptureTrigger::scriptBindings(bindings);
-        auto& m = bindings.getModule();
+        using namespace pybind11::literals;
+
+        CaptureTrigger::registerScriptBindings(m);
 
         pybind11::class_<FrameCapture, CaptureTrigger> frameCapture(m, "FrameCapture");
 
-        bindings.addGlobalObject(kScriptVar, this, "Frame Capture Helpers");
-
         // Members
-        frameCapture.def(kFrames.c_str(), pybind11::overload_cast<const RenderGraph*, const uint64_vec&>(&FrameCapture::addFrames)); // PYTHONDEPRECATED
-        frameCapture.def(kFrames.c_str(), pybind11::overload_cast<const std::string&, const uint64_vec&>(&FrameCapture::addFrames)); // PYTHONDEPRECATED
         frameCapture.def(kAddFrames.c_str(), pybind11::overload_cast<const RenderGraph*, const uint64_vec&>(&FrameCapture::addFrames), "graph"_a, "frames"_a);
         frameCapture.def(kAddFrames.c_str(), pybind11::overload_cast<const std::string&, const uint64_vec&>(&FrameCapture::addFrames), "name"_a, "frames"_a);
 
@@ -103,23 +107,32 @@ namespace Mogwai
         auto getUI = [](FrameCapture* pFC) { return pFC->mShowUI; };
         auto setUI = [](FrameCapture* pFC, bool show) { pFC->mShowUI = show; };
         frameCapture.def_property(kUI.c_str(), getUI, setUI);
+
+        frameCapture.def_property("captureAllOutputs",
+            [](FrameCapture* pFC){ return pFC->mCaptureAllOutputs;},
+            [](FrameCapture* pFC, bool all){ pFC->mCaptureAllOutputs = all; });
     }
 
-    std::string FrameCapture::getScript()
+    std::string FrameCapture::getScriptVar() const
+    {
+        return kScriptVar;
+    }
+
+    std::string FrameCapture::getScript(const std::string& var) const
     {
         std::string s;
 
         s += "# Frame Capture\n";
-        s += CaptureTrigger::getScript(kScriptVar);
+        s += CaptureTrigger::getScript(var);
 
         for (const auto& g : mGraphRanges)
         {
-            s += Scripting::makeMemberFunc(kScriptVar, kAddFrames, g.first->getName(), getFirstOfPair(g.second));
+            s += ScriptWriter::makeMemberFunc(var, kAddFrames, g.first->getName(), getFirstOfPair(g.second));
         }
         return s;
     }
 
-    void FrameCapture::triggerFrame(RenderContext* pCtx, RenderGraph* pGraph, uint64_t frameID)
+    void FrameCapture::triggerFrame(RenderContext* pRenderContext, RenderGraph* pGraph, uint64_t frameID)
     {
         std::vector<std::string> unmarkedOutputs;
 
@@ -128,23 +141,114 @@ namespace Mogwai
             // Mark all outputs and (re)execute the graph.
             unmarkedOutputs = pGraph->getUnmarkedOutputs();
             for (const auto& output : unmarkedOutputs) pGraph->markOutput(output);
-            pGraph->execute(pCtx);
+            pGraph->execute(pRenderContext);
         }
 
         for (uint32_t i = 0 ; i < pGraph->getOutputCount() ; i++)
         {
-            Texture* pTex = pGraph->getOutput(i)->asTexture().get();
-            assert(pTex);
-            auto ext = Bitmap::getFileExtFromResourceFormat(pTex->getFormat());
-            auto format = Bitmap::getFormatFromFileExtension(ext);
-            std::string filename = getOutputNamePrefix(pGraph->getOutputName(i)) + std::to_string(gpFramework->getGlobalClock().getFrame()) + "." + ext;
-            pTex->captureToFile(0, 0, filename, format);
+            captureOutput(pRenderContext, pGraph, i);
         }
 
         if (mCaptureAllOutputs && !unmarkedOutputs.empty())
         {
             for (const auto& output : unmarkedOutputs) pGraph->unmarkOutput(output);
-            pGraph->compile(pCtx);
+            pGraph->compile(pRenderContext);
+        }
+    }
+
+    void FrameCapture::captureOutput(RenderContext* pRenderContext, RenderGraph* pGraph, const uint32_t outputIndex)
+    {
+        const std::string outputName = pGraph->getOutputName(outputIndex);
+        const std::string basename = getOutputNamePrefix(outputName) + std::to_string(mpRenderer->getGlobalClock().getFrame());
+
+        const ref<Texture> pOutput = pGraph->getOutput(outputIndex)->asTexture();
+        if (!pOutput) FALCOR_THROW("Graph output {} is not a texture", outputName);
+
+        const ResourceFormat format = pOutput->getFormat();
+        const uint32_t channels = getFormatChannelCount(format);
+
+        for (auto mask : pGraph->getOutputMasks(outputIndex))
+        {
+            // Determine output color channels and filename suffix.
+            std::string suffix;
+            uint32_t outputChannels = 0;
+
+            switch (mask)
+            {
+            case TextureChannelFlags::Red: suffix = ".R"; outputChannels = 1; break;
+            case TextureChannelFlags::Green: suffix = ".G"; outputChannels = 1; break;
+            case TextureChannelFlags::Blue: suffix = ".B"; outputChannels = 1; break;
+            case TextureChannelFlags::Alpha: suffix = ".A"; outputChannels = 1; break;
+            case TextureChannelFlags::RGB: /* No suffix */ outputChannels = 3; break;
+            case TextureChannelFlags::RGBA: suffix = ".RGBA"; outputChannels = 4; break;
+            default:
+                logWarning("Graph output {} mask {:#x} is not supported. Skipping.", outputName, (uint32_t)mask);
+                continue;
+            }
+
+            // Copy relevant channels into new texture if necessary.
+            ref<Texture> pTex = pOutput;
+            if (outputChannels == 1 && channels > 1)
+            {
+                // Determine output format.
+                ResourceFormat outputFormat = ResourceFormat::Unknown;
+                uint bits = getNumChannelBits(format, mask);
+
+                switch (getFormatType(format))
+                {
+                case FormatType::Unorm:
+                case FormatType::UnormSrgb:
+                    if (bits == 8) outputFormat = ResourceFormat::R8Unorm;
+                    else if (bits == 16) outputFormat = ResourceFormat::R16Unorm;
+                    break;
+                case FormatType::Snorm:
+                    if (bits == 8) outputFormat = ResourceFormat::R8Snorm;
+                    else if (bits == 16) outputFormat = ResourceFormat::R16Snorm;
+                    break;
+                case FormatType::Uint:
+                    if (bits == 8) outputFormat = ResourceFormat::R8Uint;
+                    else if (bits == 16) outputFormat = ResourceFormat::R16Uint;
+                    else if (bits == 32) outputFormat = ResourceFormat::R32Uint;
+                    break;
+                case FormatType::Sint:
+                    if (bits == 8) outputFormat = ResourceFormat::R8Int;
+                    else if (bits == 16) outputFormat = ResourceFormat::R16Int;
+                    else if (bits == 32) outputFormat = ResourceFormat::R32Int;
+                    break;
+                case FormatType::Float:
+                    if (bits == 16) outputFormat = ResourceFormat::R16Float;
+                    else if (bits == 32) outputFormat = ResourceFormat::R32Float;
+                    break;
+                }
+
+                if (outputFormat == ResourceFormat::Unknown)
+                {
+                    logWarning("Graph output {} mask {:#x} failed to determine output format. Skipping.", outputName, (uint32_t)mask);
+                    continue;
+                }
+
+                // If extracting a single R, G or B channel from an SRGB format we may lose some precision in the conversion
+                // to a singel channel non-SRGB format of the same bit depth. Issue a warning for this case for now.
+                // The alternative would be to convert to a higher-precision monochrome format like R32Float,
+                // but then the output image will be in a floating-point format which may be undesirable too.
+                if (is_set(mask, TextureChannelFlags::RGB) && isSrgbFormat(format))
+                {
+                    logWarning("Graph output {} mask {:#x} extracting single RGB channel from SRGB format may lose precision.", outputName, (uint32_t)mask);
+                }
+
+                // Copy color channel into temporary texture.
+                pTex = mpRenderer->getDevice()->createTexture2D(pOutput->getWidth(), pOutput->getHeight(), outputFormat, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                mpImageProcessing->copyColorChannel(pRenderContext, pOutput->getSRV(0, 1, 0, 1), pTex->getUAV(), mask);
+            }
+
+            // Write output image.
+            auto ext = Bitmap::getFileExtFromResourceFormat(pTex->getFormat());
+            auto fileformat = Bitmap::getFormatFromFileExtension(ext);
+            std::string filename = basename + suffix + "." + ext;
+            Bitmap::ExportFlags flags = Bitmap::ExportFlags::None;
+            if (mask == TextureChannelFlags::RGBA) flags |= Bitmap::ExportFlags::ExportAlpha;
+
+            pTex->captureToFile(0, 0, filename, fileformat, flags);
         }
     }
 
@@ -156,7 +260,7 @@ namespace Mogwai
     void FrameCapture::addFrames(const std::string& graphName, const uint64_vec& frames)
     {
         auto pGraph = mpRenderer->getGraph(graphName).get();
-        if (!pGraph) throw std::runtime_error("Can't find a graph named '" + graphName + "'");
+        if (!pGraph) FALCOR_THROW("Can't find a graph named '{}'", graphName);
         this->addFrames(pGraph, frames);
     }
 
@@ -172,7 +276,7 @@ namespace Mogwai
     {
         auto pGraph = mpRenderer->getActiveGraph();
         if (!pGraph) return;
-        uint64_t frameID = gpFramework->getGlobalClock().getFrame();
-        triggerFrame(gpDevice->getRenderContext(), pGraph, frameID);
+        uint64_t frameID = mpRenderer->getGlobalClock().getFrame();
+        triggerFrame(mpRenderer->getRenderContext(), pGraph, frameID);
     }
 }

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,7 +25,7 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-SamplerState gColorSampler : register(s1);
+SamplerState gColorSampler;
 
 Texture2D gColorTex;
 
@@ -34,7 +34,7 @@ float luminance(float3 color)
     return dot(color, float3(0.299, 0.587, 0.114));
 }
 
-float4 main(float2 texC : TEXCOORD) : SV_TARGET0
+float4 main(float2 texC: TEXCOORD) : SV_TARGET0
 {
     float4 color = gColorTex.Sample(gColorSampler, texC);
     float logLuminance = log2(max(0.0001, luminance(color.xyz)));

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,136 +26,176 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #include "ImageLoader.h"
-
-// Don't remove this. it's required for hot-reload to function properly
-extern "C" __declspec(dllexport) const char* getProjDir()
-{
-    return PROJECT_DIR;
-}
-
-extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary& lib)
-{
-    lib.registerClass("ImageLoader", "Load an image into a texture", ImageLoader::create);
-}
-
-const char* ImageLoader::kDesc = "Load an image into a texture";
+#include "Core/AssetResolver.h"
 
 namespace
 {
-    const std::string kDst = "dst";
+const std::string kDst = "dst";
 
-    const std::string kOutputFormat = "outputFormat";
-    const std::string kImage = "filename";
-    const std::string kMips = "mips";
-    const std::string kSrgb = "srgb";
-    const std::string kArraySlice = "arrayIndex";
-    const std::string kMipLevel = "mipLevel";
+const std::string kOutputSize = "outputSize";
+const std::string kOutputFormat = "outputFormat";
+const std::string kImage = "filename";
+const std::string kMips = "mips";
+const std::string kSrgb = "srgb";
+const std::string kArraySlice = "arrayIndex";
+const std::string kMipLevel = "mipLevel";
+} // namespace
+
+extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
+{
+    registry.registerClass<RenderPass, ImageLoader>();
+}
+
+ImageLoader::ImageLoader(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
+{
+    for (const auto& [key, value] : props)
+    {
+        if (key == kOutputSize)
+            mOutputSizeSelection = value;
+        else if (key == kOutputFormat)
+            mOutputFormat = value;
+        else if (key == kImage)
+            mImagePath = value.operator std::filesystem::path();
+        else if (key == kSrgb)
+            mLoadSRGB = value;
+        else if (key == kMips)
+            mGenerateMips = value;
+        else if (key == kArraySlice)
+            mArraySlice = value;
+        else if (key == kMipLevel)
+            mMipLevel = value;
+        else
+            logWarning("Unknown property '{}' in a ImageLoader properties.", key);
+    }
+
+    if (!mImagePath.empty())
+    {
+        if (!loadImage(mImagePath))
+        {
+            FALCOR_THROW("ImageLoader: Failed to load image from '{}'", mImagePath);
+        }
+    }
 }
 
 RenderPassReflection ImageLoader::reflect(const CompileData& compileData)
 {
     RenderPassReflection reflector;
-    reflector.addOutput(kDst, "Destination texture").format(mOutputFormat);
+    uint2 fixedSize = mpTex ? uint2(mpTex->getWidth(), mpTex->getHeight()) : uint2(0);
+    const uint2 sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, fixedSize, compileData.defaultTexDims);
+
+    reflector.addOutput(kDst, "Destination texture").format(mOutputFormat).texture2D(sz.x, sz.y);
     return reflector;
 }
 
-ImageLoader::SharedPtr ImageLoader::create(RenderContext* pRenderContext, const Dictionary& dict)
+Properties ImageLoader::getProperties() const
 {
-    SharedPtr pPass = SharedPtr(new ImageLoader);
-
-    for (const auto& [key, value] : dict)
-    {
-        if (key == kOutputFormat) pPass->mOutputFormat = value;
-        else if (key == kImage) pPass->mImageName = value.operator std::string();
-        else if (key == kSrgb) pPass->mLoadSRGB = value;
-        else if (key == kMips) pPass->mGenerateMips = value;
-        else if (key == kArraySlice) pPass->mArraySlice = value;
-        else if (key == kMipLevel) pPass->mMipLevel = value;
-        else logWarning("Unknown field '" + key + "' in a ImageLoader dictionary");
-    }
-
-    if (pPass->mImageName.size())
-    {
-        pPass->mpTex = Texture::createFromFile(pPass->mImageName, pPass->mGenerateMips, pPass->mLoadSRGB);
-    }
-
-    return pPass;
+    Properties props;
+    props[kOutputSize] = mOutputSizeSelection;
+    if (mOutputFormat != ResourceFormat::Unknown)
+        props[kOutputFormat] = mOutputFormat;
+    props[kImage] = mImagePath;
+    props[kMips] = mGenerateMips;
+    props[kSrgb] = mLoadSRGB;
+    props[kArraySlice] = mArraySlice;
+    props[kMipLevel] = mMipLevel;
+    return props;
 }
 
-Dictionary ImageLoader::getScriptingDictionary()
+void ImageLoader::compile(RenderContext* pRenderContext, const CompileData& compileData)
 {
-    Dictionary dict;
-    if (mOutputFormat != ResourceFormat::Unknown) dict[kOutputFormat] = mOutputFormat;
-    dict[kImage] = mImageName;
-    dict[kMips] = mGenerateMips;
-    dict[kSrgb] = mLoadSRGB;
-    dict[kArraySlice] = mArraySlice;
-    dict[kMipLevel] = mMipLevel;
-    return dict;
+    FALCOR_CHECK(mpTex, "ImageLoader: No image loaded");
 }
 
-ImageLoader::ImageLoader()
+void ImageLoader::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
-}
+    const auto& pDstTex = renderData.getTexture(kDst);
+    FALCOR_ASSERT(pDstTex);
+    mOutputFormat = pDstTex->getFormat();
+    mOutputSize = {pDstTex->getWidth(), pDstTex->getHeight()};
 
-void ImageLoader::compile(RenderContext* pContext, const CompileData& compileData)
-{
-    if (!mpTex) throw std::runtime_error("ImageLoader::compile - No image loaded!");
-}
-
-void ImageLoader::execute(RenderContext* pContext, const RenderData& renderData)
-{
-    const auto& pDstTex = renderData[kDst]->asTexture();
     if (!mpTex)
     {
-        pContext->clearRtv(pDstTex->getRTV().get(), float4(0, 0, 0, 0));
+        pRenderContext->clearRtv(pDstTex->getRTV().get(), float4(0, 0, 0, 0));
         return;
     }
-    pContext->blit(mpTex->getSRV(mMipLevel, 1, mArraySlice, 1), pDstTex->getRTV());
-}
 
-
-void ImageLoader::updateDict(const Dictionary& dict)
-{
-    for (const auto& [key, value] : dict)
-    {
-        if (key == kOutputFormat) mOutputFormat = value;
-        else if (key == kImage) mImageName = value.operator std::string();
-        else if (key == kSrgb) mLoadSRGB = value;
-        else if (key == kMips) mGenerateMips = value;
-        else if (key == kArraySlice) mArraySlice = value;
-        else if (key == kMipLevel) mMipLevel = value;
-        else logWarning("Unknown field '" + key + "' in a ImageLoader dictionary");
-    }
-
-    if (mImageName.size())
-    {
-        mImageName = stripDataDirectories(mImageName);
-        mpTex = Texture::createFromFile(mImageName, mGenerateMips, mLoadSRGB);
-    }
+    mMipLevel = std::min(mMipLevel, mpTex->getMipCount() - 1);
+    mArraySlice = std::min(mArraySlice, mpTex->getArraySize() - 1);
+    pRenderContext->blit(mpTex->getSRV(mMipLevel, 1, mArraySlice, 1), pDstTex->getRTV());
 }
 
 void ImageLoader::renderUI(Gui::Widgets& widget)
 {
-    bool reloadImage = widget.textbox("Image File", mImageName);
+    // When output size requirements change, we'll trigger a graph recompile to update the render pass I/O sizes.
+    if (widget.dropdown("Output size", mOutputSizeSelection))
+        requestRecompile();
+    widget.tooltip(
+        "Specifies the pass output size.\n"
+        "'Default' means that the output is sized based on requirements of connected passes.\n"
+        "'Fixed' means the output is always at the image's native size.\n"
+        "If the output is of a different size than the native image resolution, the image will be rescaled bilinearly.",
+        true
+    );
+
+    widget.text("Image File: " + mImagePath.string());
+    bool reloadImage = false;
     reloadImage |= widget.checkbox("Load As SRGB", mLoadSRGB);
     reloadImage |= widget.checkbox("Generate Mipmaps", mGenerateMips);
-    if (mGenerateMips)
-    {
-        reloadImage |= widget.slider("Mip Level", mMipLevel, 0u, mpTex ? mpTex->getMipCount() : 0u);
-    }
-    reloadImage |= widget.slider("Array Slice", mArraySlice, 0u, mpTex ? mpTex->getArraySize() : 0u);
 
-    if (widget.button("Load File")) { reloadImage |= openFileDialog({}, mImageName); }
+    if (widget.button("Load File"))
+    {
+        reloadImage |= openFileDialog({}, mImagePath);
+    }
 
     if (mpTex)
     {
-        widget.image(mImageName.c_str(), mpTex, { 320, 320 });
+        if (mpTex->getMipCount() > 1)
+            widget.slider("Mip Level", mMipLevel, 0u, mpTex->getMipCount() - 1);
+        if (mpTex->getArraySize() > 1)
+            widget.slider("Array Slice", mArraySlice, 0u, mpTex->getArraySize() - 1);
+
+        widget.image(mImagePath.string().c_str(), mpTex.get(), {320, 320});
+        widget.text("Image format: " + to_string(mpTex->getFormat()));
+        widget.text("Image size: (" + std::to_string(mpTex->getWidth()) + ", " + std::to_string(mpTex->getHeight()) + ")");
+        widget.text("Output format: " + to_string(mOutputFormat));
+        widget.text("Output size: (" + std::to_string(mOutputSize.x) + ", " + std::to_string(mOutputSize.y) + ")");
     }
 
-    if (reloadImage && mImageName.size())
+    if (reloadImage && !mImagePath.empty())
     {
-        mImageName = stripDataDirectories(mImageName);
-        mpTex = Texture::createFromFile(mImageName, mGenerateMips, mLoadSRGB);
+        uint2 prevSize = {};
+        if (mpTex)
+            prevSize = {mpTex->getWidth(), mpTex->getHeight()};
+
+        if (!loadImage(mImagePath))
+        {
+            msgBox("Error", fmt::format("Failed to load image from '{}'", mImagePath), MsgBoxType::Ok, MsgBoxIcon::Warning);
+        }
+
+        // If output is set to native size and image dimensions have changed,
+        // we'll trigger a graph recompile to update the render pass I/O sizes.
+        if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed && mpTex != nullptr &&
+            (mpTex->getWidth() != prevSize.x || mpTex->getHeight() != prevSize.y))
+        {
+            requestRecompile();
+        }
+    }
+}
+
+bool ImageLoader::loadImage(const std::filesystem::path& path)
+{
+    if (path.empty())
+        return false;
+
+    std::filesystem::path resolvedPath = AssetResolver::getDefaultResolver().resolvePath(path);
+    if (std::filesystem::exists(resolvedPath))
+    {
+        mImagePath = path;
+        mpTex = Texture::createFromFile(mpDevice, resolvedPath, mGenerateMips, mLoadSRGB);
+        return mpTex != nullptr;
+    }
+    else
+    {
+        return false;
     }
 }

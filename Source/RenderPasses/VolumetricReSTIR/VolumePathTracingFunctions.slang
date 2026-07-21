@@ -1,9 +1,9 @@
 __exported import VolumeUtils;
 
-float3 IntegrateByVolumePathTracing(Ray ray, inout SampleGenerator sg, bool useLinearAnalyticalSampler, int lightSamples, bool useEnvironmentLights, bool useAnalyticLights, bool useEmissiveLights,
+float3 IntegrateByVolumePathTracing(VolRay ray, inout SampleGenerator sg, bool useLinearAnalyticalSampler, int lightSamples, bool useEnvironmentLights, bool useAnalyticLights, bool useEmissiveLights,
     EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
     #ifdef SURFACE_SCENE
-    HitInfo hitInfo,
+    SurfaceHitInfo hitInfo,
     #endif
     int mipLevel, int maxBounces, bool useNEE, bool useRussianRoulette)
 {
@@ -78,7 +78,7 @@ float3 IntegrateByVolumePathTracing(Ray ray, inout SampleGenerator sg, bool useL
             // do we hit background?
             if (hitInfo.isValidHit())
             {
-                ShadingData shadingInfo = computeSurfaceShadingInfo(hitInfo, -ray.dir);
+                SurfaceShadingData shadingInfo = computeSurfaceShadingInfo(hitInfo, -ray.dir);
 
                 if (isEmissive(shadingInfo))
                 {
@@ -105,7 +105,7 @@ float3 IntegrateByVolumePathTracing(Ray ray, inout SampleGenerator sg, bool useL
                     {
                         BSDFSample result;
                         sampleBSDF(shadingInfo, sg, result);
-                        float3 wi = result.wi;
+                        float3 wi = result.wo;
                         beta *= result.weight;
                         mi.p = shadingInfo.posW;
                         ray = mi.SpawnRay(wi);

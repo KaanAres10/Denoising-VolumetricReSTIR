@@ -1,7 +1,7 @@
 import Utils.Sampling.SampleGenerator;
 
 #define DEVICE_NEED_INCLUDE
-#include "HostDeviceSharedDefinitions.h"
+#include "HostDeviceSharedDefinitions.slangh"
 #include "Utils/Math/MathConstants.slangh"
 import Scene.Scene;
 

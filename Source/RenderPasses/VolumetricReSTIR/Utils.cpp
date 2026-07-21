@@ -12,14 +12,9 @@
 
 using namespace Falcor;
 
-// Define shared constants
-const Falcor::Resource::BindFlags   kDefaultFlags = Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess | Resource::BindFlags::RenderTarget;
-const Falcor::Resource::BindFlags   kDepthFlags = Resource::BindFlags::ShaderResource | Resource::BindFlags::DepthStencil;
-const Falcor::Gui::WindowFlags      kPassGuiFlags = Gui::WindowFlags::ShowTitleBar | Gui::WindowFlags::AllowMove;
-
 ////////////////////////////////////////////////////////////////////
-// Convert from std::vector<> to glm vectors.
-//    -> Useful for converting from pybind11 list values to glm vectors
+// Convert from std::vector<> to Falcor vectors.
+//    -> Useful for converting from pybind11 list values to Falcor vectors
 
 float2 _toVec2(std::vector<float> pyVec, float2 def)
 {
@@ -48,21 +43,23 @@ float4 _toVec4(std::vector<float> pyVec, float4 def)
     return def;
 }
 
-Sampler::SharedPtr createLinearSampler()
+ref<Sampler> createLinearSampler(ref<Device> pDevice)
 {
     Sampler::Desc desc;
-    desc.setFilterMode(Sampler::Filter::Linear, Sampler::Filter::Linear, Sampler::Filter::Point).setAddressingMode(Sampler::AddressMode::Clamp, Sampler::AddressMode::Clamp, Sampler::AddressMode::Clamp);
-    return Sampler::create(desc);
+    desc.setFilterMode(TextureFilteringMode::Linear, TextureFilteringMode::Linear, TextureFilteringMode::Point)
+        .setAddressingMode(TextureAddressingMode::Clamp, TextureAddressingMode::Clamp, TextureAddressingMode::Clamp);
+    return pDevice->createSampler(desc);
 }
 
-Sampler::SharedPtr createNearestSampler()
+ref<Sampler> createNearestSampler(ref<Device> pDevice)
 {
     Sampler::Desc desc;
-    desc.setFilterMode(Sampler::Filter::Point, Sampler::Filter::Point, Sampler::Filter::Point).setAddressingMode(Sampler::AddressMode::Clamp, Sampler::AddressMode::Clamp, Sampler::AddressMode::Clamp);
-    return Sampler::create(desc);
+    desc.setFilterMode(TextureFilteringMode::Point, TextureFilteringMode::Point, TextureFilteringMode::Point)
+        .setAddressingMode(TextureAddressingMode::Clamp, TextureAddressingMode::Clamp, TextureAddressingMode::Clamp);
+    return pDevice->createSampler(desc);
 }
 
-Texture::SharedPtr createNeighborOffsetTexture( int numSamples )
+ref<Texture> createNeighborOffsetTexture(ref<Device> pDevice, int numSamples)
 {
     int R = 250;
     std::unique_ptr<int8_t[]> offsets(new int8_t[numSamples * 2]);
@@ -84,34 +81,38 @@ Texture::SharedPtr createNeighborOffsetTexture( int numSamples )
         offsets[num++] = int8_t((v - 0.5f)*R);
     }
 
-    return Texture::create1D(numSamples, ResourceFormat::RG8Int, 1, 1, offsets.get());
+    return pDevice->createTexture1D(numSamples, ResourceFormat::RG8Int, 1, 1, offsets.get());
 }
-ComputePass::SharedPtr createSimpleComputePass(const std::string &file, const std::string &mainEntry,
-    Shader::DefineList defs)
+
+ref<ComputePass> createSimpleComputePass(ref<Device> pDevice, const std::string& file, const std::string& mainEntry,
+    DefineList defs)
 {
-    // To avoid not being able to compile compute shaders #import'ing Scene.slang, make sure to define a MATERIAL_COUNT parameter.
+    // To avoid not being able to compile compute shaders importing Scene.slang, make sure to define a MATERIAL_COUNT parameter.
     //   NOTE:  This just avoids the compile error on shader load, this parameter *still* needs to be set to the correct value when
-    //   the scene is loaded (by calling updateSceneDefines(), below)...
-    Shader::DefineList matlDefs = { { "MATERIAL_COUNT", "1" }, {"PARTICLE_SYSTEM_COUNT", "1"}, {"INDEXED_VERTICES", "1"} };
+    //   the scene is loaded (by calling updateSceneDefines()).
+    DefineList matlDefs = { { "MATERIAL_COUNT", "1" }, {"PARTICLE_SYSTEM_COUNT", "1"}, {"INDEXED_VERTICES", "1"} };
     matlDefs.add(defs);
-    matlDefs.add("_MS_DISABLE_ALPHA_TEST");    
-   // matlDefs.add("_DEFAULT_ALPHA_TEST");
+    matlDefs.add("_MS_DISABLE_ALPHA_TEST");
 
-    Program::Desc risDesc(file);
-    risDesc.setShaderModel("6_5");
-
-    // Enable this for debugging in NSight
-    //risDesc.setCompilerFlags(Shader::CompilerFlags::GenerateDebugInfo);
-    
-    return ComputePass::create(risDesc.csEntry(mainEntry), matlDefs);
+    // Defer program compilation/var creation until setScene() has supplied the real scene defines
+    // (Scene.slang requires SCENE_GEOMETRY_TYPES etc. which are only known once a scene is loaded).
+    return ComputePass::create(pDevice, file, mainEntry, matlDefs, /*createVars*/ false);
 }
 
-void updateSceneDefines(ComputePass::SharedPtr& pPass, const Scene::SharedPtr& pScene)
+ref<ComputePass> createSceneComputePass(ref<Device> pDevice, const std::string& file, const std::string& mainEntry,
+    DefineList defs, const ref<Scene>& pScene)
 {
-    if (!pScene) return;
+    // Same as createSimpleComputePass, but links the scene's shader modules + material type
+    // conformances into the program. Required by the surface-scene path (mUseSurfaceScene), which
+    // uses gScene.materials.getMaterialInstance() — Slang needs the concrete IMaterial/IMaterialInstance
+    // implementations (e.g. StandardMaterial) present in the linkage.
+    DefineList matlDefs = { { "MATERIAL_COUNT", "1" }, { "PARTICLE_SYSTEM_COUNT", "1" }, { "INDEXED_VERTICES", "1" } };
+    matlDefs.add(defs);
+    matlDefs.add("_MS_DISABLE_ALPHA_TEST");
 
-    pPass->getProgram()->addDefines(pScene->getSceneDefines());
-    pPass->getProgram()->addDefine("MAX_BOUNCES", "1");
-    pPass->setVars(nullptr);
-    pPass->getRootVar()["gScene"] = pScene->getParameterBlock();
+    ProgramDesc desc;
+    desc.addShaderModules(pScene->getShaderModules());
+    desc.addShaderLibrary(file).csEntry(mainEntry);
+    desc.addTypeConformances(pScene->getTypeConformances());
+    return ComputePass::create(pDevice, desc, matlDefs, /*createVars*/ false);
 }

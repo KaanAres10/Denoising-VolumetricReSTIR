@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,110 +25,92 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "Font.h"
+#include "Core/Error.h"
 #include "Core/API/Texture.h"
 #include <fstream>
 
 namespace Falcor
 {
-    static std::string GetFontFilename(const std::string& FontName, float size)
-    {
-        std::string Filename = FontName + std::to_string(size);
-        return Filename;
-    }
-
-    Font::Font()
-    {
-        if (!loadFromFile("DejaVu Sans Mono", 14))
-        {
-            throw std::exception("Failed to create font resource");
-        }
-    }
-
-    Font::UniquePtr Font::create()
-    {
-        return UniquePtr(new Font());
-    }
-
-    static const uint32_t FontMagicNumber = 0xDEAD0001;
+static const uint32_t kFontMagicNumber = 0xDEAD0001;
 
 #pragma pack(1)
-    struct FontFileHeader
-    {
-        uint32_t StructSize;
-        uint32_t CharDataSize;
-        uint32_t MagicNumber;
-        uint32_t CharCount;
-        float FontHeight;
-        float TabWidth;
-        float LetterSpacing;
-    };
+struct FontFileHeader
+{
+    uint32_t structSize;
+    uint32_t charDataSize;
+    uint32_t magicNumber;
+    uint32_t charCount;
+    float fontHeight;
+    float tabWidth;
+    float letterSpacing;
+};
 
 #pragma pack(1)
-    struct FontCharData
-    {
-        char Char;
-        float TopLeftX;
-        float TopLeftY;
-        float Width;
-        float Height;
-    };
+struct FontCharData
+{
+    char character;
+    float topLeftX;
+    float topLeftY;
+    float width;
+    float height;
+};
 
-    Font::~Font() = default;
-
-    bool Font::loadFromFile(const std::string& FontName, float size)
-    {
-        std::string Filename = "Framework/Fonts/" + GetFontFilename(FontName, size);
-        std::string TextureFilename;
-        findFileInDataDirectories(Filename + ".dds", TextureFilename);
-        std::string DataFilename;
-        findFileInDataDirectories(Filename + ".bin", DataFilename);
-        if((doesFileExist(TextureFilename) == false) || (doesFileExist(DataFilename) == false))
-        {
-            return false;
-        }
-
-        // Load the data
-        std::ifstream Data(DataFilename, std::ios::binary);
-        FontFileHeader Header;
-        // Read the header
-        Data.read((char*)&Header, sizeof(Header));
-        bool bValid = (Header.StructSize == sizeof(Header));
-        bValid = bValid && (Header.MagicNumber == FontMagicNumber);
-        bValid = bValid && (Header.CharDataSize == sizeof(FontCharData));
-        bValid = bValid && (Header.CharCount == mCharCount);
-
-        if(bValid == false)
-        {
-            Data.close();
-            return false;
-        }
-
-        mTabWidth = Header.TabWidth;
-        mFontHeight = Header.FontHeight;
-
-        mLetterSpacing = 0;
-        // Load the char data
-        for(uint32_t i = 0; i < mCharCount; i++)
-        {
-            FontCharData CharData;
-            Data.read((char*)&CharData, sizeof(FontCharData));
-            if(CharData.Char != i + mFirstChar)
-            {
-                Data.close();
-                return false;
-            }
-
-            mCharDesc[i].topLeft.x = CharData.TopLeftX;
-            mCharDesc[i].topLeft.y = CharData.TopLeftY;
-            mCharDesc[i].size.x = CharData.Width;
-            mCharDesc[i].size.y = CharData.Height;
-            mLetterSpacing = std::max(mLetterSpacing, CharData.Width);
-        }
-
-        // Load the texture
-        mpTexture = Texture::createFromFile(TextureFilename, false, false);
-        return mpTexture != nullptr;
-    }
+Font::Font(ref<Device> pDevice, const std::filesystem::path& path)
+{
+    if (!loadFromFile(pDevice, path))
+        FALCOR_THROW("Failed to create font resource");
 }
+
+Font::~Font() = default;
+
+bool Font::loadFromFile(ref<Device> pDevice, const std::filesystem::path& path)
+{
+    std::filesystem::path texturePath = path;
+    texturePath.replace_extension(".dds");
+    std::filesystem::path dataPath = path;
+    dataPath.replace_extension(".bin");
+
+    if (!std::filesystem::exists(texturePath) || !std::filesystem::exists(dataPath))
+        return false;
+
+    // Load the data
+    std::ifstream data(dataPath, std::ios::binary);
+    FontFileHeader header;
+    // Read the header
+    data.read((char*)&header, sizeof(header));
+    bool valid = (header.structSize == sizeof(header));
+    valid = valid && (header.magicNumber == kFontMagicNumber);
+    valid = valid && (header.charDataSize == sizeof(FontCharData));
+    valid = valid && (header.charCount == mCharCount);
+
+    if (!valid)
+        return false;
+
+    mTabWidth = header.tabWidth;
+    mFontHeight = header.fontHeight;
+
+    mLetterSpacing = 0;
+    // Load the char data
+    for (uint32_t i = 0; i < mCharCount; i++)
+    {
+        FontCharData charData;
+        data.read((char*)&charData, sizeof(FontCharData));
+        if (charData.character != i + mFirstChar)
+        {
+            data.close();
+            return false;
+        }
+
+        mCharDesc[i].topLeft.x = charData.topLeftX;
+        mCharDesc[i].topLeft.y = charData.topLeftY;
+        mCharDesc[i].size.x = charData.width;
+        mCharDesc[i].size.y = charData.height;
+        mLetterSpacing = std::max(mLetterSpacing, charData.width);
+    }
+
+    // Load the texture
+    mpTexture = Texture::createFromFile(pDevice, texturePath, false, false);
+    return mpTexture != nullptr;
+}
+} // namespace Falcor

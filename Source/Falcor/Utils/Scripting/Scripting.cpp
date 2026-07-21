@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,122 +25,150 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "Scripting.h"
+#include "Core/Error.h"
+#include "Utils/StringUtils.h"
+#include "Utils/StringFormatters.h"
+#include <pybind11/embed.h>
 #include <filesystem>
-#include "pybind11/embed.h"
 
 namespace Falcor
 {
-    const FileDialogFilterVec Scripting::kFileExtensionFilters = { { "py", "Script Files"} };
-    bool Scripting::sRunning = false;
+const FileDialogFilterVec Scripting::kFileExtensionFilters = {{"py", "Script Files"}};
+bool Scripting::sRunning = false;
+std::unique_ptr<Scripting::Context> Scripting::sDefaultContext;
 
-    bool Scripting::start()
+void Scripting::start()
+{
+    if (!sRunning)
     {
-        if (!sRunning)
-        {
-            sRunning = true;
-#ifdef _WIN32
-            static std::wstring pythonHome = string_2_wstring(getExecutableDirectory() + "/Python");
-            // Py_SetPythonHome in Python < 3.7 takes a non-const wstr*, but guarantees that the contents
-            // will not be modified by Python. As such, casting away the const should be safe.
-            Py_SetPythonHome(const_cast<wchar_t*>(pythonHome.c_str()));
+        sRunning = true;
+
+#ifdef FALCOR_PYTHON_EXECUTABLE
+#if FALCOR_WINDOWS
+        static std::filesystem::path pythonHome{std::filesystem::path{FALCOR_PYTHON_EXECUTABLE}.parent_path()};
+#else
+        static std::filesystem::path pythonHome{std::filesystem::path{FALCOR_PYTHON_EXECUTABLE}.parent_path().parent_path()};
 #endif
+#else
+        static std::filesystem::path pythonHome{getRuntimeDirectory() / "pythondist"};
+#endif
+        Py_SetPythonHome(pythonHome.wstring().c_str());
 
-            try
-            {
-                pybind11::initialize_interpreter();
-                pybind11::exec("from falcor import *");
-            }
-            catch (const std::exception& e)
-            {
-                logError("Can't start the python interpreter. Exception says " + std::string(e.what()));
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    void Scripting::shutdown()
-    {
-        if (sRunning)
+        try
         {
-            sRunning = false;
-            pybind11::finalize_interpreter();
-        }
-    }
+            pybind11::initialize_interpreter();
+            sDefaultContext.reset(new Context());
+            // Extend python search path with the directory containing the falcor python module.
+            std::string pythonPath = (getRuntimeDirectory() / "python").generic_string();
+            Scripting::runScript(fmt::format("import sys; sys.path.append(\"{}\")\n", pythonPath));
+            // Set an environment variable to inform the falcor module that it's being loaded from an embedded interpreter.
+            Scripting::runScript("import os; os.environ[\"FALCOR_EMBEDDED_PYTHON\"] = \"1\"");
 
-    class RedirectStream
-    {
-    public:
-        RedirectStream(const std::string& stream = "stdout")
-            : mStream(stream)
+            // Import falcor into default scripting context.
+            Scripting::runScript("from falcor import *");
+        }
+        catch (const std::exception& e)
         {
-            auto m = pybind11::module::import("sys");
-            mOrigStream = m.attr(mStream.c_str());
-            mBuffer = pybind11::module::import("io").attr("StringIO")();
-            m.attr(mStream.c_str()) = mBuffer;
+            FALCOR_THROW("Failed to start the Python interpreter: {}", e.what());
         }
-
-        ~RedirectStream()
-        {
-            pybind11::module::import("sys").attr(mStream.c_str()) = mOrigStream;
-        }
-
-        operator std::string() const
-        {
-            mBuffer.attr("seek")(0);
-            return pybind11::str(mBuffer.attr("read")());
-        }
-
-    private:
-        std::string mStream;
-        pybind11::object mOrigStream;
-        pybind11::object mBuffer;
-    };
-
-    static std::string runScript(const std::string& script, pybind11::dict& locals)
-    {
-        RedirectStream rs;
-        pybind11::exec(script.c_str(), pybind11::globals(), locals);
-        return rs;
-    }
-
-    std::string Scripting::runScript(const std::string& script)
-    {
-        auto ref = pybind11::globals();
-        return Falcor::runScript(script, ref);
-    }
-
-    std::string Scripting::runScript(const std::string& script, Context& context)
-    {
-        return Falcor::runScript(script, context.mLocals);
-    }
-
-    Scripting::Context Scripting::getGlobalContext()
-    {
-        Context c;
-        c.mLocals = pybind11::globals();
-        return c;
-    }
-
-    std::string Scripting::runScriptFromFile(const std::string& filename, Context& context)
-    {
-        if (std::filesystem::exists(filename)) return Scripting::runScript(readFile(filename), context);
-        throw std::exception(std::string("Failed to run script. Can't find the file '" + filename + "'.").c_str());
-    }
-
-    std::string Scripting::interpretScript(const std::string& script)
-    {
-        pybind11::module code = pybind11::module::import("code");
-        pybind11::object InteractiveInterpreter = code.attr("InteractiveInterpreter");
-        auto interpreter = InteractiveInterpreter(pybind11::globals());
-        auto runsource = interpreter.attr("runsource");
-
-        RedirectStream rstdout("stdout");
-        RedirectStream rstderr("stderr");
-        runsource(script);
-        return std::string(rstdout) + std::string(rstderr);
     }
 }
+
+void Scripting::shutdown()
+{
+    if (sRunning)
+    {
+        sRunning = false;
+        sDefaultContext.reset();
+        pybind11::finalize_interpreter();
+    }
+}
+
+Scripting::Context& Scripting::getDefaultContext()
+{
+    FALCOR_ASSERT(sDefaultContext);
+    return *sDefaultContext;
+}
+
+Scripting::Context Scripting::getCurrentContext()
+{
+    return Context(pybind11::globals());
+}
+
+class RedirectStream
+{
+public:
+    RedirectStream(const std::string& stream = "stdout") : mStream(stream)
+    {
+        auto m = pybind11::module::import("sys");
+        mOrigStream = m.attr(mStream.c_str());
+        mBuffer = pybind11::module::import("io").attr("StringIO")();
+        m.attr(mStream.c_str()) = mBuffer;
+    }
+
+    ~RedirectStream() { pybind11::module::import("sys").attr(mStream.c_str()) = mOrigStream; }
+
+    operator std::string() const
+    {
+        mBuffer.attr("seek")(0);
+        return pybind11::str(mBuffer.attr("read")());
+    }
+
+private:
+    std::string mStream;
+    pybind11::object mOrigStream;
+    pybind11::object mBuffer;
+};
+
+static Scripting::RunResult runScript(std::string_view script, pybind11::dict& globals, bool captureOutput)
+{
+    Scripting::RunResult result;
+
+    if (captureOutput)
+    {
+        RedirectStream rstdout("stdout");
+        RedirectStream rstderr("stderr");
+        pybind11::exec(script, globals);
+        result.out = rstdout;
+        result.err = rstderr;
+    }
+    else
+    {
+        pybind11::exec(script, globals);
+    }
+
+    return result;
+}
+
+Scripting::RunResult Scripting::runScript(std::string_view script, Context& context, bool captureOutput)
+{
+    return Falcor::runScript(script, context.mGlobals, captureOutput);
+}
+
+Scripting::RunResult Scripting::runScriptFromFile(const std::filesystem::path& path, Context& context, bool captureOutput)
+{
+    if (std::filesystem::exists(path))
+    {
+        std::string absFile = std::filesystem::absolute(path).string();
+        context.setObject("__file__", absFile);
+        auto result = Scripting::runScript(readFile(path), context, captureOutput);
+        context.setObject("__file__", nullptr); // There seems to be no API on pybind11::dict to remove a key.
+        return result;
+    }
+    FALCOR_THROW("Failed to run script. Can't find the file '{}'.", path);
+}
+
+std::string Scripting::interpretScript(const std::string& script, Context& context)
+{
+    pybind11::module code = pybind11::module::import("code");
+    pybind11::object InteractiveInterpreter = code.attr("InteractiveInterpreter");
+    auto interpreter = InteractiveInterpreter(context.mGlobals);
+    auto runsource = interpreter.attr("runsource");
+
+    RedirectStream rstdout("stdout");
+    RedirectStream rstderr("stderr");
+    runsource(script);
+    return std::string(rstdout) + std::string(rstderr);
+}
+} // namespace Falcor

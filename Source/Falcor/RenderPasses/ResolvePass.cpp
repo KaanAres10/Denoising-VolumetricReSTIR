@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,47 +25,43 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "ResolvePass.h"
+#include "Core/API/RenderContext.h"
+#include "Utils/Logger.h"
 
 namespace Falcor
 {
-    const char* ResolvePass::kDesc = "Resolve a multi-sampled texture";
+static const std::string kDst = "dst";
+static const std::string kSrc = "src";
 
-    static const std::string kDst = "dst";
-    static const std::string kSrc = "src";
+ResolvePass::ResolvePass(ref<Device> pDevice) : RenderPass(pDevice) {}
 
-    RenderPassReflection ResolvePass::reflect(const CompileData& compileData)
+RenderPassReflection ResolvePass::reflect(const CompileData& compileData)
+{
+    RenderPassReflection reflector;
+    reflector.addInput(kSrc, "Multi-sampled texture").format(mFormat).texture2D(0, 0, 0);
+    reflector.addOutput(kDst, "Destination texture. Must have a single sample").format(mFormat).texture2D(0, 0, 1);
+    return reflector;
+}
+
+void ResolvePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    auto pSrcTex = renderData.getTexture(kSrc);
+    auto pDstTex = renderData.getTexture(kDst);
+
+    if (pSrcTex && pDstTex)
     {
-        RenderPassReflection reflector;
-        reflector.addInput(kSrc, "Multi-sampled texture").format(mFormat).texture2D(0, 0, 0);
-        reflector.addOutput(kDst, "Destination texture. Must have a single sample").format(mFormat).texture2D(0, 0, 1);
-        return reflector;
-    }
-
-    ResolvePass::SharedPtr ResolvePass::create(RenderContext* pRenderContext, const Dictionary& dictionary)
-    {
-        return SharedPtr(new ResolvePass);
-    }
-    
-    void ResolvePass::execute(RenderContext* pContext, const RenderData& renderData)
-    {
-        auto pSrcTex = renderData[kSrc]->asTexture();
-        auto pDstTex = renderData[kDst]->asTexture();
-
-        if (pSrcTex && pDstTex)
+        if (pSrcTex->getSampleCount() == 1)
         {
-            if (pSrcTex->getSampleCount() == 1)
-            {
-                logWarning("ResolvePass::execute() - Cannot resolve from a non-multisampled texture.");
-                return;
-            }
+            logWarning("ResolvePass::execute() - Cannot resolve from a non-multisampled texture.");
+            return;
+        }
 
-            pContext->resolveResource(pSrcTex, pDstTex);
-        }
-        else
-        {
-            logWarning("ResolvePass::execute() - missing an input or output resource");
-        }
+        pRenderContext->resolveResource(pSrcTex, pDstTex);
+    }
+    else
+    {
+        logWarning("ResolvePass::execute() - missing an input or output resource.");
     }
 }
+} // namespace Falcor

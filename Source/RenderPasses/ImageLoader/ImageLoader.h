@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,36 +27,38 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
-#include "FalcorExperimental.h"
+#include "RenderGraph/RenderPass.h"
+#include "RenderGraph/RenderPassHelpers.h"
 
 using namespace Falcor;
 
 class ImageLoader : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<ImageLoader>;
+    FALCOR_PLUGIN_CLASS(ImageLoader, "ImageLoader", "Load an image into a texture.");
 
-    static const char* kDesc;
+    static ref<ImageLoader> create(ref<Device> pDevice, const Properties& props) { return make_ref<ImageLoader>(pDevice, props); }
 
-    /** Create a new object
-    */
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
+    ImageLoader(ref<Device> pDevice, const Properties& props);
 
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
-    virtual void compile(RenderContext* pContext, const CompileData& compileData) override;
-    virtual void execute(RenderContext* pContext, const RenderData& renderData) override;
-    virtual void updateDict(const Dictionary& dict) override;
-
+    virtual void compile(RenderContext* pRenderContext, const CompileData& compileData) override;
+    virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
-    virtual Dictionary getScriptingDictionary() override;
-    virtual std::string getDesc() override { return kDesc; }
+    virtual Properties getProperties() const override;
 
 private:
-    ImageLoader();
+    bool loadImage(const std::filesystem::path& path);
 
-    ResourceFormat mOutputFormat = ResourceFormat::RGBA32Float;
-    Texture::SharedPtr mpTex;
-    std::string mImageName;
+    /// Selected output size.
+    RenderPassHelpers::IOSize mOutputSizeSelection = RenderPassHelpers::IOSize::Default;
+    /// Current output resource format.
+    ResourceFormat mOutputFormat = ResourceFormat::Unknown;
+    /// Current output size in pixels.
+    uint2 mOutputSize = {};
+
+    ref<Texture> mpTex;
+    std::filesystem::path mImagePath;
     uint32_t mArraySlice = 0;
     uint32_t mMipLevel = 0;
     bool mGenerateMips = false;

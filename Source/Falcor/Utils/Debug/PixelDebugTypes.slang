@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -30,9 +30,8 @@
 
 BEGIN_NAMESPACE_FALCOR
 
-/** Define the basic types that print() supports.
-*/
-enum class PixelLogValueType
+///  Define the basic types that print() supports.
+enum class PrintValueType
 {
     Bool = 0,
     Int,
@@ -40,16 +39,19 @@ enum class PixelLogValueType
     Float,
 };
 
-struct PixelLogValue
+struct PrintRecord
 {
-    uint type;          ///< Value type (see PixelLogValueType).
-    uint count;         ///< Number of components (1-4).
-    uint4 data;         ///< The data bits. The encoding is determined by the data type.
+    uint msgHash; ///< String hash of print message.
+    uint type;    ///< Value type (see PrintValueType).
+    uint count;   ///< Number of components (1-4).
+    uint _pad0;   ///< Padding.
+    uint4 data;   ///< The data bits. The encoding is determined by the data type.
 };
 
-struct AssertLogValue
+struct AssertRecord
 {
-    uint3 launchIndex;  ///< Launch index for the assert.
+    uint3 launchIndex; ///< Launch index for the assert.
+    uint msgHash;      ///< String hash of assert message.
 };
 
 END_NAMESPACE_FALCOR

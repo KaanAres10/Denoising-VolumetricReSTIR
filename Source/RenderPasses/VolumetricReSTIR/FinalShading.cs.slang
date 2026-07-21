@@ -36,7 +36,7 @@
      output texture. The intermediate buffers are internal to the pass.
  */
 __exported import ReSTIRHelper;
-#include "HostDeviceSharedDefinitions.h"
+#include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
 import Utils.Math.MathHelpers;
 #include "Utils/Math/MathConstants.slangh"
@@ -83,7 +83,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     float3 outputColor = 0;
 
-    SampleGenerator sg = SampleGenerator.create(pixelPos, gNumTotalRounds * gFrameCount + gNumTotalRounds - 1);
+    SampleGenerator sg = SampleGenerator(pixelPos, gNumTotalRounds * gFrameCount + gNumTotalRounds - 1);
 
     if (gUseReference) // output raw
     {
@@ -97,7 +97,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     {
         float3 rayOrigin = gScene.camera.getPosition();
         float3 rayDir = normalize(gScene.camera.computeNonNormalizedRayDirPinhole(DTid.xy, gResolution));
-        Ray ray = { rayOrigin, rayDir, 0, kRayTMax };
+        VolRay ray = { rayOrigin, rayDir, 0, kRayTMax };
 
         Reservoir curReservoir = gCurReservoirs[pixelId];
 
@@ -105,9 +105,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         {
             //// background
             float3 rayOrigin = gScene.camera.getPosition();
-            float3 rayDir = normalize(gScene.camera.computeNonNormalizedRayDirPinholeScaled(DTid.xy, 1, 0.5f, gResolution));
+            float3 rayDir = normalize(computeNonNormalizedRayDirPinholeScaled(gScene.camera, DTid.xy, 1, 0.5f, gResolution));
 
-            Ray ray = { rayOrigin, rayDir, 0, curReservoir.depth };
+            VolRay ray = { rayOrigin, rayDir, 0, curReservoir.depth };
 
             float3 curOutputColor;
 

@@ -38,7 +38,7 @@
 
 #include "Utils/Math/MathConstants.slangh"
 __exported import ReSTIRHelper;
-#include "HostDeviceSharedDefinitions.h"
+#include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
 
 cbuffer CB
@@ -69,17 +69,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     int pixelId = getPixelID(pixelPos, resolution);
 
-    CameraRay cameraRay = gScene.camera.computeRayPinholeScaled(pixelPos, 1, 0.5f, gResolution);
+    CameraRay cameraRay = computeRayPinholeScaled(gScene.camera, pixelPos, 1, 0.5f, gResolution);
 
-    Ray ray = { cameraRay.origin, cameraRay.dir, 0, kRayTMax };
+    VolRay ray = { cameraRay.origin, cameraRay.dir, 0, kRayTMax };
 
     float3 surfaceNormal = 0.f;
 
 #ifdef SURFACE_SCENE
-    HitInfo hitInfo = FindSurfaceHit(ray.origin, ray.dir, 0, kRayTMax);
+    SurfaceHitInfo hitInfo = FindSurfaceHit(ray.origin, ray.dir, 0, kRayTMax);
     if (hitInfo.isValidHit())
     {
-        ShadingData shadingInfo = computeSurfaceShadingInfo(hitInfo, -ray.dir);
+        SurfaceShadingData shadingInfo = computeSurfaceShadingInfo(hitInfo, -ray.dir);
         surfaceNormal = shadingInfo.N;
         if (any(shadingInfo.emissive > 0.f)) surfaceNormal = 0.f;
     }

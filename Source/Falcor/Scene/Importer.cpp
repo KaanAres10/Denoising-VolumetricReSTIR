@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,44 +25,34 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "Importer.h"
+#include "Utils/Scripting/ScriptBindings.h"
 
 namespace Falcor
 {
-    namespace
+    std::unique_ptr<Importer> Importer::create(std::string_view extension, const PluginManager& pm)
     {
-        static std::vector<Importer::Desc> sImporters;
-        static std::unordered_map<std::string, Importer::ImportFunction> sImportFunctions;
-        static FileDialogFilterVec sFileExtensionsFilters;
+        for (const auto& [type, info] : pm.getInfos<Importer>())
+            if (std::find(info.extensions.begin(), info.extensions.end(), extension) != info.extensions.end())
+                return pm.createClass<Importer>(type);
+        return nullptr;
     }
 
-    const FileDialogFilterVec& Importer::getFileExtensionFilters()
+    std::vector<std::string> Importer::getSupportedExtensions(const PluginManager& pm)
     {
-        return sFileExtensionsFilters;
+        std::vector<std::string> extensions;
+        for (const auto& [type, info] : pm.getInfos<Importer>())
+            extensions.insert(extensions.end(), info.extensions.begin(), info.extensions.end());
+        return extensions;
     }
 
-    bool Importer::import(const std::string& filename, SceneBuilder& builder, const SceneBuilder::InstanceMatrices& instances, const Dictionary& dict)
+    void Importer::importSceneFromMemory(const void* buffer, size_t byteSize, std::string_view extension, SceneBuilder& builder, const std::map<std::string, std::string>& materialToShortName)
     {
-        auto ext = getExtensionFromFile(filename);
-        auto it = sImportFunctions.find(ext);
-        if (it == sImportFunctions.end())
-        {
-            logError("Error when loading '" + filename + "'. Unknown file extension.");
-            return false;
-        }
-        return it->second(filename, builder, instances, dict);
+        FALCOR_THROW("Not implemented.");
     }
 
-    void Importer::registerImporter(const Desc& desc)
+    FALCOR_SCRIPT_BINDING(Importer)
     {
-        sImporters.push_back(desc);
-
-        for (const auto& ext : desc.extensions)
-        {
-            assert(sImportFunctions.find(ext) == sImportFunctions.end());
-            sImportFunctions[ext] = desc.import;
-            sFileExtensionsFilters.push_back(ext);
-        }
+        pybind11::register_exception<ImporterError>(m, "ImporterError");
     }
 }

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,192 +25,243 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "Logger.h"
+#include "Core/Error.h"
+#include "Core/Platform/OS.h"
+#include "Utils/Scripting/ScriptBindings.h"
+#include <iostream>
+#include <string>
+#include <mutex>
+#include <set>
 
 namespace Falcor
 {
-    namespace
-    {
-        std::string sLogFilePath;
-        bool sLogToConsole = false;
-        bool sShowBoxOnError = true;
-        Logger::Level sVerbosity = Logger::Level::Info;
+namespace
+{
+std::mutex sMutex;
+Logger::Level sVerbosity = Logger::Level::Info;
+Logger::OutputFlags sOutputs = Logger::OutputFlags::Console | Logger::OutputFlags::File | Logger::OutputFlags::DebugWindow;
+std::filesystem::path sLogFilePath;
 
-#if _LOG_ENABLED
-        bool sInitialized = false;
-        FILE* sLogFile = nullptr;
+bool sInitialized = false;
+FILE* sLogFile = nullptr;
 
-        std::string generateLogFilePath()
-        {
-            // Get current process name
-            std::string filename = getExecutableName();
-
-            // Now we have a folder and a filename, look for an available filename (we don't overwrite existing files)
-            std::string prefix = std::string(filename);
-            std::string executableDir = getExecutableDirectory();
-            std::string path;
-            if (findAvailableFilename(prefix, executableDir, "log", path))
-            {
-                return path;
-            }
-            should_not_get_here();
-            return "";
-        }
-
-        FILE* openLogFile()
-        {
-            FILE* pFile = nullptr;
-
-            if (sLogFilePath.empty())
-            {
-                sLogFilePath = generateLogFilePath();
-            }
-
-            pFile = std::fopen(sLogFilePath.c_str(), "w");
-            if (pFile != nullptr)
-            {
-                // Success
-                return pFile;
-            }
-
-            // If we got here, we couldn't create a log file
-            should_not_get_here();
-            return pFile;
-        }
-
-        void printToLogFile(const std::string& s)
-        {
-            if (!sInitialized)
-            {
-                sLogFile = openLogFile();
-                sInitialized = true;
-            }
-
-            if (sLogFile)
-            {
-                std::fprintf(sLogFile, "%s", s.c_str());
-                std::fflush(sLogFile);
-            }
-        }
-#endif
-    }
-
-    void Logger::shutdown()
-    {
-#if _LOG_ENABLED
-        if(sLogFile)
-        {
-            fclose(sLogFile);
-            sLogFile = nullptr;
-            sInitialized = false;
-        }
-#endif
-    }
-
-    const char* getLogLevelString(Logger::Level L)
-    {
-        const char* c = nullptr;
-#define create_level_case(_l) case _l: c = "(" #_l ")" ;break;
-        switch(L)
-        {
-            create_level_case(Logger::Level::Info);
-            create_level_case(Logger::Level::Warning);
-            create_level_case(Logger::Level::Error);
-            create_level_case(Logger::Level::Fatal);
-        default:
-            should_not_get_here();
-        }
-#undef create_level_case
-        return c;
-    }
-
-    void Logger::log(Level L, const std::string& msg, MsgBox mbox, bool terminateOnError)
-    {
-#if _LOG_ENABLED
-        if (L >= sVerbosity)
-        {
-            std::string s = getLogLevelString(L) + std::string("\t") + msg + "\n";
-
-            // Write to log file.
-            printToLogFile(s);
-
-            // Write to debug window if debugger is attached.
-            if (isDebuggerPresent()) printToDebugWindow(s);
-
-            // Write errors to stderr unconditionally, other messages to stdout if enabled.
-            if (L < Logger::Level::Error)
-            {
-                if (sLogToConsole) std::cout << s;
-            }
-            else
-            {
-                std::cerr << s;
-            }
-        }
-#endif
-
-        if (sShowBoxOnError)
-        {
-            if (mbox == MsgBox::Auto)
-            {
-                mbox = (L >= Level::Error) ? MsgBox::ContinueAbort : MsgBox::None;
-            }
-
-            if (mbox != MsgBox::None)
-            {
-                enum ButtonId {
-                    ContinueOrRetry,
-                    Debug,
-                    Abort
-                };
-
-                // Setup message box buttons
-                std::vector<MsgBoxCustomButton> buttons;
-                if (L != Level::Fatal) buttons.push_back({ContinueOrRetry, mbox == MsgBox::ContinueAbort ? "Continue" : "Retry"});
-                if (isDebuggerPresent()) buttons.push_back({Debug, "Debug"});
-                buttons.push_back({Abort, "Abort"});
-
-                // Setup icon
-                MsgBoxIcon icon = MsgBoxIcon::Info;
-                if (L == Level::Warning) icon = MsgBoxIcon::Warning;
-                else if (L >= Level::Error) icon = MsgBoxIcon::Error;
-
-                // Show message box
-                auto result = msgBox(msg, buttons, icon);
-                if (result == Debug) debugBreak();
-                else if (result == Abort) exit(1);
-            }
-        }
-
-        // Terminate on errors if not displaying message box and terminateOnError is enabled
-        if (L == Level::Error && !sShowBoxOnError && terminateOnError) exit(1);
-
-        // Always terminate on fatal errors
-        if (L == Level::Fatal) exit(1);
-    }
-
-    bool Logger::setLogFilePath(const std::string& path)
-    {
-#if _LOG_ENABLED
-        if (sLogFile)
-        {
-            return false;
-        }
-        else
-        {
-            sLogFilePath = path;
-            return true;
-        }
-#else
-        return false;
-#endif
-    }
-
-    const std::string& Logger::getLogFilePath() { return sLogFilePath; }
-    void Logger::logToConsole(bool enable) { sLogToConsole = enable; }
-    bool Logger::shouldLogToConsole() { return sLogToConsole; }
-    void Logger::showBoxOnError(bool showBox) { sShowBoxOnError = showBox; }
-    bool Logger::isBoxShownOnError() { return sShowBoxOnError; }
-    void Logger::setVerbosity(Level level) { sVerbosity = level; }
+std::filesystem::path generateLogFilePath()
+{
+    std::string prefix = getExecutableName();
+    std::filesystem::path directory = getRuntimeDirectory();
+    return findAvailableFilename(prefix, directory, "log");
 }
+
+FILE* openLogFile()
+{
+    FILE* pFile = nullptr;
+
+    if (sLogFilePath.empty())
+    {
+        sLogFilePath = generateLogFilePath();
+    }
+
+    pFile = std::fopen(sLogFilePath.string().c_str(), "w");
+    if (pFile != nullptr)
+    {
+        // Success
+        return pFile;
+    }
+
+    // If we got here, we couldn't create a log file
+    FALCOR_UNREACHABLE();
+    return pFile;
+}
+
+void printToLogFile(const std::string& s)
+{
+    if (!sInitialized)
+    {
+        sLogFile = openLogFile();
+        sInitialized = true;
+    }
+
+    if (sLogFile)
+    {
+        std::fprintf(sLogFile, "%s", s.c_str());
+        std::fflush(sLogFile);
+    }
+}
+} // namespace
+
+void Logger::shutdown()
+{
+    if (sLogFile)
+    {
+        fclose(sLogFile);
+        sLogFile = nullptr;
+        sInitialized = false;
+    }
+}
+
+inline const char* getLogLevelString(Logger::Level level)
+{
+    switch (level)
+    {
+    case Logger::Level::Fatal:
+        return "(Fatal)";
+    case Logger::Level::Error:
+        return "(Error)";
+    case Logger::Level::Warning:
+        return "(Warning)";
+    case Logger::Level::Info:
+        return "(Info)";
+    case Logger::Level::Debug:
+        return "(Debug)";
+    default:
+        FALCOR_UNREACHABLE();
+        return nullptr;
+    }
+}
+
+class MessageDeduplicator
+{
+public:
+    static MessageDeduplicator& instance()
+    {
+        static MessageDeduplicator sInstance;
+        return sInstance;
+    }
+
+    bool isDuplicate(std::string_view msg)
+    {
+        std::lock_guard<std::mutex> lock(mMutex);
+        auto it = mStrings.find(msg);
+        if (it != mStrings.end())
+            return true;
+        mStrings.insert(std::string(msg));
+        return false;
+    }
+
+private:
+    MessageDeduplicator() = default;
+
+    std::mutex mMutex;
+    std::set<std::string, std::less<>> mStrings;
+};
+
+void Logger::log(Level level, const std::string_view msg, Frequency frequency)
+{
+    std::lock_guard<std::mutex> lock(sMutex);
+    if (level <= sVerbosity)
+    {
+        std::string s = fmt::format("{} {}\n", getLogLevelString(level), msg);
+
+        if (frequency == Frequency::Once && MessageDeduplicator::instance().isDuplicate(s))
+            return;
+
+        // Write to console.
+        if (is_set(sOutputs, OutputFlags::Console))
+        {
+            auto& os = level > Logger::Level::Error ? std::cout : std::cerr;
+            os << s;
+            os.flush();
+        }
+
+        // Write to file.
+        if (is_set(sOutputs, OutputFlags::File))
+        {
+            printToLogFile(s);
+        }
+
+        // Write to debug window if debugger is attached.
+        if (is_set(sOutputs, OutputFlags::DebugWindow) && isDebuggerPresent())
+        {
+            printToDebugWindow(s);
+        }
+    }
+}
+
+void Logger::setVerbosity(Level level)
+{
+    std::lock_guard<std::mutex> lock(sMutex);
+    sVerbosity = level;
+}
+
+Logger::Level Logger::getVerbosity()
+{
+    std::lock_guard<std::mutex> lock(sMutex);
+    return sVerbosity;
+}
+
+void Logger::setOutputs(OutputFlags outputs)
+{
+    std::lock_guard<std::mutex> lock(sMutex);
+    sOutputs = outputs;
+}
+
+Logger::OutputFlags Logger::getOutputs()
+{
+    std::lock_guard<std::mutex> lock(sMutex);
+    return sOutputs;
+}
+
+void Logger::setLogFilePath(const std::filesystem::path& path)
+{
+    std::lock_guard<std::mutex> lock(sMutex);
+    if (sLogFile)
+    {
+        fclose(sLogFile);
+        sLogFile = nullptr;
+        sInitialized = false;
+    }
+    sLogFilePath = path;
+}
+
+std::filesystem::path Logger::getLogFilePath()
+{
+    std::lock_guard<std::mutex> lock(sMutex);
+    return sLogFilePath;
+}
+
+FALCOR_SCRIPT_BINDING(Logger)
+{
+    using namespace pybind11::literals;
+
+    pybind11::class_<Logger> logger(m, "Logger");
+
+    pybind11::enum_<Logger::Level> level(logger, "Level");
+    level.value("Disabled", Logger::Level::Disabled);
+    level.value("Fatal", Logger::Level::Fatal);
+    level.value("Error", Logger::Level::Error);
+    level.value("Warning", Logger::Level::Warning);
+    level.value("Info", Logger::Level::Info);
+    level.value("Debug", Logger::Level::Debug);
+
+    pybind11::enum_<Logger::OutputFlags> outputFlags(logger, "OutputFlags");
+    outputFlags.value("None_", Logger::OutputFlags::None);
+    outputFlags.value("Console", Logger::OutputFlags::Console);
+    outputFlags.value("File", Logger::OutputFlags::File);
+    outputFlags.value("DebugWindow", Logger::OutputFlags::DebugWindow);
+
+    logger.def_property_static(
+        "verbosity",
+        [](pybind11::object) { return Logger::getVerbosity(); },
+        [](pybind11::object, Logger::Level verbosity) { Logger::setVerbosity(verbosity); }
+    );
+    logger.def_property_static(
+        "outputs",
+        [](pybind11::object) { return Logger::getOutputs(); },
+        [](pybind11::object, Logger::OutputFlags outputs) { Logger::setOutputs(outputs); }
+    );
+    logger.def_property_static(
+        "log_file_path",
+        [](pybind11::object) { return Logger::getLogFilePath(); },
+        [](pybind11::object, std::filesystem::path path) { Logger::setLogFilePath(path); }
+    );
+
+    logger.def_static(
+        "log",
+        [](Logger::Level level, const std::string_view msg) { Logger::log(level, msg, Logger::Frequency::Always); },
+        "level"_a,
+        "msg"_a
+    );
+}
+
+} // namespace Falcor

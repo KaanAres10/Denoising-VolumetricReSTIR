@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -29,31 +29,58 @@
 
 namespace Falcor
 {
-    namespace
+namespace
+{
+const uint32_t kNumElems = 256;
+
+void test(GPUUnitTestContext& ctx, ShaderModel shaderModel)
+{
+    ctx.createProgram("Tests/Slang/ShaderModel.cs.slang", "main", DefineList(), SlangCompilerFlags::None, shaderModel);
+    ctx.allocateStructuredBuffer("result", kNumElems);
+    ctx.runProgram(kNumElems, 1, 1);
+
+    std::vector<uint32_t> result = ctx.readBuffer<uint32_t>("result");
+    for (uint32_t i = 0; i < kNumElems; i++)
     {
-        const uint32_t kNumElems = 256;
-
-        void test(GPUUnitTestContext& ctx, const std::string& shaderModel)
-        {
-            ctx.createProgram("Tests/Slang/ShaderModel.cs.slang", "main", Program::DefineList(), Shader::CompilerFlags::None, shaderModel);
-            ctx.allocateStructuredBuffer("result", kNumElems);
-            ctx.runProgram(kNumElems, 1, 1);
-
-            const uint32_t* result = ctx.mapBuffer<const uint32_t>("result");
-            for (uint32_t i = 0; i < kNumElems; i++)
-            {
-                EXPECT_EQ(result[i], 3 * i);
-            }
-            ctx.unmapBuffer("result");
-        }
+        EXPECT_EQ(result[i], 3 * i);
     }
-
-    GPU_TEST(ShaderModel5_0) { test(ctx, "5_0"); }
-    GPU_TEST(ShaderModel5_1) { test(ctx, "5_1"); }
-    GPU_TEST(ShaderModel6_0) { test(ctx, "6_0"); }
-    GPU_TEST(ShaderModel6_1) { test(ctx, "6_1"); }
-    GPU_TEST(ShaderModel6_2) { test(ctx, "6_2"); }
-    GPU_TEST(ShaderModel6_3) { test(ctx, "6_3"); }
-    GPU_TEST(ShaderModel6_4, "Requires shader model 6.4") { test(ctx, "6_4"); }
-    GPU_TEST(ShaderModel6_5, "Requires shader model 6.5") { test(ctx, "6_5"); }
 }
+} // namespace
+
+GPU_TEST(ShaderModel6_0)
+{
+    test(ctx, ShaderModel::SM6_0);
+}
+
+GPU_TEST(ShaderModel6_1)
+{
+    test(ctx, ShaderModel::SM6_1);
+}
+
+GPU_TEST(ShaderModel6_2)
+{
+    test(ctx, ShaderModel::SM6_2);
+}
+
+GPU_TEST(ShaderModel6_3)
+{
+    test(ctx, ShaderModel::SM6_3);
+}
+
+GPU_TEST(ShaderModel6_4)
+{
+    test(ctx, ShaderModel::SM6_4);
+}
+
+GPU_TEST(ShaderModel6_5)
+{
+    test(ctx, ShaderModel::SM6_5);
+}
+
+#if FALCOR_HAS_D3D12_AGILITY_SDK
+GPU_TEST(ShaderModel6_6, Device::Type::D3D12)
+{
+    test(ctx, ShaderModel::SM6_6);
+}
+#endif
+} // namespace Falcor

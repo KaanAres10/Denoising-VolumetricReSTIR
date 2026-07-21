@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,329 +26,183 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include <string>
-#include <sstream>
-#include <iomanip>
+#include "Core/Macros.h"
+#include "Core/Error.h"
 #include <algorithm>
-#include <locale>
 #include <codecvt>
+#include <iomanip>
+#include <locale>
+#include <string>
+#include <vector>
 
 namespace Falcor
 {
-    // String/string_View append operators missing from the spec
-    inline std::string operator+(const std::string& lhs, std::string_view rhs)
-    {
-        std::string s = lhs;
-        s.append(rhs);
-        return s;
-    }
+/**
+ * Check is a string starts with another string
+ * @param[in] str String to check in
+ * @param[in] prefix Prefix to check for
+ * @param[in] caseSensitive Whether comparison should be case-sensitive
+ * @return Returns true if string starts with the specified prefix.
+ */
+FALCOR_API bool hasPrefix(const std::string& str, const std::string& prefix, bool caseSensitive = true);
 
-    inline std::string& operator+=(std::string& lhs, std::string_view rhs)
-    {
-        lhs.append(rhs);
-        return lhs;
-    }
+/**
+ * Check is a string ends with another string
+ * @param[in] str String to check in
+ * @param[in] suffix Suffix to check for
+ * @param[in] caseSensitive Whether comparison should be case-sensitive
+ * @return Returns true if string ends with the specified suffix
+ */
+FALCOR_API bool hasSuffix(const std::string& str, const std::string& suffix, bool caseSensitive = true);
 
-    /*!
-    *  \addtogroup Falcor
-    *  @{
-    */
+/**
+ * Split a string into a vector of strings based on d delimiter
+ * @param[in] str String to split
+ * @param[in] delim Delimiter to split strings by
+ * @return Array of split strings excluding delimiters.
+ */
+FALCOR_API std::vector<std::string> splitString(const std::string& str, const std::string& delim);
 
-    /** Check is a string starts with another string
-        \param[in] str String to check in
-        \param[in] prefix Prefix to check for
-        \param[in] caseSensitive Whether comparison should be case-sensitive
-        \return Returns true if string starts with the specified prefix.
-    */
-    inline bool hasPrefix(const std::string& str, const std::string& prefix, bool caseSensitive = true)
-    {
-        if(str.size() >= prefix.size())
-        {
-            if(caseSensitive == false)
-            {
-                std::string s = str;
-                std::string pfx = prefix;
-                std::transform(str.begin(), str.end(), s.begin(), ::tolower);
-                std::transform(prefix.begin(), prefix.end(), pfx.begin(), ::tolower);
-                return s.compare(0, pfx.length(), pfx) == 0;
-            }
-            else
-            {
-                return str.compare(0, prefix.length(), prefix) == 0;
-            }
-        }
-        return false;
-    }
+/**
+ * Join an array of strings separated by another set string
+ * @param[in] strings Array of strings to join.
+ * @param[in] separator String placed between each string to be joined.
+ * @return Joined string.
+ */
+FALCOR_API std::string joinStrings(const std::vector<std::string>& strings, const std::string& separator);
 
-    /** Check is a string ends with another string
-        \param[in] str String to check in
-        \param[in] suffix Suffix to check for
-        \param[in] caseSensitive Whether comparison should be case-sensitive
-        \return Returns true if string ends with the specified suffix
-    */
-    inline bool hasSuffix(const std::string& str, const std::string& suffix, bool caseSensitive = true)
-    {
-        if(str.size() >= suffix.size())
-        {
-            std::string s = str.substr(str.length() - suffix.length());
-            if(caseSensitive == false)
-            {
-                std::string sfx = suffix;
-                std::transform(s.begin(), s.end(), s.begin(), ::tolower);
-                std::transform(sfx.begin(), sfx.end(), sfx.begin(), ::tolower);
-                return (sfx == s);
-            }
-            else
-            {
-                return (s == suffix);
-            }
-        }
-        return false;
-    }
+/**
+ * Remove leading whitespace.
+ * @param[in] str String to operate on.
+ * @param[in] whitespace Whitespace characters.
+ * @return String with leading whitespace removed.
+ */
+FALCOR_API std::string removeLeadingWhitespace(const std::string& str, const char* whitespace = " \n\r\t");
 
-    /** Split a string into a vector of strings based on d delimiter
-        \param[in] str String to split
-        \param[in] delim Delimiter to split strings by
-        \return Array of split strings excluding delimiters.
-    */
-    inline std::vector<std::string> splitString(const std::string& str, const std::string& delim)
-    {
-        std::string s;
-        std::vector<std::string> vec;
-        for(char c : str)
-        {
-            if(delim.find(c) != std::string::npos)
-            {
-                if(s.length())
-                {
-                    vec.push_back(s);
-                    s.clear();
-                }
-            }
-            else
-            {
-                s += c;
-            }
-        }
-        if(s.length())
-        {
-            vec.push_back(s);
-        }
-        return vec;
-    }
+/**
+ * Remove trailing whitespace.
+ * @param[in] str String to operate on.
+ * @param[in] whitespace Whitespace characters.
+ * @return String with trailing whitespace removed.
+ */
+FALCOR_API std::string removeTrailingWhitespace(const std::string& str, const char* whitespace = " \n\r\t");
 
-    /** Join an array of strings separated by another set string
-        \param[in] strings Array of strings to join.
-        \param[in] separator String placed between each string to be joined.
-        \return Joined string.
-    */
-    inline std::string joinStrings(const std::vector<std::string>& strings, const std::string& separator)
-    {
-        std::string result;
-        for(auto it = strings.begin(); it != strings.end(); it++)
-        {
-            result += *it;
+/**
+ * Remove leading and trailing whitespace.
+ * @param[in] str String to operate on.
+ * @param[in] whitespace Whitespace characters.
+ * @return String with leading and trailing whitespace removed.
+ */
+FALCOR_API std::string removeLeadingTrailingWhitespace(const std::string& str, const char* whitespace = " \n\r\t");
 
-            if(it != strings.end() - 1)
-            {
-                result += separator;
-            }
-        }
-        return result;
-    }
+/**
+ * Replace a set of character.
+ * Example: replaceCharacters("some/path with/whitespace", "/ ", '_') returns "some_path_with_whitespace"
+ * @param[in] str String to operate on.
+ * @param[in] characters Set of characters to replace.
+ * @param[in] replacement Character to use as a replacement.
+ * @return String with characeters replaced.
+ */
+FALCOR_API std::string replaceCharacters(const std::string& str, const char* characters, const char replacement);
 
-    /** Remove leading whitespaces (space, tab, newline, carriage-return)
-        \param[in] str String to operate on
-        \return String with leading whitespaces removed.
-    */
-    inline std::string removeLeadingWhitespaces(const std::string& str)
-    {
-        size_t offset = str.find_first_not_of(" \n\r\t");
-        std::string ret;
-        if(offset != std::string::npos)
-        {
-            ret = str.substr(offset);
-        }
-        return ret;
-    }
+/**
+ * Pad string to minimum length.
+ */
+FALCOR_API std::string padStringToLength(const std::string& str, size_t length, char padding = ' ');
 
-    /** Remove trailing whitespaces (space, tab, newline, carriage-return)
-        \param[in] str String to operate on
+/**
+ * Replace all occurrences of a substring in a string. The function doesn't change the original string.
+ * @param input The input string
+ * @param src The substring to replace
+ * @param dst The substring to replace Src with
+ */
+FALCOR_API std::string replaceSubstring(const std::string& input, const std::string& src, const std::string& dst);
 
-    */
-    inline std::string removeTrailingWhitespaces(const std::string& str)
-    {
-        size_t offset = str.find_last_not_of(" \n\r\t");
-        std::string ret;
-        if(offset != std::string::npos)
-        {
-            ret = str.substr(0, offset + 1);
-        }
-        return ret;
-    }
+/**
+ * Decode an URI string.
+ */
+FALCOR_API std::string decodeURI(const std::string& input);
 
-    /** Remove trailing and leading whitespaces
-    */
-    inline std::string removeLeadingTrailingWhitespaces(const std::string& str)
-    {
-        return removeTrailingWhitespaces(removeLeadingWhitespaces(str));
-    }
+/**
+ * Parses a string in the format <name>[<index>]. If format is valid, outputs the base name and the array index.
+ * @param[in] name String to parse
+ * @param[out] nonArray Becomes set to the non-array index portion of the string
+ * @param[out] index Becomes set to the index value parsed from the string
+ * @return Whether string was successfully parsed.
+ */
+FALCOR_API bool parseArrayIndex(const std::string& name, std::string& nonArray, uint32_t& index);
 
-    /** Pad string to minimum length.
-    */
-    inline std::string padStringToLength(const std::string& str, size_t length, char padding = ' ')
-    {
-        std::string result = str;
-        if (result.length() < length) result.resize(length, padding);
-        return result;
-    }
+/**
+ * Copy text from a std::string to a char buffer, ensures null termination.
+ */
+FALCOR_API void copyStringToBuffer(char* buffer, uint32_t bufferSize, const std::string& s);
 
-    /** Replace all occurrences of a substring in a string. The function doesn't change the original string
-        \param input The input string
-        \param src The substring to replace
-        \param dst The substring to replace Src with
-    */
-    inline std::string replaceSubstring(const std::string& input, const std::string& src, const std::string& dst)
-    {
-        std::string res = input;
-        size_t offset = res.find(src);
-        while(offset != std::string::npos)
-        {
-            res.replace(offset, src.length(), dst);
-            offset += dst.length();
-            offset = res.find(src, offset);
-        }
-        return res;
-    }
+/**
+ * Converts a size in bytes to a human readable string:
+ * - prints bytes (B) if size < 1000 bytes
+ * - prints kilobytes (KB) if size < 1000 kilobytes
+ * - prints megabytes (MB) if size < 1000 megabytes
+ * - prints gigabytes (GB) if size < 1000 gigabytes
+ * - otherwise prints terabytes (TB)
+ * @param[in] size Size in bytes
+ * @return Returns a human readable string.
+ */
+FALCOR_API std::string formatByteSize(size_t size);
 
-    /** Parses a string in the format <name>[<index>]. If format is valid, outputs the base name and the array index.
-        \param[in] name String to parse
-        \param[out] nonArray Becomes set to the non-array index portion of the string
-        \param[out] index Becomes set to the index value parsed from the string
-        \return Whether string was successfully parsed.
-    */
-    inline bool parseArrayIndex(const std::string& name, std::string& nonArray, uint32_t& index)
-    {
-        size_t dot = name.find_last_of('.');
-        size_t bracket = name.find_last_of('[');
+/**
+ * Convert an ASCII string to lower case.
+ */
+inline std::string toLowerCase(const std::string& str)
+{
+    std::string s = str;
+    std::transform(str.begin(), str.end(), s.begin(), ::tolower);
+    return s;
+}
 
-        if(bracket != std::string::npos)
-        {
-            // Ignore cases where the last index is an array of struct index (SomeStruct[1].v should be ignored)
-            if((dot == std::string::npos) || (bracket > dot))
-            {
-                // We know we have an array index. Make sure it's in range
-                std::string indexStr = name.substr(bracket + 1);
-                char* pEndPtr;
-                index = strtol(indexStr.c_str(), &pEndPtr, 0);
-                assert(*pEndPtr == ']');
-                nonArray = name.substr(0, bracket);
-                return true;
-            }
-        }
+/**
+ * Convert an ASCII string to a UTF-8 wstring
+ */
+inline std::wstring string_2_wstring(const std::string& s)
+{
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> cvt;
+    std::wstring ws = cvt.from_bytes(s);
+    return ws;
+}
 
-        return false;
-    }
+/**
+ * Convert a UTF-8 wstring to an ASCII string
+ */
+inline std::string wstring_2_string(const std::wstring& ws)
+{
+    std::wstring_convert<std::codecvt_utf8<wchar_t>> cvt;
+    std::string s = cvt.to_bytes(ws);
+    return s;
+}
 
-    /** Copy text from a std::string to a char buffer, ensures null termination.
-    */
-    inline void copyStringToBuffer(char* buffer, uint32_t bufferSize, const std::string& s)
-    {
-        const uint32_t length = std::min(bufferSize - 1, (uint32_t)s.length());
-        s.copy(buffer, length);
-        buffer[length] = '\0';
-    }
+/**
+ * Convert a UTF-32 codepoint to a UTF-8 string
+ */
+inline std::string utf32ToUtf8(uint32_t codepoint)
+{
+    std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> cvt;
+    return cvt.to_bytes(codepoint);
+}
 
-    /** Converts a size in bytes to a human readable string:
-        - prints bytes (B) if size < 512 bytes
-        - prints kilobytes (KB) if size < 512 kilobytes
-        - prints megabytes (MB) if size < 512 megabytes
-        - otherwise prints gigabytes (GB)
-        \param[in] size Size in bytes
-        \return Returns a human readable string.
-    */
-    inline std::string formatByteSize(size_t size)
-    {
-        std::ostringstream oss;
-        oss << std::fixed << std::setprecision(1);
+/**
+ * Encode data into base 64 encoding.
+ */
+FALCOR_API std::string encodeBase64(const void* data, size_t len);
 
-        if (size < 512) oss << size << "B";
-        else if (size < 512 * 1024) oss << (size / 1024.0) << "KB";
-        else if (size < 512 * 1024 * 1024) oss << (size / (1024.0 * 1024.0)) << "MB";
-        else oss << (size / (1024.0 * 1024.0 * 1024.0)) << "GB";
+/**
+ * Encode data into base 64 encoding.
+ */
+inline std::string encodeBase64(const std::vector<uint8_t>& in)
+{
+    return encodeBase64(in.data(), in.size());
+}
 
-        return oss.str();
-    }
-
-    /** Convert an ASCII string to a UTF-8 wstring
-    */
-    inline std::wstring string_2_wstring(const std::string& s)
-    {
-        std::wstring_convert<std::codecvt_utf8<wchar_t>> cvt;
-        std::wstring ws = cvt.from_bytes(s);
-        return ws;
-    }
-
-    /** Convert a UTF-8 wstring to an ASCII string
-    */
-    inline std::string wstring_2_string(const std::wstring& ws)
-    {
-        std::wstring_convert<std::codecvt_utf8<wchar_t>> cvt;
-        std::string s = cvt.to_bytes(ws);
-        return s;
-    }
-
-    /** Convert a UTF-32 codepoint to a UTF-8 string
-    */
-    inline std::string utf32ToUtf8(uint32_t codepoint)
-    {
-#ifdef _WIN32
-        std::wstring_convert<std::codecvt_utf8<uint32_t>, uint32_t> cvt;
-#else
-        std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> cvt;
-#endif
-        return cvt.to_bytes(codepoint);
-    }
-
-    /** Combine command line args to a single string
-    */
-    inline std::string concatCommandLine(uint32_t argc, char** argv)
-    {
-        std::string s;
-        for (uint32_t i = 0; i < argc; i++)
-        {
-            s += std::string(argv[i]) + ((i < argc - 1) ? " " : "");
-        }
-
-        return s;
-    }
-
-    /** Return string name of class type from a pointer to an object
-    */
-    template<class T>
-    std::string getClassTypeName(const T* ptr = nullptr)
-    {
-        std::string typeName = typeid(*ptr).name();
-#ifdef _WIN32
-        assert(hasPrefix(typeName, "class "));
-        auto v = splitString(typeName.substr(6), "::");
-        return v.back();
-#else
-#error getClassTypeName() not implemented for this platform
-#endif
-    }
-
-    template<class T>
-    std::string getEnumTypeName(const T& e = T(0))
-    {
-        std::string typeName = typeid(e).name();
-#ifdef _WIN32
-        assert(hasPrefix(typeName, "enum "));
-        auto v = splitString(typeName.substr(6), "::");
-        return v.back();
-#else
-#error getClassTypeName() not implemented for this platform
-#endif
-    }
-    /*! @} */
-};
+/**
+ * Decode data from base 64 encoding.
+ */
+FALCOR_API std::vector<uint8_t> decodeBase64(const std::string& in);
+}; // namespace Falcor

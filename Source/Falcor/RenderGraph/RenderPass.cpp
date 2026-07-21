@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,23 +25,37 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "RenderPass.h"
 
 namespace Falcor
 {
-    RenderData::RenderData(const std::string& passName, const ResourceCache::SharedPtr& pResourceCache, const InternalDictionary::SharedPtr& pDict, const uint2& defaultTexDims, ResourceFormat defaultTexFormat)
-        : mName(passName)
-        , mpResources(pResourceCache)
-        , mpDictionary(pDict)
-        , mDefaultTexDims(defaultTexDims)
-        , mDefaultTexFormat(defaultTexFormat)
-    {
-        if (!mpDictionary) mpDictionary = InternalDictionary::create();
-    }
+RenderData::RenderData(
+    const std::string& passName,
+    ResourceCache& resources,
+    Dictionary& dictionary,
+    const uint2& defaultTexDims,
+    ResourceFormat defaultTexFormat
+)
+    : mName(passName), mResources(resources), mDictionary(dictionary), mDefaultTexDims(defaultTexDims), mDefaultTexFormat(defaultTexFormat)
+{}
 
-    const Resource::SharedPtr& RenderData::getResource(const std::string& name) const
-    {
-        return mpResources->getResource(mName + '.' + name);
-    }
+const ref<Resource>& RenderData::getResource(const std::string_view name) const
+{
+    return mResources.getResource(fmt::format("{}.{}", mName, name));
 }
+
+ref<Texture> RenderData::getTexture(const std::string_view name) const
+{
+    auto pResource = getResource(name);
+    return pResource ? pResource->asTexture() : nullptr;
+}
+
+ref<RenderPass> RenderPass::create(std::string_view type, ref<Device> pDevice, const Properties& props, PluginManager& pm)
+{
+    // Try to load a plugin of the same name, if render pass class is not registered yet.
+    if (!pm.hasClass<RenderPass>(type))
+        pm.loadPluginByName(type);
+
+    return pm.createClass<RenderPass>(type, pDevice, props);
+}
+} // namespace Falcor

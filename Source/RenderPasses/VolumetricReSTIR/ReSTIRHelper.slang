@@ -1,8 +1,9 @@
 __exported import Reservoir;
 __exported import VolumeUtils;
+import Rendering.Lights.EmissiveLightSamplerHelpers; // [8.0 port] for sampleTriangle()
 __exported import Utils.Color.ColorHelpers;
 __exported import ArrayDataProvider;
-#include "HostDeviceSharedDefinitions.h"
+#include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
 
 __exported import HostDeviceSharedConstants;
@@ -90,7 +91,7 @@ int encodePathTag(int storage, int pathTag)
 
 float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvider : IExternalVisibilityProvider>(
     REUSETYPE Reservoir tap, VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
-    Ray ray, inout SampleGenerator sg, SamplingOptions options, inout ExternalVisibilityProvider externalVis, bool isLastFrame, bool noReuse, bool spatialReuse, bool isFinalShading)
+    VolRay ray, inout SampleGenerator sg, SamplingOptions options, inout ExternalVisibilityProvider externalVis, bool isLastFrame, bool noReuse, bool spatialReuse, bool isFinalShading)
 {
     bool useLastFrameGrid = gScene.volumeDesc.usePrevGridForReproj && isLastFrame && gScene.volumeDesc.hasAnimation;
     int mipLevelOffset = useLastFrameGrid ? kPrevFrameDensityGridOffset : 0;
@@ -115,7 +116,7 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
     bool isLastVertexSurface = false;
 
 #ifdef SURFACE_SCENE
-    ShadingData shadingInfo;
+    SurfaceShadingData shadingInfo;
 #endif
 
     {
@@ -129,7 +130,7 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
         bool earlyExit = false;
         if (isBackgroundSample)
         {
-            HitInfo hitInfo = { vItem.meshInstanceID, vItem.primitiveID, vItem.barycentrics, vItem.rayT };
+            SurfaceHitInfo hitInfo = { vItem.meshInstanceID, vItem.primitiveID, vItem.barycentrics, vItem.rayT };
             //HitInfo hitInfo2 = FindSurfaceHit(ray.origin, ray.dir, 0, kRayTMax);
 
             if (hitInfo.isValidHit())
@@ -211,7 +212,7 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
         #if MAX_BOUNCES > 1
             if (maxIndirectBounces > 0)
             {
-                Ray scatterRay;
+                VolRay scatterRay;
 
                 isScatterSelfEmission = decodePathTag(tap.sampledPixel) == 1;
 
@@ -241,7 +242,7 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
                     }
 
                 #ifdef SURFACE_SCENE
-                    HitInfo hitInfo;
+                    SurfaceHitInfo hitInfo;
                     hitInfo.setInvalid();
                 #endif
 
@@ -277,7 +278,7 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
                     // this bsdf is the last vertex's bsdf
                 #ifdef SURFACE_SCENE
                     if (isLastVertexSurface)
-                        bsdf = evalBSDFCosine(shadingInfo, scatterRay.dir);
+                        bsdf = evalBSDFCosine(shadingInfo, scatterRay.dir, sg);
                     else
                 #endif
                         bsdf = mi.phaseFunction(mi.wo, scatterRay.dir);
@@ -423,7 +424,7 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
 }
 
 
-float evaluate_P_hat<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvider : IExternalVisibilityProvider>(Ray ray, inout SampleGenerator sg, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
+float evaluate_P_hat<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvider : IExternalVisibilityProvider>(VolRay ray, inout SampleGenerator sg, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
     VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, SamplingOptions options,
     REUSETYPE Reservoir tap, inout ExternalVisibilityProvider externalVis, bool isLastFrame = false, bool nonBinary = true, bool spatialReuse = false) // only set to false when computing binary MIS
 {
@@ -432,7 +433,7 @@ float evaluate_P_hat<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityPro
 }
 
 float3 evaluate_F<ArrayDataProvider:IArrayDataProvider>(Reservoir tap, VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
-    Ray ray, inout SampleGenerator sg, SamplingOptions options, bool noReuse)
+    VolRay ray, inout SampleGenerator sg, SamplingOptions options, bool noReuse)
 {
     SingleExternalVisibilityProvider externalVis;
     externalVis.Initialize();
@@ -443,7 +444,7 @@ float3 evaluate_F<ArrayDataProvider:IArrayDataProvider>(Reservoir tap, VBUFFERDE
 float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, inout float precomputedVisibility, int bounce, inout SampleGenerator sg, SamplingOptions options,
                             EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, bool lightVisibilityReuse=false, bool isLastFrame=false, bool nonBinary=true, bool cullNonOpaqueGeometry=false)
 {
-    Ray shadowRay;
+    VolRay shadowRay;
     float3 Ld = 0.f;
     bool isValidSample = true;
 
@@ -454,9 +455,9 @@ float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, i
     // voxel light
     if (lightID < 0)
     {
-        float3 wiWorld = envMapSampler.decodeLightUV(lightUV, lightID, isLastFrame);
+        float3 wiWorld = gScene.envMap.uvToWorld(lightUV); // [8.0 port] was envMapSampler.decodeLightUV
         shadowRay = { mi.p, wiWorld, 0, kRayTMax };
-        Ld = envMapSampler.eval(wiWorld, isLastFrame) * mi.phaseFunction(mi.wo, wiWorld);
+        Ld = gScene.envMap.eval(wiWorld) * mi.phaseFunction(mi.wo, wiWorld); // [8.0 port] was envMapSampler.eval
     }
     // analytical light (currently only supporting directional and point lights
     else if (lightID < (int)gScene.getLightCount())
@@ -469,11 +470,15 @@ float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, i
     else
     {
         TriangleLightSample ls;
-        isValidSample = emissiveSampler.getEmissiveLightSample(mi.p, lightID - (int)gScene.getLightCount(), lightUV, ls);
+        // [8.0 port] getEmissiveLightSample -> sampleTriangle. The reservoir stores the uniform u
+        // (TriangleLightSample.uv), and sampleTriangle is deterministic in u, so this reconstructs
+        // the exact same sample. cosTheta at the light = dot(normalW, -dir).
+        isValidSample = sampleTriangle(mi.p, (uint)(lightID - (int)gScene.getLightCount()), lightUV, ls);
         if (isValidSample)
         {
             shadowRay = { mi.p, ls.dir, 0, ls.distance };
-            Ld = ls.Le * gScene.emissiveIntensityMultiplier * mi.phaseFunction(mi.wo, ls.dir) * ls.cosTheta / (ls.distance * ls.distance);
+            float lsCosTheta = dot(ls.normalW, -ls.dir);
+            Ld = ls.Le * gScene.emissiveIntensityMultiplier * mi.phaseFunction(mi.wo, ls.dir) * lsCosTheta / (ls.distance * ls.distance);
         }
     }
 
@@ -496,10 +501,10 @@ float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, i
 }
 
 #ifdef SURFACE_SCENE
-float3 evaluate_L_on_surface(ShadingData shadingInfo, int lightID, float2 lightUV, inout float precomputedVisibility, int bounce, inout SampleGenerator sg, SamplingOptions options,
+float3 evaluate_L_on_surface(SurfaceShadingData shadingInfo, int lightID, float2 lightUV, inout float precomputedVisibility, int bounce, inout SampleGenerator sg, SamplingOptions options,
     EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, bool lightVisibilityReuse=false, bool isLastFrame=false, bool nonBinary=true, bool cullNonOpaqueGeometry = false)
 {
-    Ray shadowRay;
+    VolRay shadowRay;
     float3 Ld = 0.f;
     bool isValidSample = true;
 
@@ -510,26 +515,28 @@ float3 evaluate_L_on_surface(ShadingData shadingInfo, int lightID, float2 lightU
     // voxel light
     if (lightID < 0)
     {
-        float3 wiWorld = envMapSampler.decodeLightUV(lightUV, lightID, isLastFrame);
+        float3 wiWorld = gScene.envMap.uvToWorld(lightUV); // [8.0 port] was envMapSampler.decodeLightUV
         shadowRay = { shadingInfo.posW, wiWorld, 0, kRayTMax };
-        Ld = envMapSampler.eval(wiWorld, isLastFrame) * evalBSDFCosine(shadingInfo, wiWorld);
+        Ld = gScene.envMap.eval(wiWorld) * evalBSDFCosine(shadingInfo, wiWorld, sg);
     }
     // analytical light (currently only supporting directional and point lights
     else if (lightID < (int)gScene.getLightCount())
     {
         SceneLightSample ls = getAnalyticalLightSample(lightID, shadingInfo.posW, sg); // TODO: remove sg
         shadowRay = { shadingInfo.posW, ls.rayDir, 0, ls.rayDistance };
-        Ld = ls.Li * evalBSDFCosine(shadingInfo, ls.rayDir);
+        Ld = ls.Li * evalBSDFCosine(shadingInfo, ls.rayDir, sg);
     }
     // emissive light (TODO: consider invalid case for unbiased reuse)
     else
     {
         TriangleLightSample ls;
-        isValidSample = emissiveSampler.getEmissiveLightSample(shadingInfo.posW, lightID - (int)gScene.getLightCount(), lightUV, ls);
+        // [8.0 port] getEmissiveLightSample -> sampleTriangle (deterministic in the stored u).
+        isValidSample = sampleTriangle(shadingInfo.posW, (uint)(lightID - (int)gScene.getLightCount()), lightUV, ls);
         if (isValidSample)
         {
             shadowRay = { shadingInfo.posW, ls.dir, 0, ls.distance };
-            Ld = ls.Le * gScene.emissiveIntensityMultiplier * evalBSDFCosine(shadingInfo, ls.dir) * ls.cosTheta / (ls.distance * ls.distance);
+            float lsCosTheta = dot(ls.normalW, -ls.dir);
+            Ld = ls.Le * gScene.emissiveIntensityMultiplier * evalBSDFCosine(shadingInfo, ls.dir, sg) * lsCosTheta / (ls.distance * ls.distance);
         }
     }
 
@@ -560,7 +567,7 @@ inline int getPixelID(int2 pixelPos, int2 resolution)
     return pixelPos.y * resolution.x + pixelPos.x;
 }
 
-bool resampleNeighborSpatialReuse<ArrayDataProvider:IArrayDataProvider>(inout Reservoir tap, Ray ray, inout SampleGenerator sg, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
+bool resampleNeighborSpatialReuse<ArrayDataProvider:IArrayDataProvider>(inout Reservoir tap, VolRay ray, inout SampleGenerator sg, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
     VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, SamplingOptions options)
 {
     if (tap.runningSum == 0.f) return true;
@@ -579,7 +586,7 @@ bool resampleNeighborSpatialReuse<ArrayDataProvider:IArrayDataProvider>(inout Re
     return true;
 }
 
-bool resampleNeighbor<ArrayDataProvider:IArrayDataProvider>(inout Reservoir tap, Ray ray, inout SampleGenerator sg, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, SamplingOptions options)
+bool resampleNeighbor<ArrayDataProvider:IArrayDataProvider>(inout Reservoir tap, VolRay ray, inout SampleGenerator sg, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, SamplingOptions options)
 {
     if (tap.runningSum == 0.f) return true;
 
@@ -597,7 +604,7 @@ bool resampleNeighbor<ArrayDataProvider:IArrayDataProvider>(inout Reservoir tap,
     return true;
 }
 
-float evaluatePHatReadOnly<ArrayDataProvider:IArrayDataProvider>(Reservoir r, Ray neighborRay, inout SampleGenerator sg,
+float evaluatePHatReadOnly<ArrayDataProvider:IArrayDataProvider>(Reservoir r, VolRay neighborRay, inout SampleGenerator sg,
     EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, SamplingOptions options, bool isLastFrame, bool useReSTIRMIS, bool spatialReuse)
 {
     SingleExternalVisibilityProvider externalVis;

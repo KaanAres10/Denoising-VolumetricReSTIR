@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,93 +25,147 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "Sampler.h"
+#include "Device.h"
+#include "GFXAPI.h"
+#include "NativeHandleTraits.h"
+#include "Core/ObjectPython.h"
+#include "Utils/Scripting/ScriptBindings.h"
 
 namespace Falcor
 {
-    struct SamplerData
+namespace
+{
+gfx::TextureAddressingMode getGFXAddressMode(TextureAddressingMode mode)
+{
+    switch (mode)
     {
-        uint32_t objectCount = 0;
-        Sampler::SharedPtr pDefaultSampler;
-    };
-    SamplerData gSamplerData;
-
-    Sampler::Sampler(const Desc& desc) : mDesc(desc)
-    {
-        gSamplerData.objectCount++;
-    }
-
-    Sampler::~Sampler()
-    {
-        gSamplerData.objectCount--;
-        if (gSamplerData.objectCount <= 1) gSamplerData.pDefaultSampler = nullptr;
-    }
-
-    Sampler::Desc& Sampler::Desc::setFilterMode(Filter minFilter, Filter magFilter, Filter mipFilter)
-    {
-        mMagFilter = magFilter;
-        mMinFilter = minFilter;
-        mMipFilter = mipFilter;
-        return *this;
-    }
-
-    Sampler::Desc& Sampler::Desc::setMaxAnisotropy(uint32_t maxAnisotropy)
-    {
-        mMaxAnisotropy = maxAnisotropy;
-        return *this;
-    }
-
-    Sampler::Desc& Sampler::Desc::setLodParams(float minLod, float maxLod, float lodBias)
-    {
-        mMinLod = minLod;
-        mMaxLod = maxLod;
-        mLodBias = lodBias;
-        return *this;
-    }
-
-    Sampler::Desc& Sampler::Desc::setComparisonMode(ComparisonMode mode)
-    {
-        mComparisonMode = mode;
-        return *this;
-    }
-
-    Sampler::Desc& Sampler::Desc::setAddressingMode(AddressMode modeU, AddressMode modeV, AddressMode modeW)
-    {
-        mModeU = modeU;
-        mModeV = modeV;
-        mModeW = modeW;
-        return *this;
-    }
-
-    Sampler::Desc& Sampler::Desc::setBorderColor(const float4& borderColor)
-    {
-        mBorderColor = borderColor;
-        return *this;
-    }
-
-    Sampler::SharedPtr Sampler::getDefault()
-    {
-        if (gSamplerData.pDefaultSampler == nullptr)
-        {
-            gSamplerData.pDefaultSampler = create(Desc());
-        }
-        return gSamplerData.pDefaultSampler;
-    }
-
-    SCRIPT_BINDING(Sampler)
-    {
-        pybind11::class_<Sampler, Sampler::SharedPtr>(m, "Sampler");
-
-        pybind11::enum_<Sampler::Filter> filter(m, "SamplerFilter");
-        filter.value("Linear", Sampler::Filter::Linear);
-        filter.value("Point", Sampler::Filter::Point);
-
-        pybind11::enum_<Sampler::AddressMode> addressMode(m, "AddressMode");
-        addressMode.value("Wrap", Sampler::AddressMode::Wrap);
-        addressMode.value("Mirror", Sampler::AddressMode::Mirror);
-        addressMode.value("Clamp", Sampler::AddressMode::Clamp);
-        addressMode.value("Border", Sampler::AddressMode::Border);
-        addressMode.value("MirrorOnce", Sampler::AddressMode::MirrorOnce);
+    case TextureAddressingMode::Border:
+        return gfx::TextureAddressingMode::ClampToBorder;
+    case TextureAddressingMode::Clamp:
+        return gfx::TextureAddressingMode::ClampToEdge;
+    case TextureAddressingMode::Mirror:
+        return gfx::TextureAddressingMode::MirrorRepeat;
+    case TextureAddressingMode::MirrorOnce:
+        return gfx::TextureAddressingMode::MirrorOnce;
+    case TextureAddressingMode::Wrap:
+        return gfx::TextureAddressingMode::Wrap;
+    default:
+        FALCOR_UNREACHABLE();
+        return gfx::TextureAddressingMode::ClampToBorder;
     }
 }
+
+gfx::TextureFilteringMode getGFXFilter(TextureFilteringMode filter)
+{
+    switch (filter)
+    {
+    case TextureFilteringMode::Linear:
+        return gfx::TextureFilteringMode::Linear;
+    case TextureFilteringMode::Point:
+        return gfx::TextureFilteringMode::Point;
+    default:
+        FALCOR_UNREACHABLE();
+        return gfx::TextureFilteringMode::Point;
+    }
+}
+
+gfx::TextureReductionOp getGFXReductionMode(TextureReductionMode mode)
+{
+    switch (mode)
+    {
+    case Falcor::TextureReductionMode::Standard:
+        return gfx::TextureReductionOp::Average;
+    case Falcor::TextureReductionMode::Comparison:
+        return gfx::TextureReductionOp::Comparison;
+    case Falcor::TextureReductionMode::Min:
+        return gfx::TextureReductionOp::Minimum;
+    case Falcor::TextureReductionMode::Max:
+        return gfx::TextureReductionOp::Maximum;
+    default:
+        return gfx::TextureReductionOp::Average;
+        break;
+    }
+}
+} // namespace
+
+gfx::ComparisonFunc getGFXComparisonFunc(ComparisonFunc func);
+
+Sampler::Sampler(ref<Device> pDevice, const Desc& desc) : mpDevice(std::move(pDevice)), mDesc(desc)
+{
+    gfx::ISamplerState::Desc gfxDesc = {};
+    gfxDesc.addressU = getGFXAddressMode(desc.addressModeU);
+    gfxDesc.addressV = getGFXAddressMode(desc.addressModeV);
+    gfxDesc.addressW = getGFXAddressMode(desc.addressModeW);
+
+    static_assert(sizeof(gfxDesc.borderColor) == sizeof(desc.borderColor));
+    std::memcpy(gfxDesc.borderColor, &desc.borderColor, sizeof(desc.borderColor));
+
+    gfxDesc.comparisonFunc = getGFXComparisonFunc(desc.comparisonFunc);
+    gfxDesc.magFilter = getGFXFilter(desc.magFilter);
+    gfxDesc.maxAnisotropy = desc.maxAnisotropy;
+    gfxDesc.maxLOD = desc.maxLod;
+    gfxDesc.minFilter = getGFXFilter(desc.minFilter);
+    gfxDesc.minLOD = desc.minLod;
+    gfxDesc.mipFilter = getGFXFilter(desc.mipFilter);
+    gfxDesc.mipLODBias = desc.lodBias;
+    gfxDesc.reductionOp =
+        (desc.comparisonFunc != ComparisonFunc::Disabled) ? gfx::TextureReductionOp::Comparison : getGFXReductionMode(desc.reductionMode);
+
+    FALCOR_GFX_CALL(mpDevice->getGfxDevice()->createSamplerState(gfxDesc, mGfxSamplerState.writeRef()));
+}
+
+Sampler::~Sampler()
+{
+    mpDevice->releaseResource(mGfxSamplerState);
+}
+
+NativeHandle Sampler::getNativeHandle() const
+{
+    gfx::InteropHandle gfxNativeHandle = {};
+    FALCOR_GFX_CALL(mGfxSamplerState->getNativeHandle(&gfxNativeHandle));
+#if FALCOR_HAS_D3D12
+    if (mpDevice->getType() == Device::Type::D3D12)
+        return NativeHandle(D3D12_CPU_DESCRIPTOR_HANDLE{gfxNativeHandle.handleValue});
+#endif
+#if FALCOR_HAS_VULKAN
+    if (mpDevice->getType() == Device::Type::Vulkan)
+        return NativeHandle(reinterpret_cast<VkSampler>(gfxNativeHandle.handleValue));
+#endif
+    return {};
+}
+
+uint32_t Sampler::getApiMaxAnisotropy()
+{
+    return 16;
+}
+
+void Sampler::breakStrongReferenceToDevice()
+{
+    mpDevice.breakStrongReference();
+}
+
+FALCOR_SCRIPT_BINDING(Sampler)
+{
+    FALCOR_SCRIPT_BINDING_DEPENDENCY(Types)
+
+    pybind11::falcor_enum<TextureFilteringMode>(m, "TextureFilteringMode");
+    pybind11::falcor_enum<TextureAddressingMode>(m, "TextureAddressingMode");
+    pybind11::falcor_enum<TextureReductionMode>(m, "TextureReductionMode");
+
+    pybind11::class_<Sampler, ref<Sampler>> sampler(m, "Sampler");
+    sampler.def_property_readonly("mag_filter", &Sampler::getMagFilter);
+    sampler.def_property_readonly("min_filter", &Sampler::getMinFilter);
+    sampler.def_property_readonly("mip_filter", &Sampler::getMipFilter);
+    sampler.def_property_readonly("max_anisotropy", &Sampler::getMaxAnisotropy);
+    sampler.def_property_readonly("min_lod", &Sampler::getMinLod);
+    sampler.def_property_readonly("max_lod", &Sampler::getMaxLod);
+    sampler.def_property_readonly("lod_bias", &Sampler::getLodBias);
+    sampler.def_property_readonly("comparison_func", &Sampler::getComparisonFunc);
+    sampler.def_property_readonly("reduction_mode", &Sampler::getReductionMode);
+    sampler.def_property_readonly("address_mode_u", &Sampler::getAddressModeU);
+    sampler.def_property_readonly("address_mode_v", &Sampler::getAddressModeV);
+    sampler.def_property_readonly("address_mode_w", &Sampler::getAddressModeW);
+    sampler.def_property_readonly("border_color", &Sampler::getBorderColor);
+}
+} // namespace Falcor

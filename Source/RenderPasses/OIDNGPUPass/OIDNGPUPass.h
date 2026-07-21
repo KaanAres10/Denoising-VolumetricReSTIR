@@ -1,54 +1,62 @@
+/***************************************************************************
+ # Intel Open Image Denoise 2.x (CUDA interop) render pass, ported to Falcor 8.0.
+ #
+ # Original: Denoising-VolumetricReSTIR (Falcor 4.x). Algorithm/shaders preserved;
+ # only the host/engine glue was rewritten for the 8.0 API. The fork's hand-rolled
+ # D3D12<->CUDA interop (OIDNCudaInterop.*) is replaced by Falcor 8.0's shared
+ # InteropBuffer (Utils/CudaUtils.h), which the native OptixDenoiser pass also uses.
+ **************************************************************************/
 #pragma once
 #include "Falcor.h"
+#include "Core/Pass/ComputePass.h"
+#include "Core/Pass/FullScreenPass.h"
+#include "RenderGraph/RenderPass.h"
+#include "Utils/CudaUtils.h"
+
 #include <OpenImageDenoise/oidn.hpp>
+
+#include <limits>
 
 using namespace Falcor;
 
 class OIDNGPUPass : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<OIDNGPUPass>;
-    static const char* kDesc;
+    FALCOR_PLUGIN_CLASS(OIDNGPUPass, "OIDNGPUPass", "Intel Open Image Denoise 2.x (CUDA interop).");
 
-    static SharedPtr create(RenderContext* pRenderContext, const Dictionary& dict);
+    static ref<OIDNGPUPass> create(ref<Device> pDevice, const Properties& props) { return make_ref<OIDNGPUPass>(pDevice, props); }
 
-    std::string getDesc() override { return kDesc; }
-    Dictionary getScriptingDictionary() override;
-    RenderPassReflection reflect(const CompileData& compileData) override;
-    void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
+    OIDNGPUPass(ref<Device> pDevice, const Properties& props);
+
+    virtual Properties getProperties() const override;
+    virtual RenderPassReflection reflect(const CompileData& compileData) override;
+    virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
+    virtual void renderUI(Gui::Widgets& widget) override;
 
 private:
-    OIDNGPUPass(const Dictionary& dict);
-
-    void renderUI(Gui::Widgets& widget) override;
-
-
-    void initInterop(RenderContext* pCtx, uint32_t width, uint32_t height);
+    void initInterop(uint32_t width, uint32_t height);
     void releaseInterop();
+    void applyFilterSettings();
+
     // OIDN
     oidn::DeviceRef mDevice;
     oidn::FilterRef mFilter;
 
-    // Falcor Buffers
-    Buffer::SharedPtr mInputBuf;
-    Buffer::SharedPtr mOutputBuf;
+    // DX <-> CUDA shared buffers (Falcor buffer + CUDA device pointer).
+    InteropBuffer mInputBuf;
+    InteropBuffer mOutputBuf;
 
-    void* mExtMemIn = nullptr;
-    void* mExtMemOut = nullptr;
-    void* mCudaDevPtrIn = nullptr;
-    void* mCudaDevPtrOut = nullptr;
+    uint2 mFrameDim = {0, 0};
 
-    Falcor::uint2 mFrameDim = { 0, 0 }; 
+    ref<ComputePass> mpConvertTexToBuf;
+    ref<FullScreenPass> mpConvertBufToTex;
+    ref<Fbo> mpFbo;
 
-    ComputePass::SharedPtr    mpConvertTexToBuf;
-    FullScreenPass::SharedPtr mpConvertBufToTex;
-    Fbo::SharedPtr            mpFbo;
-
-    bool  mEnabled = true;
-    bool  mHdr = true;
-    bool  mSrgb = false;
-    bool  mCleanAux = false;
-    int   mQuality = 3; // 0 default, 1 fast, 2 balanced, 3 high
-    int   mMaxMemoryMB = -1;
+    bool mEnabled = true;
+    bool mHdr = true;
+    bool mSrgb = false;
+    bool mCleanAux = false;
+    int mQuality = 3; // 0 default, 1 fast, 2 balanced, 3 high
+    int mMaxMemoryMB = -1;
     float mInputScale = std::numeric_limits<float>::quiet_NaN(); // NaN = auto
 };

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,94 +26,187 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
+#include "Core/Macros.h"
+#include "Utils/StringFormatters.h"
+#include <fmt/core.h>
+#include <string_view>
+#include <filesystem>
 
 namespace Falcor
 {
-    /** Container class for logging messages.
-    *   To enable log messages, make sure _LOG_ENABLED is set to true in FalcorConfig.h.
-    *   Messages are printed to a log file in the application directory. Using Logger#ShowBoxOnError() you can control if a message box will be shown as well.
-    */
-    class dlldecl Logger
+/**
+ * Container class for logging messages.
+ * Messages are only printed to the selected outputs if they match the verbosity level.
+ */
+class FALCOR_API Logger
+{
+public:
+    /// Log message severity.
+    enum class Level
     {
-    public:
-        /** Log messages severity
-        */
-        enum class Level
-        {
-            Info = 0,       ///< Informative messages.
-            Warning = 1,    ///< Warning messages.
-            Error = 2,      ///< Error messages. Application might be able to continue running, but incorrectly.
-            Fatal = 3,      ///< Unrecoverable error messages. Terminates application immediately.
-            Disabled = -1
-        };
-
-        /** Message box behavior
-        */
-        enum class MsgBox
-        {
-            Auto,           ///< Use `ContinueAbort` mode if the verbosity is `Error` or higher **and** `isBoxShownOnError()` returns `true`, otherwise use `None` mode.
-            ContinueAbort,  ///< Show a message box with options to continue or abort (and an option to enter the debugger if present).
-            RetryAbort,     ///< Show a message box with options to retry or abort (and an option to enter the debugger if present).
-            None            ///< Don't show a message box.
-        };
-
-        /** Shutdown the logger and close the log file.
-        */
-        static void shutdown();
-
-        /** Set the path of the logfile.
-            Note: This only works if the logfile has not been opened for writing yet.
-            \param[in] path Logfile path
-            \return Returns true if path was set, false otherwise.
-        */
-        static bool setLogFilePath(const std::string& filename);
-
-        /** Get the path of the logfile.
-            \return Returns the path of the logfile.
-        */
-        static const std::string& getLogFilePath();
-
-        /** Enable/disable logging to the console (stdout).
-            \param[in] enable True to enable logging to stdout.
-        */
-        static void logToConsole(bool enable);
-
-        /** Returns true if logging to console (stdout) is enabled.
-            \return Returns true if logging to stdout is enabled.
-        */
-        static bool shouldLogToConsole();
-
-        /** Controls weather or not to show a message box on error messages.
-            If this is disabled, logging an error will immediately terminate the application.
-            \param[in] showBox true to show a message box, false to disable it.
-        */
-        static void showBoxOnError(bool showBox);
-
-        /** Returns weather or not the message box is shown on error messages.
-            \return Returns true if a message box is shown, false otherwise.
-        */
-        static bool isBoxShownOnError();
-
-        /** Check if the logger is enabled
-        */
-        static constexpr bool enabled() { return _LOG_ENABLED != 0; }
-
-        /** Set the logger verbosity
-        */
-        static void setVerbosity(Level level);
-
-    private:
-        friend void logInfo(const std::string& msg, MsgBox mbox);
-        friend void logWarning(const std::string& msg, MsgBox mbox);
-        friend void logError(const std::string& msg, MsgBox mbox, bool terminate);
-        friend void logFatal(const std::string& msg, MsgBox mbox);
-
-        static void log(Level L, const std::string& msg, MsgBox mbox = Logger::MsgBox::Auto, bool terminateOnError = true);
-        Logger() = delete;
+        Disabled, ///< Disable log messages.
+        Fatal,    ///< Fatal messages.
+        Error,    ///< Error messages.
+        Warning,  ///< Warning messages.
+        Info,     ///< Informative messages.
+        Debug,    ///< Debugging messages.
+        Count,    ///< Keep this last.
     };
 
-    inline void logInfo(const std::string& msg, Logger::MsgBox mbox = Logger::MsgBox::Auto) { Logger::log(Logger::Level::Info, msg, mbox); }
-    inline void logWarning(const std::string& msg, Logger::MsgBox mbox = Logger::MsgBox::Auto) { Logger::log(Logger::Level::Warning, msg, mbox); }
-    inline void logError(const std::string& msg, Logger::MsgBox mbox = Logger::MsgBox::Auto, bool terminate = true) { Logger::log(Logger::Level::Error, msg, mbox, terminate); }
-    inline void logFatal(const std::string& msg, Logger::MsgBox mbox = Logger::MsgBox::Auto) { Logger::log(Logger::Level::Fatal, msg, mbox); }
+    enum class Frequency
+    {
+        Always, ///< Reports the message always
+        Once,   ///< Reports the message only first time the exact string appears
+    };
+
+    /// Log output.
+    enum class OutputFlags
+    {
+        None = 0x0,        ///< No output.
+        Console = 0x2,     ///< Output to console (stdout/stderr).
+        File = 0x1,        ///< Output to log file.
+        DebugWindow = 0x4, ///< Output to debug window (if debugger is attached).
+    };
+
+    /**
+     * Shutdown the logger and close the log file.
+     */
+    static void shutdown();
+
+    /**
+     * Set the logger verbosity.
+     * @param level Log level.
+     */
+    static void setVerbosity(Level level);
+
+    /**
+     * Get the logger verbosity.
+     * @return Return the log level.
+     */
+    static Level getVerbosity();
+
+    /**
+     * Set the logger outputs.
+     * @param outputs Log outputs.
+     */
+    static void setOutputs(OutputFlags outputs);
+
+    /**
+     * Get the logger outputs.
+     * @return Return the log outputs.
+     */
+    static OutputFlags getOutputs();
+
+    /**
+     * Set the path of the logfile.
+     * @param[in] path Logfile path
+     */
+    static void setLogFilePath(const std::filesystem::path& path);
+
+    /**
+     * Get the path of the logfile.
+     * @return Returns the path of the logfile.
+     */
+    static std::filesystem::path getLogFilePath();
+
+    /**
+     * Log a message.
+     * @param[in] level Log level.
+     * @param[in] msg Log message.
+     */
+    static void log(Level level, const std::string_view msg, Frequency frequency = Frequency::Always);
+
+private:
+    Logger() = delete;
+};
+
+FALCOR_ENUM_CLASS_OPERATORS(Logger::OutputFlags);
+
+// We define two types of logging helpers, one taking raw strings,
+// the other taking formatted strings. We don't want string formatting and
+// errors being thrown due to missing arguments when passing raw strings.
+
+inline void logDebug(const std::string_view msg)
+{
+    Logger::log(Logger::Level::Debug, msg);
 }
+
+template<typename... Args>
+inline void logDebug(fmt::format_string<Args...> format, Args&&... args)
+{
+    Logger::log(Logger::Level::Debug, fmt::format(format, std::forward<Args>(args)...));
+}
+
+inline void logInfo(const std::string_view msg)
+{
+    Logger::log(Logger::Level::Info, msg);
+}
+
+template<typename... Args>
+inline void logInfo(fmt::format_string<Args...> format, Args&&... args)
+{
+    Logger::log(Logger::Level::Info, fmt::format(format, std::forward<Args>(args)...));
+}
+
+inline void logWarning(const std::string_view msg)
+{
+    Logger::log(Logger::Level::Warning, msg);
+}
+
+template<typename... Args>
+inline void logWarning(fmt::format_string<Args...> format, Args&&... args)
+{
+    Logger::log(Logger::Level::Warning, fmt::format(format, std::forward<Args>(args)...));
+}
+
+inline void logWarningOnce(const std::string_view msg)
+{
+    Logger::log(Logger::Level::Warning, msg, Logger::Frequency::Once);
+}
+
+template<typename... Args>
+inline void logWarningOnce(fmt::format_string<Args...> format, Args&&... args)
+{
+    Logger::log(Logger::Level::Warning, fmt::format(format, std::forward<Args>(args)...), Logger::Frequency::Once);
+}
+
+inline void logError(const std::string_view msg)
+{
+    Logger::log(Logger::Level::Error, msg);
+}
+
+template<typename... Args>
+inline void logError(fmt::format_string<Args...> format, Args&&... args)
+{
+    Logger::log(Logger::Level::Error, fmt::format(format, std::forward<Args>(args)...));
+}
+
+inline void logErrorOnce(const std::string_view msg)
+{
+    Logger::log(Logger::Level::Error, msg, Logger::Frequency::Once);
+}
+
+template<typename... Args>
+inline void logErrorOnce(fmt::format_string<Args...> format, Args&&... args)
+{
+    Logger::log(Logger::Level::Error, fmt::format(format, std::forward<Args>(args)...), Logger::Frequency::Once);
+}
+
+inline void logFatal(const std::string_view msg)
+{
+    Logger::log(Logger::Level::Fatal, msg);
+}
+
+template<typename... Args>
+inline void logFatal(fmt::format_string<Args...> format, Args&&... args)
+{
+    Logger::log(Logger::Level::Fatal, fmt::format(format, std::forward<Args>(args)...));
+}
+
+} // namespace Falcor
+
+#define FALCOR_PRINT(x)                      \
+    do                                       \
+    {                                        \
+        ::Falcor::logInfo("{} = {}", #x, x); \
+    } while (0)

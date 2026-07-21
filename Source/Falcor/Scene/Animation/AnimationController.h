@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,49 +27,60 @@
  **************************************************************************/
 #pragma once
 #include "Animation.h"
-#include "RenderGraph/BasePasses/ComputePass.h"
+#include "AnimatedVertexCache.h"
+#include "Core/Macros.h"
+#include "Core/API/Buffer.h"
+#include "Core/Pass/ComputePass.h"
+#include "Utils/Math/Matrix.h"
 #include "Scene/SceneTypes.slang"
+#include "Utils/SplitBuffer.h"
+#include <memory>
+#include <vector>
 
 namespace Falcor
 {
     class Scene;
+    using SplitVertexBuffer = SplitBuffer<PackedStaticVertexData, false>;
+    using SplitIndexBuffer = SplitBuffer<uint32_t, true>;
 
-    struct Bone
-    {
-        uint32_t parentID;
-        uint32_t boneID;
-        std::string name;
-        glm::mat4 offset;
-        glm::mat4 localTransform;
-        glm::mat4 originalLocalTransform;
-        glm::mat4 globalTransform;
-    };
-
-    class Model;
-    class AssimpModelImporter;
-
-    class dlldecl AnimationController
+    class FALCOR_API AnimationController
     {
     public:
-        using UniquePtr = std::unique_ptr<AnimationController>;
-        using UniqueConstPtr = std::unique_ptr<const AnimationController>;
-        static const uint32_t kInvalidBoneID = -1;
         ~AnimationController() = default;
 
-        using StaticVertexVector = std::vector<PackedStaticVertexData>;
-        using DynamicVertexVector = std::vector<DynamicVertexData>;
+        using SkinningVertexVector = std::vector<SkinningVertexData>;
 
-        /** Create a new object
+        /** Constructor. Throws an exception if creation failed.
         */
-        static UniquePtr create(Scene* pScene, const StaticVertexVector& staticVertexData, const DynamicVertexVector& dynamicVertexData);
+        AnimationController(ref<Device> pDevice, Scene* pScene, const SkinningVertexVector& skinningVertexData, uint32_t prevVertexCount, const std::vector<ref<Animation>>& animations);
 
-        /** Add an animation
+        /** Add animated vertex caches (curves and meshes) to the controller.
         */
-        void addAnimation(const Animation::SharedPtr& pAnimation);
+        void addAnimatedVertexCaches(std::vector<CachedCurve>&& cachedCurves, std::vector<CachedMesh>&& cachedMeshes);
 
         /** Returns true if controller contains animations.
         */
-        bool hasAnimations() const { return mAnimations.size() > 0; }
+        bool hasAnimations() const { return mAnimations.size() > 0 || hasAnimatedVertexCaches(); }
+
+        /** Returns true if controller is handling any skinned meshes.
+        */
+        bool hasSkinnedMeshes() const { return mpSkinningPass != nullptr; }
+
+        /** Returns true if controller contains any animated vertex caches.
+        */
+        bool hasAnimatedVertexCaches() const { return hasAnimatedCurveCaches() || hasAnimatedMeshCaches(); }
+
+        /** Returns true if controller contains animated curve caches.
+        */
+        bool hasAnimatedCurveCaches() const { return mpVertexCache && mpVertexCache->hasCurveAnimations(); }
+
+        /** Returns true if controller contains animated curve caches.
+        */
+        bool hasAnimatedMeshCaches() const { return mpVertexCache && mpVertexCache->hasMeshAnimations(); }
+
+        /** Returns a list of all animations.
+        */
+        std::vector<ref<Animation>>& getAnimations() { return mAnimations; }
 
         /** Enable/disable animations.
         */
@@ -79,58 +90,115 @@ namespace Falcor
         */
         bool isEnabled() const { return mEnabled; };
 
-        /** Run the animation
-            \return true if a change occurred, otherwise false
+        /** Enable/disable globally looping animations.
         */
-        bool animate(RenderContext* pContext, double currentTime);
+        void setIsLooped(bool looped);
 
-        bool externalGlobalAnimate(RenderContext* pContext, glm::mat4 rootMatrix);
-
-        bool isExternallyAnimated = false;
-
-        /** Check if a matrix changed
+        /** Returns true if animations are currently globally looped.
         */
-        bool didMatrixChanged(size_t matrixID) const { return mMatricesChanged[matrixID]; }
+        bool isLooped() { return mLoopAnimations; }
 
-        /** Get the global matrices
+        /** Mark a scene node as being edited externally.
+            Ensures that all global matrices depending on this scene node are updated.
         */
-        const std::vector<glm::mat4>& getGlobalMatrices() const { return mGlobalMatrices; }
+        void setNodeEdited(size_t nodeID) { mNodesEdited[nodeID] = true; }
 
-        void bindBuffers();
+        /** Run the animation system.
+            \return true if a change occurred, otherwise false.
+        */
+        bool animate(RenderContext* pRenderContext, double currentTime);
+
+        /** Check if a matrix changed since last frame.
+        */
+        bool isMatrixChanged(NodeID matrixID) const { return mMatricesChanged[matrixID.get()]; }
+
+        /** Get the local matrices.
+            These represent the current local transform for each scene graph node.
+        */
+        const std::vector<float4x4>& getLocalMatrices() const { return mLocalMatrices; }
+
+        /** Get the global matrices.
+            These represent the current object-to-world space transform for each scene graph node.
+        */
+        const std::vector<float4x4>& getGlobalMatrices() const { return mGlobalMatrices; }
+
+        /** Get the transposed inverse global matrices.
+        */
+        const std::vector<float4x4>& getInvTransposeGlobalMatrices() const { return mInvTransposeGlobalMatrices; }
+
+        /** Render the UI.
+        */
+        void renderUI(Gui::Widgets& widget);
+
+        /** Get the previous vertex data buffer for dynamic meshes.
+            \return Buffer containing the previous vertex data, or nullptr if no dynamic meshes exist.
+        */
+        ref<Buffer> getPrevVertexData() const { return mpPrevVertexData; }
+
+        /** Get the previous curve vertex data buffer for dynamic curves.
+            \return Buffer containing the previous curve vertex data, or nullptr if no dynamic curves exist.
+        */
+        ref<Buffer> getPrevCurveVertexData() const { return mpVertexCache ? mpVertexCache->getPrevCurveVertexData() : nullptr; }
+
+        /** Get the total GPU memory usage in bytes.
+        */
+        uint64_t getMemoryUsageInBytes() const;
 
     private:
         friend class SceneBuilder;
-        AnimationController(Scene* pScene, const StaticVertexVector& staticVertexData, const DynamicVertexVector& dynamicVertexData);
+        friend class Scene;
 
-        void updateMatrices();
+        void initLocalMatrices();
+        void updateLocalMatrices(double time);
+        void updateWorldMatrices(bool updateAll = false);
+        void uploadWorldMatrices(bool uploadAll = false);
 
-        std::vector<Animation::SharedPtr> mAnimations;
-        std::vector<glm::mat4> mLocalMatrices;
-        std::vector<glm::mat4> mGlobalMatrices;
-        std::vector<glm::mat4> mInvTransposeGlobalMatrices;
-        std::vector<bool> mMatricesChanged;
+        void bindBuffers();
 
-        bool mEnabled = true;
-    public:
-        bool mAnimationChanged = true;
-    private:
-        double mLastAnimationTime = 0;
+        void createSkinningPass(const SkinningVertexVector& skinningVertexData);
+        void executeSkinningPass(RenderContext* pRenderContext, bool initPrev = false);
+
+        ref<Device> mpDevice;
+
+        // Animation
+        std::vector<ref<Animation>> mAnimations;
+        std::vector<bool> mNodesEdited;
+        std::vector<float4x4> mLocalMatrices;
+        std::vector<float4x4> mGlobalMatrices;
+        std::vector<float4x4> mInvTransposeGlobalMatrices;
+        std::vector<bool> mMatricesChanged;         ///< Flag per matrix, true if matrix changed since last frame.
+
+        bool mFirstUpdate = true;       ///< True if this is the first update.
+        bool mEnabled = true;           ///< True if animations are enabled.
+        bool mPrevEnabled = false;      ///< True if animations were enabled in previous frame.
+        double mTime = 0.0;             ///< Global time of current frame.
+        double mPrevTime = 0.0;         ///< Global time of previous frame.
+
+        bool mLoopAnimations = true;
+        double mGlobalAnimationLength = 0;
         Scene* mpScene = nullptr;
 
-        Buffer::SharedPtr mpWorldMatricesBuffer;
-        Buffer::SharedPtr mpPrevWorldMatricesBuffer;
-        Buffer::SharedPtr mpInvTransposeWorldMatricesBuffer;
+        ref<Buffer> mpWorldMatricesBuffer;
+        ref<Buffer> mpPrevWorldMatricesBuffer;
+        ref<Buffer> mpInvTransposeWorldMatricesBuffer;
+        ref<Buffer> mpPrevInvTransposeWorldMatricesBuffer;
 
         // Skinning
-        ComputePass::SharedPtr mpSkinningPass;
-        std::vector<glm::mat4> mSkinningMatrices;
-        std::vector<glm::mat4> mInvTransposeSkinningMatrices;
+        ref<ComputePass> mpSkinningPass;
+        std::vector<float4x4> mMeshBindMatrices; // Optimization TODO: These are only needed per mesh
+        std::vector<float4x4> mSkinningMatrices;
+        std::vector<float4x4> mInvTransposeSkinningMatrices;
         uint32_t mSkinningDispatchSize = 0;
-        void createSkinningPass(const std::vector<PackedStaticVertexData>& staticVertexData, const std::vector<DynamicVertexData>& dynamicVertexData);
-        void executeSkinningPass(RenderContext* pContext);
 
-        Buffer::SharedPtr mpSkinningMatricesBuffer;
-        Buffer::SharedPtr mpInvTransposeSkinningMatricesBuffer;
-        void initLocalMatrices();
+        ref<Buffer> mpMeshBindMatricesBuffer;
+        ref<Buffer> mpMeshInvBindMatricesBuffer;
+        ref<Buffer> mpSkinningMatricesBuffer;
+        ref<Buffer> mpInvTransposeSkinningMatricesBuffer;
+        ref<Buffer> mpSkinningVertexData;
+        ref<Buffer> mpPrevVertexData;
+        SplitVertexBuffer mStaticVertexData;
+
+        // Animated vertex caches
+        std::unique_ptr<AnimatedVertexCache> mpVertexCache;
     };
 }

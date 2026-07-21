@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,41 +25,60 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
+#include "Falcor.h"
 #include "Mogwai.h"
 #include "MogwaiSettings.h"
-#include "args.h"
+#include "GlobalState.h"
+#include "Core/AssetResolver.h"
+#include "Scene/Importer.h"
+#include "RenderGraph/RenderGraphImportExport.h"
+#include "RenderGraph/RenderPassStandardFlags.h"
+#include "Utils/Scripting/Scripting.h"
+#include "Utils/Timing/TimeReport.h"
+#include "Utils/Settings/Settings.h"
+
+#include <args.hxx>
+
 #include <filesystem>
 #include <algorithm>
+
+FALCOR_EXPORT_D3D12_AGILITY_SDK
 
 namespace Mogwai
 {
     namespace
     {
-        std::map<std::string, Extension::CreateFunc>* gExtensions; // Map ensures ordering
+        std::unique_ptr<std::map<std::string, Extension::CreateFunc>> gExtensions; // Map ensures ordering
 
         const std::string kEditorExecutableName = "RenderGraphEditor";
         const std::string kEditorSwitch = "--editor";
         const std::string kGraphFileSwitch = "--graph-file";
         const std::string kGraphNameSwitch = "--graph-name";
 
-        const std::string kAppDataPath = getAppDataDirectory() + "/NVIDIA/Falcor/Mogwai.json";
+        const std::filesystem::path kAppDataPath = getAppDataDirectory() / "NVIDIA/Falcor/Mogwai.json";
     }
 
     size_t Renderer::DebugWindow::index = 0;
 
-    Renderer::Renderer(const Options& options)
-        : mOptions(options)
+    Renderer::Renderer(const SampleAppConfig& config, const Options& options)
+        : SampleApp(config)
+        , mOptions(options)
         , mAppData(kAppDataPath)
-    {}
+    {
+        setActivePythonRenderGraphDevice(getDevice());
+    }
+
+    Renderer::~Renderer()
+    {
+        setActivePythonRenderGraphDevice(nullptr);
+    }
 
     void Renderer::extend(Extension::CreateFunc func, const std::string& name)
     {
-        if (!gExtensions) gExtensions = new std::map<std::string, Extension::CreateFunc>();
+        if (!gExtensions) gExtensions.reset(new std::map<std::string, Extension::CreateFunc>());
         if (gExtensions->find(name) != gExtensions->end())
         {
-            logError("Extension " + name + " already registered. If you continue the new extension will be discarded");
-            return;
+            FALCOR_THROW("Extension '{}' is already registered.", name);
         }
         (*gExtensions)[name] = func;
     }
@@ -67,17 +86,28 @@ namespace Mogwai
     void Renderer::onShutdown()
     {
         resetEditor();
-        gpDevice->flushAndSync(); // Need to do that because clearing the graphs will try to release some state objects which might be in use
+        getDevice()->wait(); // Need to do that because clearing the graphs will try to release some state objects which might be in use
         mGraphs.clear();
+        if (mPipedOutput)
+        {
+#if FALCOR_WINDOWS
+            _pclose(mPipedOutput);
+#elif FALCOR_LINUX
+            pclose(mPipedOutput);
+#endif
+        }
     }
 
     void Renderer::onLoad(RenderContext* pRenderContext)
     {
+        // Load all plugins
+        PluginManager::instance().loadAllPlugins();
+
         mpExtensions.push_back(MogwaiSettings::create(this));
-        if(gExtensions)
+        if (gExtensions)
         {
             for (auto& f : (*gExtensions)) mpExtensions.push_back(f.second(this));
-            safe_delete(gExtensions);
+            gExtensions.reset();
         }
 
         auto regBinding = [this](pybind11::module& m) {this->registerScriptBindings(m); };
@@ -86,10 +116,31 @@ namespace Mogwai
         // Load script provided via command line.
         if (!mOptions.scriptFile.empty())
         {
-            loadScript(mOptions.scriptFile);
+            if (mOptions.deferredLoad)
+            {
+                loadScriptDeferred(mOptions.scriptFile);
+            }
+            else
+            {
+                loadScript(mOptions.scriptFile);
+            }
             // Add script to recent files only if not in silent mode (which is used during image tests).
             if (!mOptions.silentMode) mAppData.addRecentScript(mOptions.scriptFile);
         }
+
+        // Load pyscene provided via command line.
+        if (!mOptions.sceneFile.empty())
+        {
+            loadScene(mOptions.sceneFile);
+            // Add scene to recent files only if not in silent mode (which is used during image tests).
+            if (!mOptions.silentMode) mAppData.addRecentScene(mOptions.sceneFile);
+        }
+    }
+
+    void Renderer::onOptionsChange()
+    {
+        for (auto& pe : mpExtensions)
+            pe->onOptionsChange(getSettings().getOptions());
     }
 
     RenderGraph* Renderer::getActiveGraph() const
@@ -177,13 +228,17 @@ namespace Mogwai
     bool Renderer::renderDebugWindow(Gui::Widgets& widget, const Gui::DropdownList& dropdown, DebugWindow& data, const uint2& winSize)
     {
         // Get the current output, in case `renderOutputUI()` unmarks it
-        Texture::SharedPtr pTex = std::dynamic_pointer_cast<Texture>(mGraphs[mActiveGraph].pGraph->getOutput(data.currentOutput));
+        ref<Texture> pTex = mGraphs[mActiveGraph].pGraph->getOutput(data.currentOutput)->asTexture();
         std::string label = data.currentOutput + "##" + mGraphs[mActiveGraph].pGraph->getName();
-        if (!pTex) { logError("Invalid output resource. Is not a texture."); }
+        if (!pTex)
+        {
+            logWarning("Invalid output resource. Is not a texture. Closing window.");
+            return false;
+        }
 
         uint2 debugSize = (uint2)(float2(winSize) * float2(0.4f, 0.55f));
         uint2 debugPos = winSize - debugSize;
-        debugPos -= 10;
+        debugPos -= 10u;
 
         // Display the dropdown
         Gui::Window debugWindow(widget.gui(), data.windowName.c_str(), debugSize, debugPos);
@@ -193,7 +248,7 @@ namespace Mogwai
             renderOutputUI(widget, dropdown, data.currentOutput);
             debugWindow.separator();
 
-            debugWindow.image(label.c_str(), pTex);
+            debugWindow.image(label.c_str(), pTex.get());
             debugWindow.release();
             return true;
         }
@@ -209,7 +264,7 @@ namespace Mogwai
 
     void Renderer::graphOutputsGui(Gui::Widgets& widget)
     {
-        RenderGraph::SharedPtr pGraph = mGraphs[mActiveGraph].pGraph;
+        ref<RenderGraph> pGraph = mGraphs[mActiveGraph].pGraph;
         if (mGraphs[mActiveGraph].debugWindows.size()) mGraphs[mActiveGraph].showAllOutputs = true;
         auto strVec = mGraphs[mActiveGraph].showAllOutputs ? pGraph->getAvailableOutputs() : mGraphs[mActiveGraph].originalOutputs;
         Gui::DropdownList graphOuts = createDropdownFromVec(strVec, mGraphs[mActiveGraph].mainOutput);
@@ -219,7 +274,7 @@ namespace Mogwai
 
         if (graphOuts.size())
         {
-            uint2 dims(gpFramework->getTargetFbo()->getWidth(), gpFramework->getTargetFbo()->getHeight());
+            uint2 dims(getTargetFbo()->getWidth(), getTargetFbo()->getHeight());
 
             for (size_t i = 0; i < mGraphs[mActiveGraph].debugWindows.size();)
             {
@@ -244,28 +299,28 @@ namespace Mogwai
         }
     }
 
-    void Renderer::onDroppedFile(const std::string& filename)
+    void Renderer::onDroppedFile(const std::filesystem::path& path)
     {
-        std::string ext = getExtensionFromFile(filename);
+        std::string ext = getExtensionFromPath(path);
         if (ext == "py")
         {
-            loadScript(filename);
-            mAppData.addRecentScript(filename);
+            loadScript(path);
+            mAppData.addRecentScript(path);
         }
         else if (std::any_of(Scene::getFileExtensionFilters().begin(), Scene::getFileExtensionFilters().end(), [&ext](FileDialogFilter f) {return f.ext == ext; }))
         {
-            loadScene(filename);
-            mAppData.addRecentScene(filename);
+            loadScene(path);
+            mAppData.addRecentScene(path);
         }
         else
         {
-            logWarning("RenderGraphViewer::onDroppedFile() - Unknown file extension '" + ext + "'");
+            logWarning("RenderGraphViewer::onDroppedFile() - Unknown file extension '{}'", ext);
         }
     }
 
     void Renderer::editorFileChangeCB()
     {
-        mEditorScript = readFile(mEditorTempFile);
+        mEditorScript = readFile(mEditorTempPath);
     }
 
     void Renderer::openEditor()
@@ -274,28 +329,28 @@ namespace Mogwai
         // If the current graph output is not an original output, unmark it
         if (unmarkOut) mGraphs[mActiveGraph].pGraph->unmarkOutput(mGraphs[mActiveGraph].mainOutput);
 
-        mEditorTempFile = getTempFilename();
+        mEditorTempPath = getTempFilePath();
 
         // Save the graph
-        RenderGraphExporter::save(mGraphs[mActiveGraph].pGraph, mEditorTempFile);
+        RenderGraphExporter::save(mGraphs[mActiveGraph].pGraph, mEditorTempPath);
 
         // Register an update callback
-        monitorFileUpdates(mEditorTempFile, std::bind(&Renderer::editorFileChangeCB, this));
+        monitorFileUpdates(mEditorTempPath, std::bind(&Renderer::editorFileChangeCB, this));
 
         // Run the process
-        std::string commandLineArgs = kEditorSwitch + " " + kGraphFileSwitch + " " + mEditorTempFile + " " + kGraphNameSwitch + " " + mGraphs[mActiveGraph].pGraph->getName();
+        std::string commandLineArgs = kEditorSwitch + " " + kGraphFileSwitch + " " + mEditorTempPath.string() + " " + kGraphNameSwitch + " " + mGraphs[mActiveGraph].pGraph->getName();
         mEditorProcess = executeProcess(kEditorExecutableName, commandLineArgs);
 
         // Mark the output if it's required
-       if (unmarkOut) mGraphs[mActiveGraph].pGraph->markOutput(mGraphs[mActiveGraph].mainOutput);
+        if (unmarkOut) mGraphs[mActiveGraph].pGraph->markOutput(mGraphs[mActiveGraph].mainOutput);
     }
 
     void Renderer::resetEditor()
     {
         if (mEditorProcess)
         {
-            closeSharedFile(mEditorTempFile);
-            std::remove(mEditorTempFile.c_str());
+            closeSharedFile(mEditorTempPath);
+            std::filesystem::remove(mEditorTempPath);
             if (mEditorProcess != kInvalidProcessId)
             {
                 terminateProcess(mEditorProcess);
@@ -309,18 +364,19 @@ namespace Mogwai
         RenderGraph* pOld = getActiveGraph();
         mActiveGraph = active;
         RenderGraph* pNew = getActiveGraph();
+
         if (pOld != pNew)
         {
             for (auto& e : mpExtensions) e->activeGraphChanged(pNew, pOld);
         }
     }
 
-    void Renderer::removeGraph(const RenderGraph::SharedPtr& pGraph)
+    void Renderer::removeGraph(const ref<RenderGraph>& pGraph)
     {
         for (auto& e : mpExtensions) e->removeGraph(pGraph.get());
         size_t i = 0;
         for (; i < mGraphs.size(); i++) if (mGraphs[i].pGraph == pGraph) break;
-        assert(i < mGraphs.size());
+        FALCOR_ASSERT(i < mGraphs.size());
         mGraphs.erase(mGraphs.begin() + i);
         if (mActiveGraph >= i && mActiveGraph > 0) mActiveGraph--;
         setActiveGraph(mActiveGraph);
@@ -329,11 +385,11 @@ namespace Mogwai
     void Renderer::removeGraph(const std::string& graphName)
     {
         auto pGraph = getGraph(graphName);
-        if (pGraph) removeGraph(pGraph);
-        else logError("Can't find a graph named '" + graphName + "'. There's nothing to remove.");
+        FALCOR_CHECK(pGraph, "Can't find a graph named '{}'.", graphName);
+        removeGraph(pGraph);
     }
 
-    RenderGraph::SharedPtr Renderer::getGraph(const std::string& graphName) const
+    ref<RenderGraph> Renderer::getGraph(const std::string& graphName) const
     {
         for (const auto& g : mGraphs)
         {
@@ -347,28 +403,36 @@ namespace Mogwai
         if (mGraphs.size()) removeGraph(mGraphs[mActiveGraph].pGraph);
     }
 
-    std::vector<std::string> Renderer::getGraphOutputs(const RenderGraph::SharedPtr& pGraph)
+    std::vector<std::string> Renderer::getGraphOutputs(const ref<RenderGraph>& pGraph)
     {
         std::vector<std::string> outputs;
-        for (size_t i = 0; i < pGraph->getOutputCount(); i++) outputs.push_back(pGraph->getOutputName(i));
+        for (size_t i = 0; i < pGraph->getOutputCount(); i++)
+        {
+            outputs.push_back(pGraph->getOutputName(i));
+        }
         return outputs;
     }
 
-    void Renderer::initGraph(const RenderGraph::SharedPtr& pGraph, GraphData* pData)
+    void Renderer::initGraph(const ref<RenderGraph>& pGraph, GraphData* pData)
     {
         if (!pData)
         {
             mGraphs.push_back({});
             pData = &mGraphs.back();
         }
-
         GraphData& data = *pData;
-        // Set input image if it exists
-        data.pGraph = pGraph;
-        data.pGraph->setScene(mpScene);
-        if (data.pGraph->getOutputCount() != 0) data.mainOutput = data.pGraph->getOutputName(0);
 
-        // Store the original outputs
+        // Setup graph data.
+        data = {};
+        data.pGraph = pGraph;
+        data.pGraph->onResize(getTargetFbo().get());
+        data.pGraph->setScene(mpScene);
+        if (data.pGraph->getOutputCount() != 0)
+        {
+            data.mainOutput = data.pGraph->getOutputName(0);
+        }
+
+        // Store the original outputs.
         data.originalOutputs = getGraphOutputs(pGraph);
 
         for (auto& e : mpExtensions) e->addGraph(pGraph.get());
@@ -376,52 +440,61 @@ namespace Mogwai
 
     void Renderer::loadScriptDialog()
     {
-        std::string filename;
-        if (openFileDialog(Scripting::kFileExtensionFilters, filename))
+        std::filesystem::path path;
+        if (openFileDialog(Scripting::kFileExtensionFilters, path))
         {
-            loadScriptDeferred(filename);
-            mAppData.addRecentScript(filename);
+            loadScriptDeferred(path);
+            mAppData.addRecentScript(path);
         }
     }
 
-    void Renderer::loadScriptDeferred(const std::string& filename)
+    void Renderer::loadScriptDeferred(const std::filesystem::path& path)
     {
-        mScriptFilename = filename;
+        mScriptPath = path;
     }
 
-    void Renderer::loadScript(const std::string& filename)
+    void Renderer::loadScript(const std::filesystem::path& path)
     {
-        assert(filename.size());
+        FALCOR_ASSERT(!path.empty());
 
         try
         {
-            if (ProgressBar::isActive()) ProgressBar::show("Loading Configuration");
-            auto c = Scripting::getGlobalContext();
-            Scripting::runScriptFromFile(filename, c);
+            if (getProgressBar().isActive())
+                getProgressBar().show("Loading Configuration");
+
+            // Add script directory to search paths (add it to the front to make it highest priority).
+            AssetResolver oldResolver = AssetResolver::getDefaultResolver();
+            auto directory = std::filesystem::absolute(path).parent_path();
+            AssetResolver::getDefaultResolver().addSearchPath(directory, SearchPathPriority::First);
+
+            Scripting::runScriptFromFile(path);
+
+            // Restore asset resolver.
+            AssetResolver::getDefaultResolver() = oldResolver;
         }
         catch (const std::exception& e)
         {
-            logError("Error when loading configuration file: " + filename + "\n" + std::string(e.what()));
+            std::string msg = fmt::format("Error when loading configuration file: {}\n{}", path, e.what());
+            if (is_set(getErrorDiagnosticFlags(), ErrorDiagnosticFlags::ShowMessageBoxOnError))
+                reportErrorAndContinue(msg);
+            else
+                FALCOR_THROW(msg);
         }
     }
 
     void Renderer::saveConfigDialog()
     {
-        std::string filename;
-        if (saveFileDialog(Scripting::kFileExtensionFilters, filename))
+        std::filesystem::path path;
+        if (saveFileDialog(Scripting::kFileExtensionFilters, path))
         {
-            saveConfig(filename);
-            mAppData.addRecentScript(filename);
+            saveConfig(path);
+            mAppData.addRecentScript(path);
         }
     }
 
-    void Renderer::addGraph(const RenderGraph::SharedPtr& pGraph)
+    void Renderer::addGraph(const ref<RenderGraph>& pGraph)
     {
-        if (pGraph == nullptr)
-        {
-            logError("Can't add an empty graph");
-            return;
-        }
+        FALCOR_CHECK(pGraph, "Can't add an empty graph");
 
         // If a graph with the same name already exists, remove it
         GraphData* pGraphData = nullptr;
@@ -429,7 +502,7 @@ namespace Mogwai
         {
             if (mGraphs[i].pGraph->getName() == pGraph->getName())
             {
-                logWarning("Replacing existing graph '" + pGraph->getName() + "' with new graph.");
+                logWarning("Replacing existing graph '{}' with new graph.", pGraph->getName());
                 pGraphData = &mGraphs[i];
                 break;
             }
@@ -437,88 +510,72 @@ namespace Mogwai
         initGraph(pGraph, pGraphData);
     }
 
+    void Renderer::setActiveGraph(const ref<RenderGraph>& pGraph)
+    {
+        size_t index = 0;
+        for (; index < mGraphs.size(); ++index)
+            if (mGraphs[index].pGraph == pGraph)
+                break;
+
+        if (index == mGraphs.size())
+            addGraph(pGraph);
+
+        setActiveGraph((uint32_t)index);
+    }
+
     void Renderer::loadSceneDialog()
     {
-        std::string filename;
-        if (openFileDialog(Scene::getFileExtensionFilters(), filename))
+        std::filesystem::path path;
+        if (openFileDialog(Scene::getFileExtensionFilters(), path))
         {
-            loadScene(filename);
-            mAppData.addRecentScene(filename);
+            loadScene(path);
+            mAppData.addRecentScene(path);
         }
     }
 
-    void Renderer::addParticleSystem(int32_t maxParticles, int32_t maxEmitPerFrame, bool useFixedInterval, float fixedInterval, uint32_t maxRenderFrames, bool shouldSort,
-        float duration, float durationOffset, float emitFrequency, int32_t emitCount, int32_t emitCountOffset,
-        float3 spawnPos, float3 spawnPosOffset, float3 vel, float3 velOffset, float scale, float scaleOffset, float growth,
-        float growthOffset, float billboardRotation, float billboardRotationOffset, float billboardRotationVel, float billboardRotationVelOffset,
-        uint32_t shadingType, float4 startColor, float4 endColor, float startT, float endT, const std::string textureFile)
+    void Renderer::loadScene(std::filesystem::path path, SceneBuilder::Flags buildFlags)
     {
-        ParticleSystemManager::ParticleMaterialDesc desc;
-        desc.type = (ParticleSystemManager::ParticleShadingModel) shadingType;
-        desc.colorData.color1 = startColor;
-        desc.colorData.color2 = endColor;
-        desc.colorData.colorT1 = startT;
-        desc.colorData.colorT2 = endT;
+        if (mOptions.useSceneCache) buildFlags |= SceneBuilder::Flags::UseCache;
+        if (mOptions.rebuildSceneCache) buildFlags |= SceneBuilder::Flags::RebuildCache;
 
-        ParticleSystem::EmitterData emitData;
-        emitData.duration = duration;
-        emitData.durationOffset = durationOffset;
-        emitData.emitFrequency = emitFrequency;
-        emitData.emitCount = emitCount;
-        emitData.emitCountOffset = emitCountOffset;
-        emitData.spawnPos = spawnPos;
-        emitData.spawnPosOffset = spawnPosOffset;
-        emitData.vel = vel;
-        emitData.velOffset = velOffset;
-        emitData.scale = scale;
-        emitData.scaleOffset = scaleOffset;
-        emitData.growth = growth;
-        emitData.growthOffset = growthOffset;
-        emitData.billboardRotation = billboardRotation;
-        emitData.billboardRotationOffset = billboardRotationOffset;
-        emitData.billboardRotationVel = billboardRotationVel;
-        emitData.billboardRotationVelOffset = billboardRotationVelOffset;
-
-        if (!useFixedInterval) fixedInterval = -1.f;
-
-        mpScene->createParticleSystemIO(maxParticles, maxEmitPerFrame, fixedInterval, maxRenderFrames, shadingType, shouldSort, &emitData, &desc, textureFile);
+        while (true)
+        {
+            try
+            {
+                TimeReport timeReport;
+                setScene(SceneBuilder(getDevice(), path, getSettings(), buildFlags).getScene());
+                timeReport.measure("Loading scene (total)");
+                timeReport.printToLog();
+                return;
+            }
+            catch (const ImporterError &e)
+            {
+                std::string msg = fmt::format("Failed to load scene.\n\nError in {}\n\n{}", e.path(), e.what());
+                if (is_set(getErrorDiagnosticFlags(), ErrorDiagnosticFlags::ShowMessageBoxOnError))
+                {
+                    if (reportErrorAndAllowRetry(msg))
+                        continue;
+                    else
+                        break;
+                } else {
+                    FALCOR_THROW(msg);
+                }
+            }
+        }
     }
 
-    void Renderer::addSimpleCurveModel(std::string filename, float width, float3 diffuseColor)
+    void Renderer::unloadScene()
     {
-        mpScene->addSimpleCurveModel(filename, width, diffuseColor);
+        setScene(nullptr);
     }
 
-	void Renderer::addGVDBVolume(float3 sigma_a, float3 sigma_s, float g, std::string dataFile, int numMips, float DensityScale, bool hasVelocity, bool hasEmission, float LeScale, float temperatureCutoff, float temperatureScale, float3 worldTranslation, float3 worldRotation, float worldScaling)
-	{
-        mpScene->addGVDBVolume(-1, sigma_a, sigma_s, g, dataFile, numMips, DensityScale, hasVelocity, hasEmission, LeScale, temperatureCutoff, temperatureScale, worldTranslation, worldRotation, worldScaling);
-	}
-
-    void Renderer::addGVDBVolumeSequence(float3 sigma_a, float3 sigma_s, float g, std::string dataFilePrefix, int numberFixedLength, int startFrame, int numFrames, int numMips /*= 1*/, float DensityScale /*=1.f*/, bool hasVelocity /*= false*/, bool hasEmission /*= false*/, float LeScale /*= 0.005f*/, float temperatureCutoff /*= 1.f*/, float temperatureScale /*= 100.f*/, float3 worldTranslation, float3 worldRotation, float worldScaling)
-    {
-        mpScene->addGVDBVolumeSequence(sigma_a, sigma_s, g, dataFilePrefix, numberFixedLength, startFrame, numFrames, numMips, DensityScale, hasVelocity, hasEmission, LeScale, temperatureCutoff, temperatureScale, worldTranslation, worldRotation, worldScaling);
-    }
-
-    void Renderer::loadScene(std::string filename, SceneBuilder::Flags buildFlags)
-    {
-        TimeReport timeReport;
-
-        SceneBuilder::SharedPtr pBuilder = SceneBuilder::create(filename, buildFlags);
-        if (!pBuilder) return;
-
-        setScene(pBuilder->getScene());
-
-        timeReport.measure("Loading scene (total)");
-        timeReport.printToLog();
-    }
-
-    void Renderer::setScene(const Scene::SharedPtr& pScene)
+    void Renderer::setScene(const ref<Scene>& pScene)
     {
         mpScene = pScene;
 
         if (mpScene)
         {
-            const auto& pFbo = gpFramework->getTargetFbo();
+            const auto& pFbo = getTargetFbo();
             float ratio = float(pFbo->getWidth()) / float(pFbo->getHeight());
             mpScene->setCameraAspectRatio(ratio);
 
@@ -526,18 +583,22 @@ namespace Mogwai
             {
                 // create common texture sampler
                 Sampler::Desc desc;
-                desc.setFilterMode(Sampler::Filter::Linear, Sampler::Filter::Linear, Sampler::Filter::Linear);
+                desc.setFilterMode(TextureFilteringMode::Linear, TextureFilteringMode::Linear, TextureFilteringMode::Linear);
                 desc.setMaxAnisotropy(8);
-                mpSampler = Sampler::create(desc);
+                mpSampler = getDevice()->createSampler(desc);
             }
-            mpScene->bindSamplerToMaterials(mpSampler);
+            mpScene->setDefaultTextureSampler(mpSampler);
         }
 
-        for (auto& g : mGraphs) g.pGraph->setScene(mpScene);
-        gpFramework->getGlobalClock().setTime(0);
+        for (auto& g : mGraphs)
+        {
+            g.pGraph->setScene(mpScene);
+            g.sceneUpdates = IScene::UpdateFlags::None;
+        }
+        getGlobalClock().setTime(0);
     }
 
-    Scene::SharedPtr Renderer::getScene() const
+    ref<Scene> Renderer::getScene() const
     {
         return mpScene;
     }
@@ -556,7 +617,8 @@ namespace Mogwai
         if (hasUnmarkedOut) pActiveGraph->unmarkOutput(mGraphs[mActiveGraph].mainOutput);
 
         // Run the scripting
-        Scripting::getGlobalContext().setObject("g", pActiveGraph);
+        // TODO: Rendergraph scripts should be executed in an isolated scripting context.
+        Scripting::getDefaultContext().setObject("g", pActiveGraph);
         Scripting::runScript(mEditorScript);
 
         // Update the list of marked outputs
@@ -579,30 +641,39 @@ namespace Mogwai
     void Renderer::executeActiveGraph(RenderContext* pRenderContext)
     {
         if (mGraphs.empty()) return;
-        auto& pGraph = mGraphs[mActiveGraph].pGraph;
+
+        auto& data = mGraphs[mActiveGraph];
+        auto& pGraph = data.pGraph;
+
+        // Notify active graph of any scene updates.
+        if (data.sceneUpdates != IScene::UpdateFlags::None)
+        {
+            pGraph->onSceneUpdates(pRenderContext, data.sceneUpdates);
+            data.sceneUpdates = IScene::UpdateFlags::None;
+        }
 
         // Execute graph.
-        (*pGraph->getPassesDictionary())[kRenderPassRefreshFlags] = RenderPassRefreshFlags::None;
+        pGraph->getPassesDictionary()[kRenderPassRefreshFlags] = RenderPassRefreshFlags::None;
         pGraph->execute(pRenderContext);
     }
 
-    void Renderer::beginFrame(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo)
+    void Renderer::beginFrame(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo)
     {
         for (auto& pe : mpExtensions)  pe->beginFrame(pRenderContext, pTargetFbo);
     }
 
-    void Renderer::endFrame(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo)
+    void Renderer::endFrame(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo)
     {
         for (auto& pe : mpExtensions) pe->endFrame(pRenderContext, pTargetFbo);
     }
 
-    void Renderer::onFrameRender(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo)
+    void Renderer::onFrameRender(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo)
     {
-        if(mScriptFilename.size())
+        if (!mScriptPath.empty())
         {
-            std::string s = mScriptFilename;
-            mScriptFilename.clear();
-            loadScript(s);
+            auto path = mScriptPath;
+            mScriptPath.clear();
+            loadScript(path);
         }
 
         applyEditorChanges();
@@ -623,10 +694,20 @@ namespace Mogwai
         {
             auto& pGraph = mGraphs[mActiveGraph].pGraph;
 
+            if (mSceneUpdateCallback)
+                mSceneUpdateCallback(mpScene, getGlobalClock().getTime());
+
             // Update scene and camera.
             if (mpScene)
             {
-                mpScene->update(pRenderContext, gpFramework->getGlobalClock().getTime());
+                auto sceneUpdates = mpScene->update(pRenderContext, getGlobalClock().getTime());
+
+                // Accumulate scene update flags for each graph.
+                // The update flags are passed to the active graph, or accumulated until a graph becomes active to avoid missing updates.
+                for (auto& g : mGraphs)
+                {
+                    g.sceneUpdates |= sceneUpdates;
+                }
             }
 
             executeActiveGraph(pRenderContext);
@@ -634,9 +715,36 @@ namespace Mogwai
             // Blit main graph output to frame buffer.
             if (mGraphs[mActiveGraph].mainOutput.size())
             {
-                Texture::SharedPtr pOutTex = std::dynamic_pointer_cast<Texture>(pGraph->getOutput(mGraphs[mActiveGraph].mainOutput));
-                assert(pOutTex);
+                ref<Texture> pOutTex = pGraph->getOutput(mGraphs[mActiveGraph].mainOutput)->asTexture();
+                FALCOR_ASSERT(pOutTex);
                 pRenderContext->blit(pOutTex->getSRV(), pTargetFbo->getRenderTargetView(0));
+            }
+
+            if (getSettings().getOption("PipedOutput:enable", false))
+            {
+                // DEMO21 Opera -- this specific string should probably disappear
+                static std::string defaultFFMPEGCmd("ffmpeg -r 30 -f rawvideo -pix_fmt rgba -s 1920x1080 -i - "
+                    "-threads 0 -preset medium -y -pix_fmt yuv420p -crf 20 -vf colorchannelmixer=rr=0:rb=1:br=1:bb=0 output.mp4");
+                if (!mPipedOutput)
+                {
+                    std::string ffmepgCmd = getSettings().getOption("PipedOutput:cmd", defaultFFMPEGCmd);
+#if FALCOR_WINDOWS
+                    mPipedOutput = _popen(ffmepgCmd.c_str(), "wb");
+#elif FALCOR_LINUX
+                    mPipedOutput = popen(ffmepgCmd.c_str(), "wb");
+#endif
+
+                    if (!mPipedOutput)
+                        logError("Failed to create piped output with cmd `{}`. Piped output disabled.", ffmepgCmd);
+                }
+
+                if (mPipedOutput)
+                {
+                    Falcor::ref<Texture> framebufferTexture = pTargetFbo->getColorTexture(0);
+                    uint32_t subresource = framebufferTexture->getSubresourceIndex(0, 0);
+                    std::vector<uint8_t> framebufferData = pRenderContext->readTextureSubresource(framebufferTexture.get(), subresource);
+                    fwrite(&framebufferData[0], 4 * pTargetFbo->getWidth() * pTargetFbo->getHeight(), 1, mPipedOutput);
+                }
             }
         }
 
@@ -661,15 +769,37 @@ namespace Mogwai
             if (pe->keyboardEvent(keyEvent)) return true;
         }
         if (mGraphs.size()) mGraphs[mActiveGraph].pGraph->onKeyEvent(keyEvent);
-        return mpScene ? mpScene->onKeyEvent(keyEvent) : false;
+        if (mpScene && mpScene->onKeyEvent(keyEvent)) return true;
+        // DEMO21 Opera
+        if (mKeyCallback)
+        {
+            if (keyEvent.type == KeyboardEvent::Type::KeyPressed && mKeyCallback(true, (uint32_t)keyEvent.key)) return true;
+            if (keyEvent.type == KeyboardEvent::Type::KeyReleased && mKeyCallback(false, (uint32_t)keyEvent.key)) return true;
+        }
+        return false;
     }
 
-    void Renderer::onResizeSwapChain(uint32_t width, uint32_t height)
+    bool Renderer::onGamepadEvent(const GamepadEvent& gamepadEvent)
+    {
+        for (auto& pe : mpExtensions)
+        {
+            if (pe->gamepadEvent(gamepadEvent)) return true;
+        }
+
+        return mpScene ? mpScene->onGamepadEvent(gamepadEvent) : false;
+    }
+
+    bool Renderer::onGamepadState(const GamepadState& gamepadState)
+    {
+        return mpScene ? mpScene->onGamepadState(gamepadState) : false;
+    }
+
+    void Renderer::onResize(uint32_t width, uint32_t height)
     {
         for (auto& g : mGraphs)
         {
-            g.pGraph->onResize(gpFramework->getTargetFbo().get());
-            Scene::SharedPtr graphScene = g.pGraph->getScene();
+            g.pGraph->onResize(getTargetFbo().get());
+            ref<Scene> graphScene = g.pGraph->getScene();
             if (graphScene) graphScene->setCameraAspectRatio((float)width / (float)height);
         }
         if (mpScene) mpScene->setCameraAspectRatio((float)width / (float)height);
@@ -677,12 +807,11 @@ namespace Mogwai
 
     void Renderer::onHotReload(HotReloadFlags reloaded)
     {
-        RenderPassLibrary::instance().reloadLibraries(gpFramework->getRenderContext());
         RenderGraph* pActiveGraph = getActiveGraph();
         if (pActiveGraph) pActiveGraph->onHotReload(reloaded);
     }
 
-    size_t Renderer::findGraph(std::string_view name)
+    size_t Renderer::findGraph(const std::string_view name)
     {
         for (size_t i = 0; i < mGraphs.size(); i++)
         {
@@ -697,16 +826,33 @@ namespace Mogwai
     }
 }
 
-int main(int argc, char** argv)
+int runMain(int argc, char** argv)
 {
     args::ArgumentParser parser("Mogwai render application.");
     parser.helpParams.programName = "Mogwai";
     args::HelpFlag helpFlag(parser, "help", "Display this help menu.", {'h', "help"});
+    args::ValueFlag<std::string> deviceTypeFlag(parser, "d3d12|vulkan", "Graphics device type.", {'d', "device-type"});
+    args::Flag listGPUsFlag(parser, "", "List available GPUs", {"list-gpus"});
+    args::ValueFlag<uint32_t> gpuFlag(parser, "index", "Select specific GPU to use", {"gpu"});
+    args::Flag headlessFlag(parser, "", "Start without opening a window and handling user input.", {"headless"});
     args::ValueFlag<std::string> scriptFlag(parser, "path", "Python script file to run.", {'s', "script"});
+    args::Flag deferredFlag(parser, "deferred", "The script is loaded deferred.", {"deferred"});
+    args::ValueFlag<std::string> sceneFlag(parser, "path", "Scene file (for example, a .pyscene file) to open.", { 'S', "scene" });
+    args::ValueFlag<std::string> shaderCacheFlag(parser, "shadercache", "Path to the GFX shader cache.", { "shadercache" });
     args::ValueFlag<std::string> logfileFlag(parser, "path", "File to write log into.", {'l', "logfile"});
-    args::Flag silentFlag(parser, "", "Starts Mogwai with a minimized window and disables mouse/keyboard input as well as error message dialogs.", {"silent"});
+    args::ValueFlag<int32_t> verbosityFlag(parser, "verbosity", "Logging verbosity (0=disabled, 1=fatal errors, 2=errors, 3=warnings, 4=infos, 5=debugging)", { 'v', "verbosity" }, 4);
+    args::Flag silentFlag(parser, "", "Start without opening a window and handling user input (deprecated: use --headless).", {"silent"});
+    args::Flag fullscreenFlag(parser, "", "Start in fullscreen mode instead of windowed.", {"fullscreen"});
     args::ValueFlag<uint32_t> widthFlag(parser, "pixels", "Initial window width.", {"width"});
     args::ValueFlag<uint32_t> heightFlag(parser, "pixels", "Initial window height.", {"height"});
+    args::Flag useSceneCacheFlag(parser, "", "Use scene cache to improve scene load times.", {'c', "use-cache"});
+    args::Flag rebuildSceneCacheFlag(parser, "", "Rebuild the scene cache.", {"rebuild-cache"});
+    args::Flag generateShaderDebugInfoFlag(parser, "", "Generate shader debug info.", {"debug-shaders"});
+    args::Flag enableDebugLayerFlag(parser, "", "Enable debug layer (enabled by default in Debug build).", {"enable-debug-layer"});
+    args::Flag preciseProgramFlag(parser, "", "Force all slang programs to run in precise mode", { "precise" });
+    args::ValueFlag<std::string> attributesFlag(parser, "path", "JSON attributes file.", { 'a', "attributes" });
+    args::Flag rayTracingValidationFlag(parser, "", "Enable ray tracing validation (requires env-var NV_ALLOW_RAYTRACING_VALIDATION=1)", {"enable-raytracing-validation"});
+
     args::CompletionFlag completionFlag(parser, {"complete"});
 
     try
@@ -736,46 +882,93 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    int32_t verbosity = args::get(verbosityFlag);
+
+    if (verbosity < 0 || verbosity >= (int32_t)Logger::Level::Count)
+    {
+        std::cerr << argv[0] << ": invalid verbosity level " << verbosity << std::endl;
+        return 1;
+    }
+
+    Logger::setVerbosity((Logger::Level)verbosity);
+
+    if (logfileFlag)
+    {
+        std::string logfile = args::get(logfileFlag);
+        Logger::setLogFilePath(logfile);
+    }
+
+    if (attributesFlag)
+    {
+        std::filesystem::path attributesPath(args::get(attributesFlag));
+        if (!Settings::getGlobalSettings().addFilteredAttributes(attributesPath))
+        {
+            std::cerr << "Failed to load attributes file '" << attributesPath.string() << "'." << std::endl;
+            return 1;
+        }
+    }
+
+    SampleAppConfig config;
+    if (deviceTypeFlag)
+    {
+        if (args::get(deviceTypeFlag) == "d3d12")
+            config.deviceDesc.type = Device::Type::D3D12;
+        else if (args::get(deviceTypeFlag) == "vulkan")
+            config.deviceDesc.type = Device::Type::Vulkan;
+        else
+        {
+            std::cerr << "Invalid device type, use 'd3d12' or 'vulkan'" << std::endl;
+            return 1;
+        }
+    }
+    if (listGPUsFlag)
+    {
+        const auto gpus = Device::getGPUs(config.deviceDesc.type);
+        for (size_t i = 0; i < gpus.size(); ++i)
+            fmt::print("GPU {}: {}\n", i, gpus[i].name);
+        return 0;
+    }
+    if (gpuFlag)
+        config.deviceDesc.gpu = args::get(gpuFlag);
+    if (headlessFlag)
+        config.headless = true;
+    if (shaderCacheFlag)
+        config.deviceDesc.shaderCachePath = args::get(shaderCacheFlag);
+    if (enableDebugLayerFlag)
+        config.deviceDesc.enableDebugLayer = true;
+    if (generateShaderDebugInfoFlag)
+        config.generateShaderDebugInfo = true;
+    if (preciseProgramFlag)
+        config.shaderPreciseFloat = true;
+    if (rayTracingValidationFlag)
+        config.deviceDesc.enableRaytracingValidation = true;
+
+    config.windowDesc.title = "Mogwai";
+    if (widthFlag)
+        config.windowDesc.width = args::get(widthFlag);
+    if (heightFlag)
+        config.windowDesc.height = args::get(heightFlag);
+    if (fullscreenFlag)
+        config.windowDesc.mode = Window::WindowMode::Fullscreen;
+    if (silentFlag)
+    {
+        logWarning("The --silent flag is deprecated. Use --headless instead.");
+        config.headless = true;
+    }
+
     Mogwai::Renderer::Options options;
-
     if (scriptFlag) options.scriptFile = args::get(scriptFlag);
+    if (deferredFlag) options.deferredLoad = true;
+    if (sceneFlag) options.sceneFile = args::get(sceneFlag);
     if (silentFlag) options.silentMode = true;
+    if (useSceneCacheFlag) options.useSceneCache = true;
+    if (rebuildSceneCacheFlag) options.rebuildSceneCache = true;
 
-    Logger::logToConsole(true);
+    Mogwai::Renderer renderer(config, options);
+    return renderer.run();
+}
 
-    try
-    {
-        msgBoxTitle("Mogwai");
-
-        IRenderer::UniquePtr pRenderer = std::make_unique<Mogwai::Renderer>(options);
-        SampleConfig config;
-        config.windowDesc.title = "Mogwai";
-
-        if (silentFlag)
-        {
-            config.suppressInput = true;
-            config.showMessageBoxOnError = false;
-            config.windowDesc.mode = Window::WindowMode::Minimized;
-
-            // Set early to not show message box on errors that occur before setting the sample configuration.
-            Logger::showBoxOnError(false);
-        }
-
-        if (logfileFlag)
-        {
-            std::string logfile = args::get(logfileFlag);
-            Logger::setLogFilePath(logfile);
-        }
-
-        if (widthFlag) config.windowDesc.width = args::get(widthFlag);
-        if (heightFlag) config.windowDesc.height = args::get(heightFlag);
-
-        Sample::run(config, pRenderer, 0, nullptr);
-    }
-    catch (const std::exception& e)
-    {
-        // Note: This can only trigger from the setup code above. Sample::run() handles all exceptions internally.
-        logFatal("Mogwai crashed unexpectedly...\n" + std::string(e.what()));
-    }
-    return 0;
+int main(int argc, char** argv)
+{
+    return catchAndReportAllExceptions([&]() { return runMain(argc, argv); });
 }

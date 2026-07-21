@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,25 +27,30 @@
  **************************************************************************/
 #pragma once
 #include "LightData.slang"
+#include "Core/Macros.h"
+#include "Utils/Math/Vector.h"
+#include "Utils/Math/Matrix.h"
+#include "Utils/UI/Gui.h"
 #include "Scene/Animation/Animatable.h"
+#include <memory>
+#include <string>
 
 namespace Falcor
 {
     class Scene;
+    struct ShaderVar;
 
     /** Base class for light sources. All light sources should inherit from this.
     */
-    class dlldecl Light : public Animatable
+    class FALCOR_API Light : public Animatable
     {
+        FALCOR_OBJECT(Light)
     public:
-        using SharedPtr = std::shared_ptr<Light>;
-        using SharedConstPtr = std::shared_ptr<const Light>;
-
         virtual ~Light() = default;
 
         /** Set the light parameters into a shader variable. To use this you need to include/import 'ShaderCommon' inside your shader.
         */
-        virtual void setShaderData(const ShaderVar& var);
+        virtual void bindShaderData(const ShaderVar& var);
 
         /** Render UI elements for this light.
         */
@@ -87,6 +92,10 @@ namespace Falcor
         */
         virtual void setIntensity(const float3& intensity);
 
+        /** Get the light intensity.
+        */
+        const float3& getIntensity() const { return mData.intensity; }
+
         enum class Changes
         {
             None = 0x0,
@@ -105,21 +114,14 @@ namespace Falcor
         */
         Changes getChanges() const { return mChanges; }
 
-        /** Scripting helper functions for getting/setting intensity and color.
-        */
-        void setIntensityFromScript(float intensity) { setIntensityFromUI(intensity); }
-        void setColorFromScript(float3 color) { setColorFromUI(color); }
-        float getIntensityForScript() { return getIntensityForUI(); }
-        float3 getColorForScript() { return getColorForUI(); }
-
-        void updateFromAnimation(const glm::mat4& transform) override {}
+        void updateFromAnimation(const float4x4& transform) override {}
 
     protected:
-        Light(LightType type);
+        Light(const std::string& name, LightType type);
 
-        static const size_t kDataSize = sizeof(LightData);
+        static constexpr size_t kDataSize = sizeof(LightData);
 
-        /* UI callbacks for keeping the intensity in-sync */
+        // UI callbacks for keeping the intensity in-sync.
         float3 getColorForUI();
         void setColorFromUI(const float3& uiColor);
         float getIntensityForUI();
@@ -129,61 +131,26 @@ namespace Falcor
         bool mActive = true;
         bool mActiveChanged = false;
 
-        /* These two variables track mData values for consistent UI operation.*/
+        // These two variables track mData values for consistent UI operation.
         float3 mUiLightIntensityColor = float3(0.5f, 0.5f, 0.5f);
         float mUiLightIntensityScale = 1.0f;
-        LightData mData, mPrevData;
+        LightData mData;
+        LightData mPrevData;
         Changes mChanges = Changes::None;
+
+        friend class SceneCache;
     };
 
-    /** Directional light source.
+    /** Point light source.
+        Simple infinitely-small point light with quadratic attenuation.
     */
-    class dlldecl DirectionalLight : public Light
+    class FALCOR_API PointLight : public Light
     {
     public:
-        using SharedPtr = std::shared_ptr<DirectionalLight>;
-        using SharedConstPtr = std::shared_ptr<const DirectionalLight>;
+        static ref<PointLight> create(const std::string& name = "") { return make_ref<PointLight>(name); }
 
-        static SharedPtr create();
-        ~DirectionalLight();
-
-        /** Render UI elements for this light.
-        */
-        void renderUI(Gui::Widgets& widget) override;
-
-        /** Set the light's world-space direction.
-            \param[in] dir Light direction. Does not have to be normalized.
-        */
-        void setWorldDirection(const float3& dir);
-
-        /** Set the scene parameters
-        */
-        void setWorldParams(const float3& center, float radius);
-
-        /** Get the light's world-space direction.
-        */
-        const float3& getWorldDirection() const { return mData.dirW; }
-
-        /** Get total light power (needed for light picking)
-        */
-        float getPower() const override { return 0.f; }
-
-        void updateFromAnimation(const glm::mat4& transform) override;
-
-    private:
-        DirectionalLight();
-    };
-
-    /** Simple infinitely-small point light with quadratic attenuation
-    */
-    class dlldecl PointLight : public Light
-    {
-    public:
-        using SharedPtr = std::shared_ptr<PointLight>;
-        using SharedConstPtr = std::shared_ptr<const PointLight>;
-
-        static SharedPtr create();
-        ~PointLight();
+        PointLight(const std::string& name);
+        ~PointLight() = default;
 
         /** Render UI elements for this light.
         */
@@ -215,10 +182,6 @@ namespace Falcor
         */
         const float3& getWorldDirection() const { return mData.dirW; }
 
-        /** Get the light intensity.
-        */
-        const float3& getIntensity() const { return mData.intensity; }
-
         /** Get the penumbra half-angle
         */
         float getPenumbraAngle() const { return mData.penumbraAngle; }
@@ -232,66 +195,54 @@ namespace Falcor
         */
         float getOpeningAngle() const { return mData.openingAngle; }
 
-        void updateFromAnimation(const glm::mat4& transform) override;
-
-    private:
-        PointLight();
+        void updateFromAnimation(const float4x4& transform) override;
     };
 
-    /**
-        Analytic area light source.
+
+    /** Directional light source.
     */
-    class dlldecl AnalyticAreaLight : public Light
+    class FALCOR_API DirectionalLight : public Light
     {
     public:
-        using SharedPtr = std::shared_ptr<AnalyticAreaLight>;
-        using SharedConstPtr = std::shared_ptr<const AnalyticAreaLight>;
+        static ref<DirectionalLight> create(const std::string& name = "") { return make_ref<DirectionalLight>(name); }
 
-        /** Creates an analytic area light.
-            \param[in] type The type of analytic area light (rectangular, sphere, disc etc). See LightData.slang
+        DirectionalLight(const std::string& name);
+        ~DirectionalLight() = default;
+
+        /** Render UI elements for this light.
         */
-        static SharedPtr create(LightType type);
+        void renderUI(Gui::Widgets& widget) override;
 
-        ~AnalyticAreaLight();
-
-        /** Set light source scaling
-            \param[in] scale x,y,z scaling factors
+        /** Set the light's world-space direction.
+            \param[in] dir Light direction. Does not have to be normalized.
         */
-        void setScaling(float3 scale) { mScaling = scale; }
+        void setWorldDirection(const float3& dir);
 
-        /** Set light source scale
-          */
-        float3 getScaling() const { return mScaling; }
+        /** Set the scene parameters
+        */
+        void setWorldParams(const float3& center, float radius);
+
+        /** Get the light's world-space direction.
+        */
+        const float3& getWorldDirection() const { return mData.dirW; }
 
         /** Get total light power (needed for light picking)
         */
-        float getPower() const override;
+        float getPower() const override { return 0.f; }
 
-        /** Set transform matrix
-            \param[in] mtx object to world space transform matrix
-        */
-        void setTransformMatrix(const glm::mat4& mtx) { mTransformMatrix = mtx; update();  }
-
-        /** Get transform matrix
-        */
-        glm::mat4 getTransformMatrix() const { return mTransformMatrix; }
-
-    private:
-        AnalyticAreaLight(LightType type);
-        void update();
-
-        float3 mScaling;                ///< Scaling, controls the size of the light
-        glm::mat4 mTransformMatrix;     ///< Transform matrix minus scaling component
+        void updateFromAnimation(const float4x4& transform) override;
     };
 
-    class dlldecl DistantLight : public Light
+    /** Distant light source.
+        Same as directional light source but subtending a non-zero solid angle.
+    */
+    class FALCOR_API DistantLight : public Light
     {
     public:
-        using SharedPtr = std::shared_ptr<DistantLight>;
-        using SharedConstPtr = std::shared_ptr<const DistantLight>;
+        static ref<DistantLight> create(const std::string& name = "") { return make_ref<DistantLight>(name); }
 
-        static SharedPtr create();
-        ~DistantLight();
+        DistantLight(const std::string& name);
+        ~DistantLight() = default;
 
         /** Render UI elements for this light.
         */
@@ -319,11 +270,98 @@ namespace Falcor
         */
         float getPower() const override { return 0.f; }
 
+        void updateFromAnimation(const float4x4& transform) override;
+
     private:
-        DistantLight();
         void update();
         float mAngle;       ///<< Half-angle subtended by the source.
+
+        friend class SceneCache;
     };
 
-    enum_class_operators(Light::Changes);
+    /** Analytic area light source.
+    */
+    class FALCOR_API AnalyticAreaLight : public Light
+    {
+    public:
+        ~AnalyticAreaLight() = default;
+
+        /** Set light source scaling
+            \param[in] scale x,y,z scaling factors
+        */
+        void setScaling(float3 scale) { mScaling = scale; update(); }
+
+        /** Set light source scale
+          */
+        float3 getScaling() const { return mScaling; }
+
+        /** Get total light power (needed for light picking)
+        */
+        float getPower() const override;
+
+        /** Set transform matrix
+            \param[in] mtx object to world space transform matrix
+        */
+        void setTransformMatrix(const float4x4& mtx) { mTransformMatrix = mtx; update();  }
+
+        /** Get transform matrix
+        */
+        float4x4 getTransformMatrix() const { return mTransformMatrix; }
+
+        void updateFromAnimation(const float4x4& transform) override { setTransformMatrix(transform); }
+
+    protected:
+        AnalyticAreaLight(const std::string& name, LightType type);
+
+        virtual void update();
+
+        float3 mScaling;                ///< Scaling, controls the size of the light
+        float4x4 mTransformMatrix = float4x4::identity(); ///< Transform matrix minus scaling component
+
+        friend class SceneCache;
+    };
+
+    /** Rectangular area light source.
+    */
+    class FALCOR_API RectLight : public AnalyticAreaLight
+    {
+    public:
+        static ref<RectLight> create(const std::string& name = "") { return make_ref<RectLight>(name); }
+
+        RectLight(const std::string& name) : AnalyticAreaLight(name, LightType::Rect) {}
+        ~RectLight() = default;
+
+    private:
+        virtual void update() override;
+    };
+
+    /** Disc area light source.
+    */
+    class FALCOR_API DiscLight : public AnalyticAreaLight
+    {
+    public:
+        static ref<DiscLight> create(const std::string& name = "") { return make_ref<DiscLight>(name); }
+
+        DiscLight(const std::string& name) : AnalyticAreaLight(name, LightType::Disc) {}
+        ~DiscLight() = default;
+
+    private:
+        virtual void update() override;
+    };
+
+    /** Sphere area light source.
+    */
+    class FALCOR_API SphereLight : public AnalyticAreaLight
+    {
+    public:
+        static ref<SphereLight> create(const std::string& name = "") { return make_ref<SphereLight>(name); }
+
+        SphereLight(const std::string& name) : AnalyticAreaLight(name, LightType::Sphere) {}
+        ~SphereLight() = default;
+
+    private:
+        virtual void update() override;
+    };
+
+    FALCOR_ENUM_CLASS_OPERATORS(Light::Changes);
 }

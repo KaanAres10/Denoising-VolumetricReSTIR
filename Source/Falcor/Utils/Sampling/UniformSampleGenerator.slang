@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,28 +25,32 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-import Utils.Math.BitTricks;
+__exported import Utils.Sampling.SampleGeneratorInterface;
 import Utils.Sampling.Pseudorandom.Xoshiro;
 import Utils.Sampling.Pseudorandom.SplitMix64;
-import Utils.Sampling.SampleGeneratorInterface;
+import Utils.Math.BitTricks;
 
-/** Default uniform pseudorandom number generator.
-
-    This generator has 128 bit state and should have acceptable statistical
-    properties for most rendering applications.
-
-    This sample generator requires shader model 6.0 or above.
-*/
-struct UniformSampleGenerator : ISampleGenerator
+/**
+ * Default uniform pseudorandom number generator.
+ *
+ * This generator has 128 bit state and should have acceptable statistical
+ * properties for most rendering applications.
+ *
+ * This sample generator requires shader model 6.0 or above.
+ */
+export struct UniformSampleGenerator : ISampleGenerator
 {
     struct Padded
     {
         UniformSampleGenerator internal;
     }
 
-    /** Create sample generator.
-    */
-    static UniformSampleGenerator create(uint2 pixel, uint sampleNumber)
+    /**
+     * Initializes the sample generator for a given pixel and sample number.
+     * @param[in] pixel Pixel id.
+     * @param[in] sampleNumber Sample number.
+     */
+    __init(uint2 pixel, uint sampleNumber)
     {
         UniformSampleGenerator sampleGenerator;
 
@@ -63,25 +67,14 @@ struct UniformSampleGenerator : ISampleGenerator
         uint seed[4] = { uint(s0), uint(s0 >> 32), uint(s1), uint(s1 >> 32) };
 
         // Create xoshiro128** pseudorandom generator.
-        sampleGenerator.rng = createXoshiro128StarStar(seed);
-        return sampleGenerator;
+        this.rng = createXoshiro128StarStar(seed);
     }
 
-    /** Returns the next sample value. This function updates the state.
-    */
-    [mutating] uint next()
-    {
-        return nextRandom(rng);
-    }
-
-    uint getState()
-    {
-        return 0;
-    }
-
-    [mutating] void setState(uint state)
-    {
-    }
+    /**
+     * Returns the next sample value. This function updates the state.
+     */
+    [mutating]
+    uint next() { return nextRandom(rng); }
 
     Xoshiro128StarStar rng;
 };

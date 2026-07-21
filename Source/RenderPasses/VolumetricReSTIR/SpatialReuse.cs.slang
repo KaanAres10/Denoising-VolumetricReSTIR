@@ -1,3 +1,4 @@
+import Utils.Sampling.LowDiscrepancy.HammersleySequence; // [8.0 port] getHammersley
 
 /***************************************************************************
  # Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
@@ -28,8 +29,8 @@
  **************************************************************************/
 #include "Utils/Math/MathConstants.slangh"
 __exported import ReSTIRHelper;
-#include "HostDeviceSharedDefinitions.h"
-import Utils.Helpers;
+#include "HostDeviceSharedDefinitions.slangh"
+import Utils.Geometry.GeometryHelpers;
 import Utils.Math.MathHelpers;
 import Utils.Debug.PixelDebug;
 
@@ -111,7 +112,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     numRounds += gRoundOffset + 1;
     roundId += gRoundOffset;
 
-    SampleGenerator sg = SampleGenerator.create(DTid.xy, numRounds * gFrameCount + roundId); // prevent correlation with ray traicng shaders
+    SampleGenerator sg = SampleGenerator(DTid.xy, numRounds * gFrameCount + roundId); // prevent correlation with ray traicng shaders
 
     const int pixelId = getPixelID(pixelPos, gResolution);
 
@@ -123,9 +124,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     int centerExtraBounceStartId = output.extraBounceStartId;
     #endif
 
-    CameraRay cameraRay = gScene.camera.computeRayPinholeScaled(pixelPos, 1, 0.5f, gResolution);
+    CameraRay cameraRay = computeRayPinholeScaled(gScene.camera, pixelPos, 1, 0.5f, gResolution);
 
-    Ray ray = { cameraRay.origin, cameraRay.dir, 0, kRayTMax };
+    VolRay ray = { cameraRay.origin, cameraRay.dir, 0, kRayTMax };
 
     if (gMISMethod == kMISTalbot) output = createNewReservoir();
 
@@ -176,7 +177,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             {
                 int2 resampleRayPixelPos = pixelPos;
 
-                Ray resampleRay = ray;
+                VolRay resampleRay = ray;
 
                 #ifdef SURFACE_SCENE
                 VBufferItem vItem = gVBuffer[getPixelID(resampleRayPixelPos, gResolution)];
@@ -216,9 +217,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
                     {
                         int2 neighborRayPixelPos = tapPos2;
 
-                        float3 neighborRayDir = normalize(gScene.camera.computeNonNormalizedRayDirPinholeScaled(tapPos2, 1, 0.5f, gResolution));
+                        float3 neighborRayDir = normalize(computeNonNormalizedRayDirPinholeScaled(gScene.camera, tapPos2, 1, 0.5f, gResolution));
 
-                        Ray neighborRay = { ray.origin, neighborRayDir, 0, tap.depth };
+                        VolRay neighborRay = { ray.origin, neighborRayDir, 0, tap.depth };
 
                         SingleExternalVisibilityProvider externalVis;
                         externalVis.Initialize();

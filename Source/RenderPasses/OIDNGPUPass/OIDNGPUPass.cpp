@@ -1,233 +1,163 @@
+/***************************************************************************
+ # Intel Open Image Denoise 2.x (CUDA interop) render pass, ported to Falcor 8.0.
+ #
+ # Original: Denoising-VolumetricReSTIR (Falcor 4.x). Algorithm/shaders preserved;
+ # only the host/engine glue was rewritten for the 8.0 API.
+ **************************************************************************/
 #include "OIDNGPUPass.h"
-#include "OIDNCudaInterop.h" 
-#include <d3d12.h>           
-#include <wrl/client.h>
 
+#include <cmath>
 
-const char* OIDNGPUPass::kDesc = "Intel Open Image Denoise 2.x (CUDA Interop)";
+namespace
+{
+const std::string kSrc = "src";
+const std::string kDst = "dst";
 
-static const std::string kSrc = "src";
-static const std::string kDst = "dst";
+const std::string kConvertTexToBufFile = "RenderPasses/OIDNGPUPass/ConvertTexToBuf.cs.slang";
+const std::string kConvertBufToTexFile = "RenderPasses/OIDNGPUPass/ConvertBufToTex.ps.slang";
 
-static const std::string kConvertTexToBufFile = "RenderPasses/OIDNGPUPass/ConvertTexToBuf.cs.slang";
-static const std::string kConvertBufToTexFile = "RenderPasses/OIDNGPUPass/ConvertBufToTex.ps.slang";
+// Property keys (kept identical to the 4.x dictionary keys for script compatibility).
+const char kEnabled[] = "mEnabled";
+const char kQuality[] = "mQuality";
+const char kHdr[] = "mHdr";
+const char kSrgb[] = "mSrgb";
+const char kInputScale[] = "mInputScale";
+const char kCleanAux[] = "mCleanAux";
+const char kMaxMemMB[] = "mMaxMemoryMB";
 
-// dict keys
-static const char kEnabled[] = "mEnabled";
-static const char kQuality[] = "mQuality";
-static const char kHdr[] = "mHdr";
-static const char kSrgb[] = "mSrgb";
-static const char kInputScale[] = "mInputScale";
-static const char kCleanAux[] = "mCleanAux";
-static const char kMaxMemMB[] = "mMaxMemoryMB";
-
-extern "C" __declspec(dllexport) const char* getProjDir() { return PROJECT_DIR; }
-extern "C" __declspec(dllexport) void getPasses(Falcor::RenderPassLibrary & lib) {
-    lib.registerClass("OIDNGPUPass", OIDNGPUPass::kDesc, OIDNGPUPass::create);
-}
-
-
-OIDNGPUPass::SharedPtr OIDNGPUPass::create(RenderContext* pRenderContext, const Dictionary& dict) {
-    return SharedPtr(new OIDNGPUPass(dict));
-}
-
-static oidn::Quality toOidnQuality(int q)
+oidn::Quality toOidnQuality(int q)
 {
     switch (q)
     {
-    default: return oidn::Quality::Default;
-    case 1:  return oidn::Quality::Fast;
-    case 2:  return oidn::Quality::Balanced;
-    case 3:  return oidn::Quality::High;
+    default:
+        return oidn::Quality::Default;
+    case 1:
+        return oidn::Quality::Fast;
+    case 2:
+        return oidn::Quality::Balanced;
+    case 3:
+        return oidn::Quality::High;
     }
 }
+} // namespace
 
-OIDNGPUPass::OIDNGPUPass(const Dictionary& dict) {
+extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
+{
+    registry.registerClass<RenderPass, OIDNGPUPass>();
+}
+
+OIDNGPUPass::OIDNGPUPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
+{
+    // Falcor must have a live CUDA context so its shared buffers can be mapped to CUDA
+    // device pointers (createInteropBuffer -> getSharedDevicePtr).
+    FALCOR_CHECK(mpDevice->initCudaDevice(), "OIDNGPUPass: failed to initialize CUDA device.");
+
     mDevice = oidn::newDevice(oidn::DeviceType::CUDA);
+
+    const char* errMsg = nullptr;
+    if (mDevice.getError(errMsg) != oidn::Error::None)
+        logError("OIDNGPUPass: Device creation error: {}", errMsg ? errMsg : "");
+
     mDevice.commit();
 
     mFilter = mDevice.newFilter("RT");
 
-    if (dict.keyExists(kEnabled))    mEnabled = (bool)dict[kEnabled];
-    if (dict.keyExists(kHdr))        mHdr = (bool)dict[kHdr];
-    if (dict.keyExists(kSrgb))       mSrgb = (bool)dict[kSrgb];
-    if (dict.keyExists(kCleanAux))   mCleanAux = (bool)dict[kCleanAux];
-    if (dict.keyExists(kQuality))    mQuality = (int)dict[kQuality];
-    if (dict.keyExists(kMaxMemMB))   mMaxMemoryMB = (int)dict[kMaxMemMB];
-    if (dict.keyExists(kInputScale)) mInputScale = (float)dict[kInputScale];
+    mEnabled = props.get(kEnabled, mEnabled);
+    mHdr = props.get(kHdr, mHdr);
+    mSrgb = props.get(kSrgb, mSrgb);
+    mCleanAux = props.get(kCleanAux, mCleanAux);
+    mQuality = props.get(kQuality, mQuality);
+    mMaxMemoryMB = props.get(kMaxMemMB, mMaxMemoryMB);
+    mInputScale = props.get(kInputScale, mInputScale);
 
+    applyFilterSettings();
+
+    mpConvertTexToBuf = ComputePass::create(mpDevice, kConvertTexToBufFile, "main");
+    mpConvertBufToTex = FullScreenPass::create(mpDevice, kConvertBufToTexFile);
+    mpFbo = Fbo::create(mpDevice);
+}
+
+void OIDNGPUPass::applyFilterSettings()
+{
     mFilter.set("hdr", mHdr);
     mFilter.set("srgb", mSrgb);
     mFilter.set("cleanAux", mCleanAux);
     mFilter.set("quality", toOidnQuality(mQuality));
     if (!std::isnan(mInputScale))
         mFilter.set("inputScale", mInputScale);
-
     if (mMaxMemoryMB >= 0)
         mFilter.set("maxMemoryMB", mMaxMemoryMB);
+}
 
-    mFilter.commit(); 
+Properties OIDNGPUPass::getProperties() const
+{
+    Properties props;
+    props[kEnabled] = mEnabled;
+    props[kHdr] = mHdr;
+    props[kSrgb] = mSrgb;
+    props[kCleanAux] = mCleanAux;
+    props[kQuality] = mQuality;
+    props[kMaxMemMB] = mMaxMemoryMB;
+    props[kInputScale] = mInputScale;
+    return props;
+}
 
-    // shaders
-    mpConvertTexToBuf = ComputePass::create(kConvertTexToBufFile, "main");
-    mpConvertBufToTex = FullScreenPass::create(kConvertBufToTexFile);
-    mpFbo = Fbo::create();
+RenderPassReflection OIDNGPUPass::reflect(const CompileData& compileData)
+{
+    RenderPassReflection r;
+    r.addInput(kSrc, "Input noisy image").format(ResourceFormat::RGBA32Float);
+    r.addOutput(kDst, "Output denoised image").format(ResourceFormat::RGBA32Float);
+    return r;
 }
 
 void OIDNGPUPass::renderUI(Gui::Widgets& widget)
 {
     widget.checkbox("Enabled", mEnabled);
 
-    if (!mEnabled) return;
+    if (!mEnabled)
+        return;
 
     widget.checkbox("HDR", mHdr);
     widget.checkbox("sRGB", mSrgb);
     widget.checkbox("Clean Aux", mCleanAux);
 
     uint32_t quality = (uint32_t)mQuality;
-
-    if (widget.dropdown(
-        "Quality",
-        {
-            {0u, "Default"},
-            {1u, "Fast"},
-            {2u, "Balanced"},
-            {3u, "High"}
-        },
-        quality))
-    {
+    if (widget.dropdown("Quality", {{0u, "Default"}, {1u, "Fast"}, {2u, "Balanced"}, {3u, "High"}}, quality))
         mQuality = (int)quality;
-    }
-    widget.var("Max Memory (MB)", mMaxMemoryMB, -1, 65536); // pick bounds you like
-    widget.var("Input Scale", mInputScale);                // beware NaN, see note below
+
+    widget.var("Max Memory (MB)", mMaxMemoryMB, -1, 65536);
+    widget.var("Input Scale", mInputScale);
 }
 
-Dictionary OIDNGPUPass::getScriptingDictionary()
+void OIDNGPUPass::releaseInterop()
 {
-    Dictionary d;
-    d[kEnabled] = mEnabled;
-    d[kHdr] = mHdr;
-    d[kSrgb] = mSrgb;
-    d[kCleanAux] = mCleanAux;
-    d[kQuality] = mQuality;
-    d[kMaxMemMB] = mMaxMemoryMB;
-    d[kInputScale] = mInputScale;
-    return d;
+    mInputBuf.free();
+    mInputBuf.buffer = nullptr;
+    mOutputBuf.free();
+    mOutputBuf.buffer = nullptr;
 }
 
-RenderPassReflection OIDNGPUPass::reflect(const CompileData& compileData) {
-    RenderPassReflection r;
-    r.addInput(kSrc, "Input").format(ResourceFormat::RGBA32Float);
-    r.addOutput(kDst, "Output").format(ResourceFormat::RGBA32Float);
-    return r;
-}
-
-void OIDNGPUPass::releaseInterop() {
-    // Use the Bridge functions to cleanup
-    if (mCudaDevPtrIn) { OIDNCuda::freeBuffer(mCudaDevPtrIn); mCudaDevPtrIn = nullptr; }
-    if (mCudaDevPtrOut) { OIDNCuda::freeBuffer(mCudaDevPtrOut); mCudaDevPtrOut = nullptr; }
-
-    if (mExtMemIn) { OIDNCuda::destroyExternalMemory(mExtMemIn); mExtMemIn = nullptr; }
-    if (mExtMemOut) { OIDNCuda::destroyExternalMemory(mExtMemOut); mExtMemOut = nullptr; }
-}
-
-using Microsoft::WRL::ComPtr;
-
-void OIDNGPUPass::initInterop(RenderContext* pCtx, uint32_t width, uint32_t height) {
-    if (mFrameDim.x == width && mFrameDim.y == height && mInputBuf) return;
+void OIDNGPUPass::initInterop(uint32_t width, uint32_t height)
+{
+    if (mFrameDim.x == width && mFrameDim.y == height && mInputBuf.buffer)
+        return;
 
     releaseInterop();
-    mFrameDim = { width, height };
+    mFrameDim = {width, height};
 
-    ID3D12Device* d3d12Device = (ID3D12Device*)gpDevice->getApiHandle();
+    const size_t numPixels = size_t(width) * height;
+    const size_t byteSize = numPixels * 4 * sizeof(float); // RGBA32F, matches RWBuffer<float4>
 
-    uint32_t numPixels = width * height;
-    size_t logicalSize = numPixels * 4 * sizeof(float);
-
-    size_t alignedWidth = (logicalSize + 65535) & ~65535;
-
-    D3D12_RESOURCE_DESC desc = {};
-    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    desc.Alignment = 0;
-    desc.Width = alignedWidth;
-    desc.Height = 1;
-    desc.DepthOrArraySize = 1;
-    desc.MipLevels = 1;
-    desc.Format = DXGI_FORMAT_UNKNOWN;
-    desc.SampleDesc.Count = 1;
-    desc.SampleDesc.Quality = 0;
-    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-
-    D3D12_RESOURCE_ALLOCATION_INFO allocInfo = d3d12Device->GetResourceAllocationInfo(0, 1, &desc);
-    size_t physicalSize = allocInfo.SizeInBytes;
-
-    D3D12_HEAP_PROPERTIES heapProps = {};
-    heapProps.Type = D3D12_HEAP_TYPE_DEFAULT;
-    heapProps.CreationNodeMask = 1;
-    heapProps.VisibleNodeMask = 1;
-
-    Microsoft::WRL::ComPtr<ID3D12Resource> d3dIn, d3dOut;
-
-    // Input
-    HRESULT hr = d3d12Device->CreateCommittedResource(
-        &heapProps,
-        D3D12_HEAP_FLAG_SHARED,
-        &desc,
-        D3D12_RESOURCE_STATE_COMMON,
-        nullptr,
-        IID_PPV_ARGS(&d3dIn)
-    );
-    if (FAILED(hr)) { logError("Failed to create Input Buffer"); return; }
-
-    // Output
-    hr = d3d12Device->CreateCommittedResource(
-        &heapProps,
-        D3D12_HEAP_FLAG_SHARED,
-        &desc,
-        D3D12_RESOURCE_STATE_COMMON,
-        nullptr,
-        IID_PPV_ARGS(&d3dOut)
-    );
-    if (FAILED(hr)) { logError("Failed to create Output Buffer"); return; }
-
- 
-    mInputBuf = Buffer::createFromApiHandle(
-        d3dIn.Get(), alignedWidth,
-        Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
-        Buffer::CpuAccess::None
-    );
-
-    mOutputBuf = Buffer::createFromApiHandle(
-        d3dOut.Get(), alignedWidth,
-        Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
-        Buffer::CpuAccess::None
-    );
-
-    HANDLE handleIn = nullptr;
-    HANDLE handleOut = nullptr;
-
-    d3d12Device->CreateSharedHandle(d3dIn.Get(), nullptr, GENERIC_ALL, nullptr, &handleIn);
-    d3d12Device->CreateSharedHandle(d3dOut.Get(), nullptr, GENERIC_ALL, nullptr, &handleOut);
-
-    mExtMemIn = OIDNCuda::importSharedHandle(handleIn, physicalSize);
-    mExtMemOut = OIDNCuda::importSharedHandle(handleOut, physicalSize);
-
-    if (mExtMemIn && mExtMemOut) {
-        mCudaDevPtrIn = OIDNCuda::mapBuffer(mExtMemIn, alignedWidth);
-        mCudaDevPtrOut = OIDNCuda::mapBuffer(mExtMemOut, alignedWidth);
-    }
-    else {
-        logError("Failed to map D3D12 resources to CUDA.");
-    }
-
-    CloseHandle(handleIn);
-    CloseHandle(handleOut);
+    mInputBuf = createInteropBuffer(mpDevice, byteSize);
+    mOutputBuf = createInteropBuffer(mpDevice, byteSize);
 }
-void OIDNGPUPass::execute(RenderContext* pRenderContext, const RenderData& renderData) {
-    auto pSrc = renderData[kSrc]->asTexture();
-    auto pDst = renderData[kDst]->asTexture();
-    if (!pSrc || !pDst) return;
+
+void OIDNGPUPass::execute(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    auto pSrc = renderData.getTexture(kSrc);
+    auto pDst = renderData.getTexture(kDst);
+    if (!pSrc || !pDst)
+        return;
 
     if (!mEnabled)
     {
@@ -235,32 +165,43 @@ void OIDNGPUPass::execute(RenderContext* pRenderContext, const RenderData& rende
         return;
     }
 
-    uint32_t width = pSrc->getWidth();
-    uint32_t height = pSrc->getHeight();
+    const uint32_t width = pSrc->getWidth();
+    const uint32_t height = pSrc->getHeight();
 
-    initInterop(pRenderContext, width, height);
-    if (!mCudaDevPtrIn || !mCudaDevPtrOut) return;
+    initInterop(width, height);
+    if (!mInputBuf.devicePtr || !mOutputBuf.devicePtr)
+        return;
 
-    auto vars = mpConvertTexToBuf->getVars();
-    vars["GlobalCB"]["gStride"] = width;
-    vars["gInTex"] = pSrc;
-    vars["gOutBuf"] = mInputBuf;
-    mpConvertTexToBuf->execute(pRenderContext, width, height);
+    // GPU: texture -> shared input buffer via ConvertTexToBuf
+    {
+        auto var = mpConvertTexToBuf->getRootVar();
+        var["GlobalCB"]["gStride"] = width;
+        var["gInTex"] = pSrc;
+        var["gOutBuf"] = mInputBuf.buffer;
+        mpConvertTexToBuf->execute(pRenderContext, width, height);
+    }
 
-    pRenderContext->flush(true);
+    // Make sure the DX writes are visible to CUDA before OIDN reads the shared buffer.
+    pRenderContext->submit(true);
 
-    // CUDA: Run OIDN
-    mFilter.setImage("color", mCudaDevPtrIn, oidn::Format::Float3, width, height, 0, 16);
-    mFilter.setImage("output", mCudaDevPtrOut, oidn::Format::Float3, width, height, 0, 16);
+    // CUDA: run OIDN directly on the shared device pointers (no readback).
+    mFilter.setImage("color", (void*)mInputBuf.devicePtr, oidn::Format::Float3, width, height, 0, 16);
+    mFilter.setImage("output", (void*)mOutputBuf.devicePtr, oidn::Format::Float3, width, height, 0, 16);
     mFilter.commit();
     mFilter.execute();
 
-    // Sync via Bridge
-    OIDNCuda::synchronize();
+    const char* errMsg = nullptr;
+    if (mDevice.getError(errMsg) != oidn::Error::None)
+        logError("OIDNGPUPass: OIDN error: {}", errMsg ? errMsg : "");
 
-    auto outVars = mpConvertBufToTex->getVars();
-    outVars["GlobalCB"]["gStride"] = width;
-    outVars["gInBuf"] = mOutputBuf;
-    mpFbo->attachColorTarget(pDst, 0);
-    mpConvertBufToTex->execute(pRenderContext, mpFbo);
+    mDevice.sync(); // ensure OIDN is done before DX reads the shared output buffer
+
+    // GPU: shared output buffer -> texture via ConvertBufToTex
+    {
+        auto var = mpConvertBufToTex->getRootVar();
+        var["GlobalCB"]["gStride"] = width;
+        var["gInBuf"] = mOutputBuf.buffer;
+        mpFbo->attachColorTarget(pDst, 0);
+        mpConvertBufToTex->execute(pRenderContext, mpFbo);
+    }
 }

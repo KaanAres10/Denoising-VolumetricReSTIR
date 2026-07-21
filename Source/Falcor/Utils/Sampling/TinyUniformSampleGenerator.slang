@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,19 +25,18 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
+__exported import Utils.Sampling.SampleGeneratorInterface;
+import Utils.Sampling.Pseudorandom.LCG;
 import Utils.Math.HashUtils;
 import Utils.Math.BitTricks;
-import Utils.Sampling.Pseudorandom.LCG;
-import Utils.Sampling.SampleGeneratorInterface;
 
-/** Tiny uniform random sample generator.
-
-    This generator has only 32 bit state and sub-optimal statistical properties.
-    Do not use for anything critical; correlation artifacts may be prevalent.
-
-    This code works on shader model 5.1 and above.
-*/
-struct TinyUniformSampleGenerator : ISampleGenerator
+/**
+ * Tiny uniform random sample generator.
+ *
+ * This generator has only 32 bit state and sub-optimal statistical properties.
+ * Do not use for anything critical; correlation artifacts may be prevalent.
+ */
+export struct TinyUniformSampleGenerator : ISampleGenerator
 {
     struct Padded
     {
@@ -45,34 +44,29 @@ struct TinyUniformSampleGenerator : ISampleGenerator
         uint3 _pad;
     };
 
-    /** Create sample generator.
-    */
-    static TinyUniformSampleGenerator create(uint2 pixel, uint sampleNumber)
-    {
-        TinyUniformSampleGenerator sampleGenerator;
+    /**
+     * Initializes the sample generator.
+     * @param[in] seed Seed value.
+     */
+    __init(uint seed) { this.rng = createLCG(seed); }
 
+    /**
+     * Initializes the sample generator for a given pixel and sample number.
+     * @param[in] pixel Pixel id.
+     * @param[in] sampleNumber Sample number.
+     */
+    __init(uint2 pixel, uint sampleNumber)
+    {
         // Use block cipher to generate a pseudorandom initial seed.
         uint seed = blockCipherTEA(interleave_32bit(pixel), sampleNumber).x;
-        sampleGenerator.rng = createLCG(seed);
-        return sampleGenerator;
+        this.rng = createLCG(seed);
     }
 
-    /** Returns the next sample value. This function updates the state.
-    */
-    [mutating] uint next()
-    {
-        return nextRandom(rng);
-    }
+    /**
+     * Returns the next sample value. This function updates the state.
+     */
+    [mutating]
+    uint next() { return nextRandom(rng); }
 
-    uint getState()
-    {
-        return rng.state;
-    }
-
-    [mutating] void setState(uint state)
-    {
-        rng.state = state;
-    }
-
-    LCG rng;    ///< Simple LCG 32-bit pseudorandom number generator.
+    LCG rng; ///< Simple LCG 32-bit pseudorandom number generator.
 };

@@ -38,7 +38,7 @@
 
 #include "Utils/Math/MathConstants.slangh"
 __exported import ReSTIRHelper;
-#include "HostDeviceSharedDefinitions.h"
+#include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
 
 cbuffer CB
@@ -92,7 +92,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     if (!gIsFirstFrame)
     {
-        SampleGenerator sg = SampleGenerator.create(DTid.xy, gNumTotalRounds * gFrameCount + gRoundOffset); // prevent correlation with ray traicng shaders
+        SampleGenerator sg = SampleGenerator(DTid.xy, gNumTotalRounds * gFrameCount + gRoundOffset); // prevent correlation with ray traicng shaders
 
         int selectedId = -1;
 
@@ -104,9 +104,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         Reservoir taps[2];
         taps[0] = gCurReservoirs[pixelId];
 
-        CameraRay cameraRay = gScene.camera.computeRayPinholeScaled(pixelPos, 1, 0.5f, gResolution);
+        CameraRay cameraRay = computeRayPinholeScaled(gScene.camera, pixelPos, 1, 0.5f, gResolution);
 
-        Ray ray = { cameraRay.origin, cameraRay.dir, 0, kRayTMax };
+        VolRay ray = { cameraRay.origin, cameraRay.dir, 0, kRayTMax };
 
         Reservoir output;
         if (gMISMethod == kMISTalbot) output = createNewReservoir();
@@ -134,7 +134,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             {
             #ifdef SURFACE_SCENE
                 VBufferItem vItem = gVBuffer[pixelId];
-                HitInfo hitInfo = { vItem.meshInstanceID, vItem.primitiveID, vItem.barycentrics, vItem.rayT };
+                SurfaceHitInfo hitInfo = { vItem.meshInstanceID, vItem.primitiveID, vItem.barycentrics, vItem.rayT };
 
                 // if we have reflective surfaces, they also need temporal resampling to reduce noise.
                 // so we randomly decide using surface or volume (velocity resampling) by total transmittance
@@ -230,7 +230,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             if (taps[1].depth != kRayTMax)
             {
                 int2 tapPos = reprojScreenPos;
-                float3 worldPos = gScene.camera.computeWorldPositionWithRayTracingFrameScaled(tapPos, 1,
+                float3 worldPos = computeWorldPositionWithRayTracingFrameScaled(gScene.camera, tapPos, 1,
                                         0.5f, gResolution, gPrevCameraPosW, gPrevCameraU, gPrevCameraV, gPrevCameraW, taps[1].depth);
 
                 taps[1].depth = length(worldPos - ray.origin);
@@ -261,7 +261,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             {
                 int2 resampleRayPixelPos = pixelPos;
 
-                Ray resampleRay = ray;
+                VolRay resampleRay = ray;
 
                 neighbor_py = taps[i].p_y;
 
@@ -313,12 +313,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
                         int2 neighborRayPixelPos = tapPos2;
 
                         CameraRay neighborCameraRay;
-                        if (j == 0) neighborCameraRay = gScene.camera.computeRayPinholeScaled(tapPos2, 1, 0.5, gResolution);
-                        else neighborCameraRay = gScene.camera.computeRayPinholeWithRayTracingFrameScaled(tapPos2, 1, 0.5, gResolution, gPrevCameraPosW, gPrevCameraU, gPrevCameraV, gPrevCameraW);
+                        if (j == 0) neighborCameraRay = computeRayPinholeScaled(gScene.camera, tapPos2, 1, 0.5, gResolution);
+                        else neighborCameraRay = computeRayPinholeWithRayTracingFrameScaled(gScene.camera, tapPos2, 1, 0.5, gResolution, gPrevCameraPosW, gPrevCameraU, gPrevCameraV, gPrevCameraW);
             
                         float usedDepth = j == 0 ? taps[i].depth : (i == 0 ? centerPrevFrameDepth : temporalOriginalDepth);
             
-                        Ray neighborRay = { neighborCameraRay.origin, neighborCameraRay.dir, 0, usedDepth };
+                        VolRay neighborRay = { neighborCameraRay.origin, neighborCameraRay.dir, 0, usedDepth };
                         SingleExternalVisibilityProvider externalVis;
                         externalVis.Initialize();
 

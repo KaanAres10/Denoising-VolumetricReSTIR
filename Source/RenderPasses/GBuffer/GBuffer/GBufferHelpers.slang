@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,51 +26,56 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 
-/** Helper functions for generating the G-buffer.
-*/
+/**
+ * Helper functions for generating the G-buffer.
+ */
 
-import GBufferParams;
 import Scene.SceneTypes;
+import Scene.ShadingData;
+import Rendering.Materials.IMaterialInstance;
 import Utils.Math.MathHelpers;
-__exported import Experimental.Scene.Material.MaterialHelpers;
+import Utils.Math.FormatConversion;
+__exported import Scene.Material.ShadingUtils;
 
-struct GBuffer
+struct GBufferData
 {
     float4 posW;
     float4 normW;
     float4 tangentW;
-    float4 texC;
+    float4 faceNormalW;
+    float4 guideNormalW;
+    float2 texC;
+    uint4 mtlData;
+
+    // Legacy channels
     float4 diffuseOpacity;
     float4 specRough;
     float4 emissive;
-    float4 matlExtra;
 };
 
-cbuffer PerFrameCB
+/**
+ * Helper function to prepare G-buffer data.
+ */
+GBufferData prepareGBufferData(const ShadingData sd, const VertexData v, const IMaterialInstance mi, const BSDFProperties bsdfProperties)
 {
-    GBufferParams   gParams;
-};
+    GBufferData gbuf = {};
 
-/** Helper function to store G-buffer channels.
-*/
-GBuffer storeGBufferOutput(ShadingData sd, VertexData v)
-{
-    GBuffer gbuf;
+    // We store the final normal in the G-buffer but pass along the original geometric tangent and its handedness (sign) unmodified.
+    // This is needed for correctly orthonormalizing the tangent frame and computing the bitangent in passes that consume the G-buffer data.
+    float bitangentSign = sd.frame.getHandednessSign();
 
-    // Check that tangent space exists, otherwise create one based on the normal.
-    // Note that this check also catches NaNs, should they occur.
-    float4 tangent = v.tangentW.w != 0.f ? v.tangentW : float4(perp_stark(sd.N), 1.f);
+    gbuf.posW = float4(sd.posW, 1.f);
+    gbuf.normW = float4(sd.frame.N, 0.f);
+    gbuf.tangentW = v.tangentW;
+    gbuf.faceNormalW = float4(sd.faceN, 0.f);
+    gbuf.guideNormalW = float4(bsdfProperties.guideNormal, 0.f);
+    gbuf.texC = sd.uv;
+    gbuf.mtlData = uint4(sd.materialID, sd.mtl.packedData.x, sd.mtl.packedData.y, mi.getLobeTypes(sd));
 
-    gbuf.posW           = float4(sd.posW, 1.f);
-    gbuf.normW          = float4(sd.N, 0.f);
-    gbuf.tangentW       = tangent;
-    gbuf.texC           = float4(sd.uv, 0.f, 0.f);
-
-    MaterialParams matParams = getMaterialParams(sd);
-    gbuf.diffuseOpacity = matParams.diffuseOpacity;
-    gbuf.specRough      = matParams.specularRoughness;
-    gbuf.emissive       = matParams.emissive;
-    gbuf.matlExtra      = matParams.extraParams;
+    // Setup legacy material channels.
+    gbuf.diffuseOpacity = float4(bsdfProperties.diffuseReflectionAlbedo, 1.f);
+    gbuf.specRough = float4(bsdfProperties.specularReflectance, bsdfProperties.roughness);
+    gbuf.emissive = float4(bsdfProperties.emission, 0.f);
 
     return gbuf;
 }

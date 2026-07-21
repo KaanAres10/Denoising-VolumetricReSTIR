@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,6 +27,7 @@
  **************************************************************************/
 #pragma once
 #include "../../Mogwai.h"
+#include <fstream>
 
 namespace Mogwai
 {
@@ -36,21 +37,18 @@ namespace Mogwai
         virtual ~TimingCapture() = default;
         static UniquePtr create(Renderer* pRenderer);
 
-        virtual void beginFrame(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo) override;
-        virtual void scriptBindings(Bindings& bindings) override;
+        virtual void beginFrame(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo) override;
+        virtual void registerScriptBindings(pybind11::module& m) override;
+        virtual std::string getScriptVar() const override;
 
     protected:
         TimingCapture(Renderer *pRenderer) : Extension(pRenderer, "Timing Capture") {}
 
-        /** Start capture frame times to file, or end capture if filename is empty.
+        /** Start capture frame times to file, or end capture if path is empty.
         */
-        void captureFrameTime(std::string filename);
-        void capturePassTime(std::string filename, std::string passName);
+        void captureFrameTime(std::filesystem::path path);
         void recordPreviousFrameTime();
-        void recordPreviousPassTimes();
 
         std::ofstream   mFrameTimeFile;     ///< Frame times are appended to this file when it's open.
-        std::vector<std::ofstream>   mPassTimeFiles;     ///< Frame times are appended to this file when it's open.
-        std::vector<std::string> mPassNames;
     };
 }

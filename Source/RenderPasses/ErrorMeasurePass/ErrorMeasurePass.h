@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,77 +27,16 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
-#include "Utils/Algorithm/ComputeParallelReduction.h"
+#include "RenderGraph/RenderPass.h"
+#include "Utils/Algorithm/ParallelReduction.h"
+#include <fstream>
 
 using namespace Falcor;
 
 class ErrorMeasurePass : public RenderPass
 {
 public:
-    using SharedPtr = std::shared_ptr<ErrorMeasurePass>;
-
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
-
-    virtual std::string getDesc() override { return "Measures error with respect to a reference image"; }
-    virtual Dictionary getScriptingDictionary() override;
-    virtual RenderPassReflection reflect(const CompileData& compileData) override;
-    virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
-    virtual void renderUI(Gui::Widgets& widget) override;
-    virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override;
-    virtual void updateDict(const Dictionary& dict) override;
-
-private:
-    ErrorMeasurePass(const Dictionary& dict);
-
-    bool init(RenderContext* pRenderContext, const Dictionary& dict);
-
-    void SaveOutputToFile();
-    void loadReference();
-    Texture::SharedPtr getReference(const RenderData& renderData) const;
-    void openMeasurementsFile();
-    void saveMeasurementsToFile();
-
-    void runDifferencePass(RenderContext* pRenderContext, const RenderData& renderData);
-    void runReductionPasses(RenderContext* pRenderContext, const RenderData& renderData);
-
-    ComputePass::SharedPtr mpErrorMeasurerPass;
-    ComputeParallelReduction::SharedPtr mpParallelReduction;
-
-    struct
-    {
-        float3 error;           ///< Error (either L1 or MSE) in RGB.
-        float  avgError;        ///< Error averaged over color components.
-        bool   valid = false;
-    } mMeasurements;
-
-    // Internal state
-    float3                  mRunningError = float3(0.f, 0.f, 0.f);
-    float                   mRunningAvgError = -1.f;        ///< A negative value indicates that both running error values are invalid.
-
-    Texture::SharedPtr      mpReferenceTexture;
-    Texture::SharedPtr      mpDifferenceTexture;
-
-    Buffer::SharedPtr       mpResultBuffer;
-    int                     mFrameCount = 0;
-    CpuTimer::TimePoint				mStartTimePoint;
-    CpuTimer::TimePoint				mPrevTimePoint;
-    CpuTimer                mTimer;
-    std::vector<double> mTimeStamps;
-
-    std::ofstream           mMeasurementsFile;
-
-    // UI variables
-    std::string             mReferenceImagePath;                ///< Path to the reference used in the comparison.
-    std::string             mMeasurementsFilePath;              ///< Path to the output file where measurements are stored (.csv).
-
-    bool                    mIgnoreBackground = true;           ///< If true, do not measure error on pixels that belong to the background.
-    bool                    mComputeSquaredDifference = true;   ///< Compute the square difference when creating the difference image.
-    bool                    mComputeAverage = false;            ///< Compute the average of the RGB components when creating the difference image.
-    bool                    mUseLoadedReference = false;        ///< If true, use loaded reference image instead of input.
-    bool                    mReportRunningError = true;         ///< Use exponetial moving average (EMA) for the computed error.
-    float                   mRunningErrorSigma = 0.995f;        ///< Coefficient used for the exponential moving average. Larger values mean slower response.
-
-    bool                    mRequestSaveToFile = false;
+    FALCOR_PLUGIN_CLASS(ErrorMeasurePass, "ErrorMeasurePass", "Measures error with respect to a reference image.");
 
     enum class OutputId
     {
@@ -107,20 +46,79 @@ private:
         Count
     };
 
-    OutputId                mSelectedOutputId = OutputId::Source;
+    FALCOR_ENUM_INFO(
+        OutputId,
+        {
+            {OutputId::Source, "Source"},
+            {OutputId::Reference, "Reference"},
+            {OutputId::Difference, "Difference"},
+        }
+    );
+
+    static ref<ErrorMeasurePass> create(ref<Device> pDevice, const Properties& props) { return make_ref<ErrorMeasurePass>(pDevice, props); }
+
+    ErrorMeasurePass(ref<Device> pDevice, const Properties& props);
+
+    virtual Properties getProperties() const override;
+    virtual RenderPassReflection reflect(const CompileData& compileData) override;
+    virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
+    virtual void renderUI(Gui::Widgets& widget) override;
+    virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override;
+
+private:
+    bool loadReference();
+    ref<Texture> getReference(const RenderData& renderData) const;
+    bool loadMeasurementsFile();
+    void saveMeasurementsToFile();
+
+    void runDifferencePass(RenderContext* pRenderContext, const RenderData& renderData);
+    void runReductionPasses(RenderContext* pRenderContext, const RenderData& renderData);
+
+    ref<ComputePass> mpErrorMeasurerPass;
+    std::unique_ptr<ParallelReduction> mpParallelReduction;
+
+    struct
+    {
+        float3 error;   ///< Error (either L1 or MSE) in RGB.
+        float avgError; ///< Error averaged over color components.
+        bool valid = false;
+    } mMeasurements;
+
+    // Internal state
+
+    float3 mRunningError = float3(0.f, 0.f, 0.f);
+    /// A negative value indicates that both running error values are invalid.
+    float mRunningAvgError = -1.f;
+
+    ref<Texture> mpReferenceTexture;
+    ref<Texture> mpDifferenceTexture;
+
+    std::ofstream mMeasurementsFile;
+
+    // UI variables
+
+    /// Path to the reference used in the comparison.
+    std::filesystem::path mReferenceImagePath;
+    /// Path to the output file where measurements are stored (.csv).
+    std::filesystem::path mMeasurementsFilePath;
+
+    /// If true, do not measure error on pixels that belong to the background.
+    bool mIgnoreBackground = true;
+    /// Compute the square difference when creating the difference image.
+    bool mComputeSquaredDifference = true;
+    /// Compute the average of the RGB components when creating the difference image.
+    bool mComputeAverage = false;
+    /// If true, use loaded reference image instead of input.
+    bool mUseLoadedReference = false;
+    /// Use exponetial moving average (EMA) for the computed error.
+    bool mReportRunningError = true;
+    /// Coefficient used for the exponential moving average. Larger values mean slower response.
+    float mRunningErrorSigma = 0.995f;
+
+    OutputId mSelectedOutputId = OutputId::Source;
 
     static const Gui::RadioButtonGroup sOutputSelectionButtons;
     static const Gui::RadioButtonGroup sOutputSelectionButtonsSourceOnly;
-
-    template <typename T>
-    void readbackBufferData(Falcor::Buffer::SharedPtr buf, T* var, uint32_t numElems)
-    {
-        if (numElems > 0)
-        {
-            const T* bufPtr = reinterpret_cast<const T*>(buf->map(Buffer::MapType::Read));
-            CopyMemory(var, bufPtr, sizeof(T) * numElems);
-            buf->unmap();
-        }
-    }
-
 };
+
+FALCOR_ENUM_REGISTER(ErrorMeasurePass::OutputId);

@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -28,51 +28,58 @@
 #pragma once
 #include "GBuffer.h"
 #include "Utils/Sampling/SampleGenerator.h"
+#include "Rendering/Materials/TexLODTypes.slang"
 
 using namespace Falcor;
 
-/** Ray traced G-buffer pass.
-    This pass renders a fixed set of G-buffer channels using ray tracing.
-*/
+/**
+ * Ray traced G-buffer pass.
+ * This pass renders a fixed set of G-buffer channels using ray tracing.
+ */
 class GBufferRT : public GBuffer
 {
 public:
-    using SharedPtr = std::shared_ptr<GBufferRT>;
+    FALCOR_PLUGIN_CLASS(GBufferRT, "GBufferRT", "Ray traced G-buffer generation pass.");
 
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
+    static ref<GBufferRT> create(ref<Device> pDevice, const Properties& props) { return make_ref<GBufferRT>(pDevice, props); }
+
+    GBufferRT(ref<Device> pDevice, const Properties& props);
 
     RenderPassReflection reflect(const CompileData& compileData) override;
     void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     void renderUI(Gui::Widgets& widget) override;
-    Dictionary getScriptingDictionary() override;
-    void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
-    std::string getDesc() override { return kDesc; }
-
-    enum class LODMode
-    {
-        UseMip0          = 0,       // Don't compute LOD (default)
-        RayDifferentials = 1,       // Use ray differentials
-        RayCones         = 2,       // Cone based LOD computation (not implemented yet)
-    };
+    Properties getProperties() const override;
+    void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
 
 private:
-    GBufferRT(const Dictionary& dict);
-    void parseDictionary(const Dictionary& dict) override;
+    void parseProperties(const Properties& props) override;
+
+    void executeRaytrace(RenderContext* pRenderContext, const RenderData& renderData);
+    void executeCompute(RenderContext* pRenderContext, const RenderData& renderData);
+
+    DefineList getShaderDefines(const RenderData& renderData) const;
+    void bindShaderData(const ShaderVar& var, const RenderData& renderData);
+    void recreatePrograms();
 
     // Internal state
-    SampleGenerator::SharedPtr      mpSampleGenerator;
+
+    /// Flag indicating if depth-of-field is computed for the current frame.
+    bool mComputeDOF = false;
+    ref<SampleGenerator> mpSampleGenerator;
 
     // UI variables
-    LODMode                         mLODMode = LODMode::UseMip0;
+
+    TexLODMode mLODMode = TexLODMode::Mip0;
+    bool mUseTraceRayInline = false;
+    /// Option for enabling depth-of-field when camera's aperture radius is nonzero.
+    bool mUseDOF = true;
 
     // Ray tracing resources
     struct
     {
-        RtProgram::SharedPtr pProgram;
-        RtProgramVars::SharedPtr pVars;
+        ref<Program> pProgram;
+        ref<RtProgramVars> pVars;
     } mRaytrace;
 
-    static const char* kDesc;
-    static void registerBindings(pybind11::module& m);
-    friend void getPasses(Falcor::RenderPassLibrary& lib);
+    ref<ComputePass> mpComputePass;
 };

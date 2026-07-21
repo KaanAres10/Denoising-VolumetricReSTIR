@@ -28,7 +28,7 @@
 
 __exported import ReSTIRHelper;
 import ComputeInitialSample;
-#include "HostDeviceSharedDefinitions.h"
+#include "HostDeviceSharedDefinitions.slangh"
 
 import Utils.Debug.PixelDebug;
 import VolumePathTracingFunctions;
@@ -67,7 +67,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
     uint2 launchIndex = DTid.xy;
     //printSetPixel(launchIndex);
 
-    SampleGenerator sg = SampleGenerator.create(launchIndex, gNumTotalRounds * gFrameCount);
+    SampleGenerator sg = SampleGenerator(launchIndex, gNumTotalRounds * gFrameCount);
 
     float3 rayOrigin = gScene.camera.getPosition();
 
@@ -80,13 +80,13 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
 
     float3 rayDir = normalize(gScene.camera.computeNonNormalizedRayDirPinhole(launchIndex, gResolution));
 
-    Ray ray = { rayOrigin, rayDir, 0.f, kRayTMax };
+    VolRay ray = { rayOrigin, rayDir, 0.f, kRayTMax };
 
     if (gUseReference)
     {
         #ifdef SURFACE_SCENE
         VBufferItem vItem = gVBuffer[reservoirId];
-        HitInfo hitInfo = { vItem.meshInstanceID, vItem.primitiveID, vItem.barycentrics, vItem.rayT };
+        SurfaceHitInfo hitInfo = { vItem.meshInstanceID, vItem.primitiveID, vItem.barycentrics, vItem.rayT };
         #endif
 
         for (int rId = 0; rId < gBaselineSamplePerPixel; rId++)
@@ -113,7 +113,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
         #ifdef SURFACE_SCENE
         // use vbuffer
         VBufferItem vItem = gVBuffer[reservoirId];
-        HitInfo hitInfo = { vItem.meshInstanceID, vItem.primitiveID, vItem.barycentrics, vItem.rayT };
+        SurfaceHitInfo hitInfo = { vItem.meshInstanceID, vItem.primitiveID, vItem.barycentrics, vItem.rayT };
 
         // or trace a new ray
         //HitInfo hitInfo = FindSurfaceHit(ray.origin, ray.dir, 0, kRayTMax);

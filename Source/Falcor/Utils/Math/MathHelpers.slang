@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,16 +26,17 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 
-/** This file contains various math utility helper functions.
-
-    Included functionality (in order):
-
-    - Sherical coordinates mapping functions
-    - Octahedral mapping functions
-    - Sampling functions (disk, sphere, triangle etc.)
-    - Misc stuff (matrix inversion, bounding cones etc.)
-
-*/
+/**
+ * This file contains various math utility helper functions.
+ *
+ * Included functionality (in order):
+ *
+ * - Sherical coordinates mapping functions
+ * - Octahedral mapping functions
+ * - Sampling functions (disk, sphere, triangle etc.)
+ * - Misc stuff (matrix inversion, bounding cones etc.)
+ *
+ */
 
 // Include math constants (M_PI etc.). These are for use in this file only,
 // as macro definitions are not exported from a Slang module.
@@ -54,12 +55,13 @@
 
 ******************************************************************************/
 
-/** Converts Cartesian coordinates to spherical coordinates (unsigned normalized).
-    'theta' is the polar angle (inclination) between the +z axis and the vector from origin to p, normalized to [0,1].
-    'phi' is the azimuthal angle from the +x axis in the xy-plane, normalized to [0,1].
-    \param[in] p Cartesian coordinates (x,y,z).
-    \return Spherical coordinates (theta,phi).
-*/
+/**
+ * Converts Cartesian coordinates to spherical coordinates (unsigned normalized).
+ * 'theta' is the polar angle (inclination) between the +z axis and the vector from origin to p, normalized to [0,1].
+ * 'phi' is the azimuthal angle from the +x axis in the xy-plane, normalized to [0,1].
+ * @param[in] p Cartesian coordinates (x,y,z).
+ * @return Spherical coordinates (theta,phi).
+ */
 float2 cartesian_to_spherical_unorm(float3 p)
 {
     p = normalize(p);
@@ -69,12 +71,13 @@ float2 cartesian_to_spherical_unorm(float3 p)
     return sph;
 }
 
-/** Converts Cartesian coordinates to spherical coordinates (radians).
-    'theta' is the polar angle (inclination) between the +z axis and the vector from origin to p, in the range [0,pi].
-    'phi' is the azimuthal angle from the +x axis in the xy-plane, in the range [0,2pi].
-    \param[in] p Cartesian coordinates (x,y,z).
-    \return Spherical coordinates (theta,phi).
-*/
+/**
+ * Converts Cartesian coordinates to spherical coordinates (radians).
+ * 'theta' is the polar angle (inclination) between the +z axis and the vector from origin to p, in the range [0,pi].
+ * 'phi' is the azimuthal angle from the +x axis in the xy-plane, in the range [0,2pi].
+ * @param[in] p Cartesian coordinates (x,y,z).
+ * @return Spherical coordinates (theta,phi).
+ */
 float2 cartesian_to_spherical_rad(float3 p)
 {
     p = normalize(p);
@@ -84,11 +87,27 @@ float2 cartesian_to_spherical_rad(float3 p)
     return sph;
 }
 
-/** Convert world space direction to (u,v) coord in latitude-longitude map (unsigned normalized).
-    The map is centered around the -z axis and wrapping around in clockwise order (left to right).
-    \param[in] dir World space direction (unnormalized).
-    \return Position in latitude-longitude map in [0,1] for each component.
-*/
+/**
+ * Converts spherical coordinates (radians) to Cartesian coordinates.
+ * Inverse of cartesian_to_spherical_rad.
+ * @param[in] sph Spherical coordinates (theta,phi).
+ * @return Cartesian coordinates (x,y,z).
+ */
+float3 spherical_to_cartesian_rad(float2 sph)
+{
+    float3 p;
+    p.x = -cos(sph.y - M_PI) * sin(sph.x);
+    p.y = -sin(sph.y - M_PI) * sin(sph.x);
+    p.z = cos(sph.x);
+    return p;
+}
+
+/**
+ * Convert world space direction to (u,v) coord in latitude-longitude map (unsigned normalized).
+ * The map is centered around the -z axis and wrapping around in clockwise order (left to right).
+ * @param[in] dir World space direction (unnormalized).
+ * @return Position in latitude-longitude map in [0,1] for each component.
+ */
 float2 world_to_latlong_map(float3 dir)
 {
     float3 p = normalize(dir);
@@ -98,15 +117,23 @@ float2 world_to_latlong_map(float3 dir)
     return uv;
 }
 
-float3 latlong_map_to_world(float2 uv)
+/**
+ * Convert a coordinate in latitude-longitude map (unsigned normalized) to a world space direction.
+ * The map is centered around the -z axis and wrapping around in clockwise order (left to right).
+ * @param[in] latlong Position in latitude-longitude map in [0,1] for each component.
+ * @return Normalized direction in world space.
+ */
+float3 latlong_map_to_world(float2 latlong)
 {
-    float3 p;
-    p.y = cos(uv.y * M_PI);
-    float phi = (uv.x - 0.5f) * M_2PI;
-    p.x = sin(phi);
-    p.z = -cos(phi);
-    return normalize(p);
+    float phi = M_PI * (2.f * saturate(latlong.x) - 1.f);
+    float theta = M_PI * saturate(latlong.y);
+    float sinTheta = sin(theta);
+    float cosTheta = cos(theta);
+    float sinPhi = sin(phi);
+    float cosPhi = cos(phi);
+    return float3(sinTheta * sinPhi, cosTheta, -sinTheta * cosPhi);
 }
+
 /******************************************************************************
 
     Octahedral mapping
@@ -122,18 +149,20 @@ float3 latlong_map_to_world(float2 uv)
 
 ******************************************************************************/
 
-/** Helper function to reflect the folds of the lower hemisphere
-    over the diagonals in the octahedral map.
-*/
+/**
+ * Helper function to reflect the folds of the lower hemisphere
+ * over the diagonals in the octahedral map.
+ */
 float2 oct_wrap(float2 v)
 {
-    return (1.f - abs(v.yx)) * (v.xy >= 0.f ? 1.f : -1.f);
+    return (1.f - abs(v.yx)) * select(v.xy >= 0.f, 1.f, -1.f);
 }
 
-/** Converts normalized direction to the octahedral map (non-equal area, signed normalized).
-    \param[in] n Normalized direction.
-    \return Position in octahedral map in [-1,1] for each component.
-*/
+/**
+ * Converts normalized direction to the octahedral map (non-equal area, signed normalized).
+ * @param[in] n Normalized direction.
+ * @return Position in octahedral map in [-1,1] for each component.
+ */
 float2 ndir_to_oct_snorm(float3 n)
 {
     // Project the sphere onto the octahedron (|x|+|y|+|z| = 1) and then onto the xy-plane.
@@ -142,19 +171,21 @@ float2 ndir_to_oct_snorm(float3 n)
     return p;
 }
 
-/** Converts normalized direction to the octahedral map (non-equal area, unsigned normalized).
-    \param[in] n Normalized direction.
-    \return Position in octahedral map in [0,1] for each component.
-*/
+/**
+ * Converts normalized direction to the octahedral map (non-equal area, unsigned normalized).
+ * @param[in] n Normalized direction.
+ * @return Position in octahedral map in [0,1] for each component.
+ */
 float2 ndir_to_oct_unorm(float3 n)
 {
     return ndir_to_oct_snorm(n) * 0.5f + 0.5f;
 }
 
-/** Converts point in the octahedral map to normalized direction (non-equal area, signed normalized).
-    \param[in] p Position in octahedral map in [-1,1] for each component.
-    \return Normalized direction.
-*/
+/**
+ * Converts point in the octahedral map to normalized direction (non-equal area, signed normalized).
+ * @param[in] p Position in octahedral map in [-1,1] for each component.
+ * @return Normalized direction.
+ */
 float3 oct_to_ndir_snorm(float2 p)
 {
     float3 n = float3(p.xy, 1.0 - abs(p.x) - abs(p.y));
@@ -162,19 +193,21 @@ float3 oct_to_ndir_snorm(float2 p)
     return normalize(n);
 }
 
-/** Converts point in the octahedral map to normalized direction (non-equal area, unsigned normalized).
-    \param[in] p Position in octahedral map in [0,1] for each component.
-    \return Normalized direction.
-*/
+/**
+ * Converts point in the octahedral map to normalized direction (non-equal area, unsigned normalized).
+ * @param[in] p Position in octahedral map in [0,1] for each component.
+ * @return Normalized direction.
+ */
 float3 oct_to_ndir_unorm(float2 p)
 {
     return oct_to_ndir_snorm(p * 2.f - 1.f);
 }
 
-/** Converts normalized direction to the octahedral map (equal-area, unsigned normalized).
-    \param[in] n Normalized direction.
-    \return Position in octahedral map in [0,1] for each component.
-*/
+/**
+ * Converts normalized direction to the octahedral map (equal-area, unsigned normalized).
+ * @param[in] n Normalized direction.
+ * @return Position in octahedral map in [0,1] for each component.
+ */
 float2 ndir_to_oct_equal_area_unorm(float3 n)
 {
     // Use atan2 to avoid explicit div-by-zero check in atan(y/x).
@@ -187,16 +220,18 @@ float2 ndir_to_oct_equal_area_unorm(float3 n)
     p.x = r - p.y;
 
     // Reflect p over the diagonals, and move to the correct quadrant.
-    if (n.z < 0.f) p = 1.f - p.yx;
+    if (n.z < 0.f)
+        p = 1.f - p.yx;
     p *= sign(n.xy);
 
     return p * 0.5f + 0.5f;
 }
 
-/** Converts point in the octahedral map to normalized direction (equal area, unsigned normalized).
-    \param[in] p Position in octahedral map in [0,1] for each component.
-    \return Normalized direction.
-*/
+/**
+ * Converts point in the octahedral map to normalized direction (equal area, unsigned normalized).
+ * @param[in] p Position in octahedral map in [0,1] for each component.
+ * @return Normalized direction.
+ */
 float3 oct_to_ndir_equal_area_unorm(float2 p)
 {
     p = p * 2.f - 1.f;
@@ -210,10 +245,10 @@ float3 oct_to_ndir_equal_area_unorm(float2 p)
     float phi = (r > 0.f) ? ((abs(p.y) - abs(p.x)) / r + 1.f) * M_PI_4 : 0.f;
 
     // Convert to Cartesian coordinates. Note that sign(x)=0 for x=0, but that's fine here.
-    float f = r * sqrt(2.f - r*r);
+    float f = r * sqrt(2.f - r * r);
     float x = f * sign(p.x) * cos(phi);
     float y = f * sign(p.y) * sin(phi);
-    float z = sign(d) * (1.f - r*r);
+    float z = sign(d) * (1.f - r * r);
 
     return float3(x, y, z);
 }
@@ -224,21 +259,11 @@ float3 oct_to_ndir_equal_area_unorm(float2 p)
 
 ******************************************************************************/
 
-// 0.5 for uniform sampling in disk, a higher centerWeight causes more samples to be around center
-float2 sample_disk(float2 u, float centerWeight)
-{
-    float2 p;
-    float r = pow(u.x, centerWeight);
-    float phi = M_2PI * u.y;
-    p.x = r * cos(phi);
-    p.y = r * sin(phi);
-    return p;
-}
-
-/** Uniform sampling of the unit disk using polar coordinates.
-    \param[in] u Uniform random number in [0,1)^2.
-    \return Sampled point on the unit disk.
-*/
+/**
+ * Uniform sampling of the unit disk using polar coordinates.
+ * @param[in] u Uniform random number in [0,1)^2.
+ * @return Sampled point on the unit disk.
+ */
 float2 sample_disk(float2 u)
 {
     float2 p;
@@ -249,35 +274,25 @@ float2 sample_disk(float2 u)
     return p;
 }
 
-float2 sample_concentric_disk(float2 u, float r1)
-{
-    float2 p;
-    float r = sqrt((1-r1*r1) * u.x + r1*r1);
-    float phi = M_2PI * u.y;
-    p.x = r * cos(phi);
-    p.y = r * sin(phi);
-    return p;
-}
-
-
-
-/** Uniform sampling of direction within a cone
-    \param[in] u Uniform random number in [0,1)^2.
-    \param[in] cosTheta Cosine of the cone half-angle
-    \return Sampled direction within the cone with (0,0,1) axis
-*/
+/**
+ * Uniform sampling of direction within a cone
+ * @param[in] u Uniform random number in [0,1)^2.
+ * @param[in] cosTheta Cosine of the cone half-angle
+ * @return Sampled direction within the cone with (0,0,1) axis
+ */
 float3 sample_cone(float2 u, float cosTheta)
 {
     float z = u.x * (1.f - cosTheta) + cosTheta;
-    float r = sqrt(1.f - z*z);
+    float r = sqrt(1.f - z * z);
     float phi = M_2PI * u.y;
     return float3(r * cos(phi), r * sin(phi), z);
 }
 
-/** Uniform sampling of the unit sphere using spherical coordinates.
-    \param[in] u Uniform random numbers in [0,1)^2.
-    \return Sampled point on the unit sphere.
-*/
+/**
+ * Uniform sampling of the unit sphere using spherical coordinates.
+ * @param[in] u Uniform random numbers in [0,1)^2.
+ * @return Sampled point on the unit sphere.
+ */
 float3 sample_sphere(float2 u)
 {
     float phi = M_2PI * u.y;
@@ -286,21 +301,35 @@ float3 sample_sphere(float2 u)
     return float3(sinTheta * cos(phi), sinTheta * sin(phi), cosTheta);
 }
 
-/** Uniform sampling of the unit disk using Shirley's concentric mapping.
-    \param[in] u Uniform random numbers in [0,1)^2.
-    \return Sampled point on the unit disk.
-*/
+/**
+ * Uniform sampling of the unit hemisphere using sphere sampling.
+ * @param[in] u Uniform random numbers in [0,1)^2.
+ * @return Sampled point on the unit hemisphere.
+ */
+float3 sample_hemisphere(float2 u)
+{
+    float3 w = sample_sphere(u);
+    w.z = abs(w.z);
+    return w;
+}
+
+/**
+ * Uniform sampling of the unit disk using Shirley's concentric mapping.
+ * @param[in] u Uniform random numbers in [0,1)^2.
+ * @return Sampled point on the unit disk.
+ */
 float2 sample_disk_concentric(float2 u)
 {
     u = 2.f * u - 1.f;
-    if (u.x == 0.f && u.y == 0.f) return u;
+    if (u.x == 0.f && u.y == 0.f)
+        return u;
     float phi, r;
     if (abs(u.x) > abs(u.y))
     {
         r = u.x;
         phi = (u.y / u.x) * M_PI_4;
-    } 
-    else 
+    }
+    else
     {
         r = u.y;
         phi = M_PI_2 - (u.x / u.y) * M_PI_4;
@@ -308,11 +337,12 @@ float2 sample_disk_concentric(float2 u)
     return r * float2(cos(phi), sin(phi));
 }
 
-/** Cosine-weighted sampling of the hemisphere using Shirley's concentric mapping.
-    \param[in] u Uniform random numbers in [0,1)^2.
-    \param[out] pdf Probability density of the sampled direction (= cos(theta)/pi).
-    \return Sampled direction in the local frame (+z axis up).
-*/
+/**
+ * Cosine-weighted sampling of the hemisphere using Shirley's concentric mapping.
+ * @param[in] u Uniform random numbers in [0,1)^2.
+ * @param[out] pdf Probability density of the sampled direction (= cos(theta)/pi).
+ * @return Sampled direction in the local frame (+z axis up).
+ */
 float3 sample_cosine_hemisphere_concentric(float2 u, out float pdf)
 {
     float2 d = sample_disk_concentric(u);
@@ -321,11 +351,12 @@ float3 sample_cosine_hemisphere_concentric(float2 u, out float pdf)
     return float3(d, z);
 }
 
-/** Cosine-weighted sampling of the hemisphere using a polar coordinates.
-    \param[in] u Uniform random numbers in [0,1)^2.
-    \param[out] pdf Probability density of the sampled direction (= cos(theta)/pi).
-    \return Sampled direction in the local frame (+z axis up).
-*/
+/**
+ * Cosine-weighted sampling of the hemisphere using a polar coordinates.
+ * @param[in] u Uniform random numbers in [0,1)^2.
+ * @param[out] pdf Probability density of the sampled direction (= cos(theta)/pi).
+ * @return Sampled direction in the local frame (+z axis up).
+ */
 float3 sample_cosine_hemisphere_polar(float2 u, out float pdf)
 {
     float3 p;
@@ -338,26 +369,72 @@ float3 sample_cosine_hemisphere_polar(float2 u, out float pdf)
     return p;
 }
 
-/** Cosine-weighted sampling of the hemisphere using a polar coordinates.
-    This overload does not compute the pdf for the generated sample.
-    \param[in] u Uniform random numbers in [0,1)^2.
-    \return Sampled direction in the local frame (+z axis up).
-*/
+/**
+ * Cosine-weighted sampling of the hemisphere using a polar coordinates.
+ * This overload does not compute the pdf for the generated sample.
+ * @param[in] u Uniform random numbers in [0,1)^2.
+ * @return Sampled direction in the local frame (+z axis up).
+ */
 float3 sample_cosine_hemisphere_polar(float2 u)
 {
     float pdf;
     return sample_cosine_hemisphere_polar(u, pdf);
 }
 
-/** Uniform sampling of a triangle.
-    \param[in] u Uniform random numbers in [0,1)^2.
-    \return Barycentric coordinates (1-u-v,u,v) of the sampled point.
-*/
+/**
+ * Uniform sampling of a triangle.
+ * @param[in] u Uniform random numbers in [0,1)^2.
+ * @return Barycentric coordinates (1-u-v,u,v) of the sampled point.
+ */
 float3 sample_triangle(float2 u)
 {
     float su = sqrt(u.x);
     float2 b = float2(1.f - su, u.y * su);
     return float3(1.f - b.x - b.y, b.x, b.y);
+}
+
+/**
+ * Sample from the von-Mises Fisher distribution.
+ * @param[in] u Uniform random numbers in [0,1)^2.
+ * @param[in] kappa VMF concentration parameter.
+ * @return Sampled direction in the local frame (+z axis up).
+ */
+[PreferRecompute]
+float3 sampleVonMisesFisher(float2 u, float kappa)
+{
+    float sy = max(1.f - u.y, 1e-6f);
+    float phi = M_2PI * u.x;
+    float cosTheta = 1.f + log(exp(-2.f * kappa) * (1.f - sy) + sy) / kappa;
+    float sinTheta = sqrt(1.f - cosTheta * cosTheta);
+    float3 d = float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+    return d;
+}
+
+/******************************************************************************
+
+    Motion vectors
+
+******************************************************************************/
+
+/**
+ * Calculate screen-space motion vector.
+ * @param[in] pixelCrd Sample in current frame expressed in pixel coordinates with origin in the top-left corner.
+ * @param[in] prevPosH Sample in previous frame expressed in homogeneous clip space coordinates. Note that the definition differs between
+ * D3D12 and Vulkan.
+ * @param[in] renderTargetDim Render target dimension in pixels.
+ * @return Motion vector pointing from current to previous position expressed in sceen space [0,1] with origin in the top-left corner.
+ */
+float2 calcMotionVector(float2 pixelCrd, float4 prevPosH, float2 renderTargetDim)
+{
+    float2 prevCrd = prevPosH.xy / prevPosH.w;
+#ifdef FALCOR_FLIP_Y
+    prevCrd *= float2(0.5, 0.5);
+#else
+    prevCrd *= float2(0.5, -0.5);
+#endif
+    prevCrd += 0.5f;
+    float2 normalizedCrd = pixelCrd / renderTargetDim;
+    return prevCrd - normalizedCrd;
 }
 
 /******************************************************************************
@@ -366,8 +443,35 @@ float3 sample_triangle(float2 u)
 
 ******************************************************************************/
 
-/** Inverts a 3x3 matrix.
-*/
+/**
+ * Inverts a 2x2 matrix.
+ */
+float2x2 inverse(float2x2 M)
+{
+    float2x2 inv;
+    float invdet = 1.0f / determinant(M);
+    inv[0][0] = M[1][1] * invdet;
+    inv[1][1] = M[0][0] * invdet;
+    inv[0][1] = -M[0][1] * invdet;
+    inv[1][0] = -M[1][0] * invdet;
+    return inv;
+}
+
+/**
+ * Inverts a 2x3 matrix.
+ */
+float2x3 inverse(float2x3 M)
+{
+    float2x2 N = float2x2(M._m00, M._m01, M._m10, M._m11);
+    float2x2 Ni = inverse(N);
+    float2 t = -mul(Ni, float2(M._m02, M._m12));
+    float2x3 Mi = float2x3(Ni._m00, Ni._m01, t.x, Ni._m10, Ni._m11, t.y);
+    return Mi;
+}
+
+/**
+ * Inverts a 3x3 matrix.
+ */
 float3x3 inverse(float3x3 M)
 {
     float3x3 inv;
@@ -384,9 +488,55 @@ float3x3 inverse(float3x3 M)
     return inv;
 }
 
-/** Gernerate a vector that is orthogonal to the input vector.
-    This can be used to invent a tangent frame for meshes that don't have real tangents/bitangents.
-*/
+/**
+ * Inverts a 4x4 matrix.
+ */
+float4x4 inverse(float4x4 m)
+{
+    float n11 = m[0][0], n12 = m[1][0], n13 = m[2][0], n14 = m[3][0];
+    float n21 = m[0][1], n22 = m[1][1], n23 = m[2][1], n24 = m[3][1];
+    float n31 = m[0][2], n32 = m[1][2], n33 = m[2][2], n34 = m[3][2];
+    float n41 = m[0][3], n42 = m[1][3], n43 = m[2][3], n44 = m[3][3];
+
+    float t11 = n23 * n34 * n42 - n24 * n33 * n42 + n24 * n32 * n43 - n22 * n34 * n43 - n23 * n32 * n44 + n22 * n33 * n44;
+    float t12 = n14 * n33 * n42 - n13 * n34 * n42 - n14 * n32 * n43 + n12 * n34 * n43 + n13 * n32 * n44 - n12 * n33 * n44;
+    float t13 = n13 * n24 * n42 - n14 * n23 * n42 + n14 * n22 * n43 - n12 * n24 * n43 - n13 * n22 * n44 + n12 * n23 * n44;
+    float t14 = n14 * n23 * n32 - n13 * n24 * n32 - n14 * n22 * n33 + n12 * n24 * n33 + n13 * n22 * n34 - n12 * n23 * n34;
+
+    float det = n11 * t11 + n21 * t12 + n31 * t13 + n41 * t14;
+    float idet = 1.0f / det;
+
+    float4x4 ret;
+
+    ret[0][0] = t11 * idet;
+    ret[0][1] = (n24 * n33 * n41 - n23 * n34 * n41 - n24 * n31 * n43 + n21 * n34 * n43 + n23 * n31 * n44 - n21 * n33 * n44) * idet;
+    ret[0][2] = (n22 * n34 * n41 - n24 * n32 * n41 + n24 * n31 * n42 - n21 * n34 * n42 - n22 * n31 * n44 + n21 * n32 * n44) * idet;
+    ret[0][3] = (n23 * n32 * n41 - n22 * n33 * n41 - n23 * n31 * n42 + n21 * n33 * n42 + n22 * n31 * n43 - n21 * n32 * n43) * idet;
+
+    ret[1][0] = t12 * idet;
+    ret[1][1] = (n13 * n34 * n41 - n14 * n33 * n41 + n14 * n31 * n43 - n11 * n34 * n43 - n13 * n31 * n44 + n11 * n33 * n44) * idet;
+    ret[1][2] = (n14 * n32 * n41 - n12 * n34 * n41 - n14 * n31 * n42 + n11 * n34 * n42 + n12 * n31 * n44 - n11 * n32 * n44) * idet;
+    ret[1][3] = (n12 * n33 * n41 - n13 * n32 * n41 + n13 * n31 * n42 - n11 * n33 * n42 - n12 * n31 * n43 + n11 * n32 * n43) * idet;
+
+    ret[2][0] = t13 * idet;
+    ret[2][1] = (n14 * n23 * n41 - n13 * n24 * n41 - n14 * n21 * n43 + n11 * n24 * n43 + n13 * n21 * n44 - n11 * n23 * n44) * idet;
+    ret[2][2] = (n12 * n24 * n41 - n14 * n22 * n41 + n14 * n21 * n42 - n11 * n24 * n42 - n12 * n21 * n44 + n11 * n22 * n44) * idet;
+    ret[2][3] = (n13 * n22 * n41 - n12 * n23 * n41 - n13 * n21 * n42 + n11 * n23 * n42 + n12 * n21 * n43 - n11 * n22 * n43) * idet;
+
+    ret[3][0] = t14 * idet;
+    ret[3][1] = (n13 * n24 * n31 - n14 * n23 * n31 + n14 * n21 * n33 - n11 * n24 * n33 - n13 * n21 * n34 + n11 * n23 * n34) * idet;
+    ret[3][2] = (n14 * n22 * n31 - n12 * n24 * n31 - n14 * n21 * n32 + n11 * n24 * n32 + n12 * n21 * n34 - n11 * n22 * n34) * idet;
+    ret[3][3] = (n12 * n23 * n31 - n13 * n22 * n31 + n13 * n21 * n32 - n11 * n23 * n32 - n12 * n21 * n33 + n11 * n22 * n33) * idet;
+
+    return ret;
+}
+
+/**
+ * Generate a vector that is orthogonal to the input vector.
+ * This can be used to invent a tangent frame for meshes that don't have real tangents/bitangents.
+ * @param[in] u Unit vector.
+ * @return v Unit vector that is orthogonal to u.
+ */
 float3 perp_stark(float3 u)
 {
     // TODO: Validate this and look at numerical precision etc. Are there better ways to do it?
@@ -396,222 +546,226 @@ float3 perp_stark(float3 u)
     uint uzy = (a.y - a.z) < 0 ? 1 : 0;
     uint xm = uyx & uzx;
     uint ym = (1 ^ xm) & uzy;
-    uint zm = 1 ^ (xm | ym);  // 1 ^ (xm & ym)
-    float3 v = cross(u, float3(xm, ym, zm));
+    uint zm = 1 ^ (xm | ym); // 1 ^ (xm & ym)
+    float3 v = normalize(cross(u, float3(xm, ym, zm)));
     return v;
 }
 
-/** Computes the cosine of the half angle of the minimum bounding cone that encloses an AABB, as seen from a particular viewpoint.
-    We use an optimized algorithm that exploits the symmetry around the plane perpendicular to the central direction.
-
-    \param[in] origin Viewpoint origin.
-    \param[in] aabbMin minimum corner of the AABB.
-    \param[in] aabbMax maximum corner of the AABB.
-    \param[out] coneDir normalized vector defining the cone's axis.
-    \param[out] sinTheta Sine of the angle from the central direction to the cone edge. If the AABB can't be bounded we return 0.
-    \param[out] cosTheta Cosine of the angle from the central direction to the cone edge. If the AABB can't be bounded we return -1 (max cone).
-*/
-void boundBoxSubtendedConeAngleCenter(const float3 origin, const float3 aabbMin, const float3 aabbMax,
-                                      out float3 coneDir, out float sinTheta, out float cosTheta)
+/**
+ * @brief Generates full OrthoNormalBasis based on the normal, without branches or sqrt.
+ *
+ * From https://graphics.pixar.com/library/OrthonormalB/paper.pdf
+ */
+void branchlessONB(const float3 n, out float3 b1, out float3 b2)
 {
-    const float3 center = (aabbMax + aabbMin) * 0.5f;
-    const float3 extent = (aabbMax - aabbMin) * 0.5f;
-    const float3 dir = center - origin;         // dir = Central cone direction (unnormalized)
-    const float extSqr = dot(extent, extent);   // extSqr = squared maximum extent
-    const float distSqr = dot(dir, dir);        // distSqr = squared distance to AABB center
-
-    coneDir = normalize(dir);
-
-    // AABB has eight corners, located at p = center +- e[i] for i=1..4.
-    // We use the absolute value of the dot product below to avoid having to test all eight.
-    float3 e[4];
-    e[0] = float3(extent.x, extent.y, extent.z);
-    e[1] = float3(extent.x, extent.y, -extent.z);
-    e[2] = float3(extent.x, -extent.y, extent.z);
-    e[3] = float3(extent.x, -extent.y, -extent.z);
-
-    cosTheta = 1.f;
-    sinTheta = 0.f;
-
-    // Workaround slang/fxc bug (https://github.com/NVIDIAGameWorks/Falcor/issues/164). This can go away when we always use dxc.
-#if 0
-    [unroll]
-    for (uint i = 0; i < 4; i++)
-#else
-    $for(i in Range(0,4))
-#endif
-    {
-        // Compute distance x from origin to corner projected onto central axis.
-        // Note that x is scaled by |dir| since we use unnormalized vectors.
-        float d = abs(dot(dir, e[i]));
-        float x = distSqr - d;
-
-        // Check if distance is negative, in which case the AABB can't be bounded by a cone and we return a cone that covers the whole sphere (theta = pi).
-        if (x < 1e-5)
-        {
-            cosTheta = -1.f;
-            sinTheta = 0.f;
-            return;                         // TODO: Look at numerical precision.
-        }
-
-        // Compute distance y from the corner to the projection on the central axis (also scaled by |dir|).
-        float y = sqrt(max(0, distSqr * extSqr - d * d));   // TODO: Look at numerical precision. Clamp for now just to be extra safe.
-
-        // Compute hypotenuse of the triangle.
-        float z = sqrt(x * x + y * y);
-
-        // The cosine of the cone angle cos(theta) = x / z. Track the minimum cosTheta, since we want
-        // cos(theta) for the maximum theta.
-        cosTheta = min(cosTheta, x / z);
-        // And along similar lines for sin(theta).
-        sinTheta = max(sinTheta, y / z);
-    }
+    // can't use just `sign` because we need 0 to go into -1/+1, but not 0
+    float sign = (n.z >= 0 ? 1 : -1);
+    const float a = -1.0f / (sign + n.z);
+    const float b = n.x * n.y * a;
+    b1 = float3(1.0f + sign * n.x * n.x * a, sign * b, -sign * n.x);
+    b2 = float3(b, sign + n.y * n.y * a, -n.y);
 }
 
-/** Computes the solid angle subtended by an AABB by first computing the
-    average vector to all of its vertices and then finding the maximum
-    angle between that and each of the vectors to its vertices.
+// clang-format off
+[Differentiable] float sqr(float v) { return v * v; }
+[Differentiable] float2 sqr(float2 v) { return v * v; }
+[Differentiable] float3 sqr(float3 v) { return v * v; }
+[Differentiable] float4 sqr(float4 v) { return v * v; }
+// clang-format on
 
-    \param[in] origin point from which the solid angle is being comupted.
-    \param[in] aabbMin minimum corner of the AABB.
-    \param[in] aabbMax maximum corner of the AABB.
-    \param[out] coneDir central cone direction (normalized) or null vector if origin is inside the AABB.
-    \param[out] sinTheta sine of the angle.
-    \param[out] cosTheta cosine of the angle.
-*/
-void boundBoxSubtendedConeAngleAverage(float3 origin, float3 aabbMin, float3 aabbMax,
-                                       out float3 coneDir, out float sinTheta, out float cosTheta)
+/**
+ * Error function.
+ */
+float erf(float x)
 {
-    if (all(origin >= aabbMin && origin <= aabbMax))
-    {
-        // |origin| is inside the AABB.
-        coneDir = float3(0.f, 0.f, 0.f);
-        sinTheta = 0.f;
-        cosTheta = -1.f;
-        return;
-    }
-
-    // Compute the average vector to each of the bounding box corners.
-    float3 dirSum = float3(0.f, 0.f, 0.f);
-    // Workaround slang/fxc bug (https://github.com/NVIDIAGameWorks/Falcor/issues/164). This can go away when we always use dxc.
-#if 0
-    [unroll]
-    for (int i = 0; i < 8; ++i)
-#else
-    $for(i in Range(0,8))
-#endif
-    {
-        const float3 corner = float3((i & 1) ? aabbMin.x : aabbMax.x,
-                                     (i & 2) ? aabbMin.y : aabbMax.y,
-                                     (i & 4) ? aabbMin.z : aabbMax.z);
-        dirSum += normalize(corner - origin);
-    }
-    coneDir = normalize(dirSum);
-
-    // Compute the cosine of the maximum angle between a corner and the
-    // average vector.
-    cosTheta = 1.f;
-#if 0
-    [unroll]
-    for (int i = 0; i < 8; ++i)
-#else
-    $for(i in Range(0,8))
-#endif
-    {
-        const float3 corner = float3((i & 1) ? aabbMin.x : aabbMax.x,
-                                     (i & 2) ? aabbMin.y : aabbMax.y,
-                                     (i & 4) ? aabbMin.z : aabbMax.z);
-        cosTheta = min(cosTheta, dot(normalize(corner - origin), coneDir));
-    }
-    sinTheta = sqrt(max(0.f, 1.f - cosTheta * cosTheta));
+    // From "Numerical Recipes in C, The Art of Scientific Computing"
+    // (Second Edition) by Press et al. 1992. Page 221.
+    // Maxiumum error: 1.2 x 10^-7.
+    float t = 1.0f / (1.0f + 0.5f * abs(x));
+    float p = 0.17087277f;
+    p = -0.82215223f + p * t;
+    p = 1.48851587f + p * t;
+    p = -1.13520398f + p * t;
+    p = 0.27886807f + p * t;
+    p = -0.18628806f + p * t;
+    p = 0.09678418f + p * t;
+    p = 0.37409196f + p * t;
+    p = 1.00002368f + p * t;
+    p = -1.26551223f + p * t;
+    float tau = t * exp(-x * x + p);
+    return x >= 0.0f ? 1.0f - tau : tau - 1.0f;
 }
 
-/** Computes the sine and cosine of the angle of the cone that encompasses
-    a sphere of given radius and center subtend as seen from a point at the origin.
-
-    \param[in] center Sphere's center.
-    \param[in] sqrRadius Square of sphere's radius.
-    \param[out] sinTheta Sine of the angle between a vector from the origin to |center| and a
-                vector from the origin that is tangent to the sphere.
-    \param[out] cosTheta Cosine of that angle.
-*/
-void boundSphereSubtendedConeAngle(float3 center, float sqrRadius, out float sinTheta, out float cosTheta)
+/**
+ * Inverse error function.
+ */
+float erfinv(float x)
 {
-    // Is the point inside the bounding sphere?
-    float centerDistance2 = dot(center, center);
-    if (centerDistance2 < sqrRadius)
+    // From "Approximating the erfinv function" by Mike Giles 2012.
+    // Maximum error: 7 x 10^-7.
+    if (x <= -1.0f)
     {
-        // We're inside. Return the full cone.
-        sinTheta = 0.f;
-        cosTheta = -1.f;
+        return -1.0f / 0.0f;
+    }
+    else if (x >= 1.0f)
+    {
+        return 1.0f / 0.0f;
+    }
+
+    float w = -log((1.0f - x) * (1.0f + x));
+    float p;
+    if (w < 5.0f)
+    {
+        w = w - 2.5f;
+        p = 2.81022636e-08f;
+        p = 3.43273939e-07f + p * w;
+        p = -3.5233877e-06f + p * w;
+        p = -4.39150654e-06f + p * w;
+        p = 0.00021858087f + p * w;
+        p = -0.00125372503f + p * w;
+        p = -0.00417768164f + p * w;
+        p = 0.246640727f + p * w;
+        p = 1.50140941f + p * w;
     }
     else
     {
-        // Compute the sine and then the cosine of the spread angle of a
-        // cone that bounds the sphere as seen from |center|.
-        float sin2Theta = sqrRadius / centerDistance2;
-        cosTheta = sqrt(1.f - sin2Theta);
-        sinTheta = sqrt(sin2Theta);
+        w = sqrt(w) - 3.0f;
+        p = -0.000200214257f;
+        p = 0.000100950558f + p * w;
+        p = 0.00134934322f + p * w;
+        p = -0.00367342844f + p * w;
+        p = 0.00573950773f + p * w;
+        p = -0.0076224613f + p * w;
+        p = 0.00943887047f + p * w;
+        p = 1.00167406f + p * w;
+        p = 2.83297682f + p * w;
     }
+    return p * x;
 }
 
-/** Computes the squared minimum distance between a point and a triangle.
-    This function is not sensitive to the handedness of the coordinate system.
-    \param[in] vertices Positions of the three vertices.
-    \param[in] p Coordinates of the point.
-    \return Squared minimum distance between p and the triangle.
-*/
-float computeSquaredMinDistanceToTriangle(const float3 vertices[3], const float3 p)
+/**
+ * Logarithm of the Gamma function.
+ */
+float lgamma(float x_)
 {
-    // Project p onto the plane of the triangle (the result is independent of triangle winding).
-    const float3 n = normalize(cross(vertices[1] - vertices[0], vertices[2] - vertices[0]));
-    const float projDistance = dot(n, (p - vertices[0]));
-    const float3 pProj = p - projDistance * n;
-
-    // Edge tests to compute signed distance to each edge.
-    // Positive result means the projected point is "inside" the edge.
-    // With flipped winding, the edges are flipped but n is also flipped so it still works.
-    const float3 edges[3] = {
-        normalize(vertices[1] - vertices[0]),
-        normalize(vertices[2] - vertices[1]),
-        normalize(vertices[0] - vertices[2])
+    // Lanczos approximation from
+    // "Numerical Recipes in C, The Art of Scientific Computing"
+    // (Second Edition) by Press et al. 1992. Page 214.
+    // Maxiumum error: 2 x 10^-10.
+    const float g = 5.0;
+    const float coeffs[7] = {
+        1.000000000190015,
+        76.18009172947146,
+        -86.50532032941677,
+        24.01409824083091,
+        -1.231739572450155,
+        0.1208650973866179e-2,
+        -0.5395239384953e-5,
     };
-    float sqrPlanarDistance = FLT_MAX;
-    uint insideMask = 0u;
-    [unroll]
-    for (uint i = 0u; i < 3u; ++i)
-    {
-        const float3 edgeN = cross(n, edges[i]);
-        const float edgeProjDistance = dot(edgeN, pProj - vertices[i]);
-        if (edgeProjDistance >= 0.0f)
-        {
-            insideMask |= 1u << i;
-        }
-        else
-        {
-            const float3 vec = pProj - vertices[i];
-            sqrPlanarDistance = min(edgeProjDistance * edgeProjDistance, sqrPlanarDistance);
-        }
-    }
-    if (insideMask == 0x7)
-    {
-        sqrPlanarDistance = 0.0f;
-    }
 
-    // If only one edge is considering the point as inside, then the projected point
-    // is closest to a triangle corner (the vertex opposite of that edge).
-    else if (insideMask == 1u << 0u)
-    {
-        sqrPlanarDistance = dot(pProj - vertices[2], pProj - vertices[2]);
-    }
-    else if (insideMask == 1u << 1u)
-    {
-        sqrPlanarDistance = dot(pProj - vertices[0], pProj - vertices[0]);
-    }
-    else if (insideMask == 1u << 2u)
-    {
-        sqrPlanarDistance = dot(pProj - vertices[1], pProj - vertices[1]);
-    }
+    bool reflect = x_ < 0.5f;
+    float x = reflect ? -x_ : x_ - 1.0f;
+    float base = x + g + 0.5f;
 
-    return projDistance * projDistance + sqrPlanarDistance;
+    float s = 0.0f;
+    for (int i = 6; i >= 1; --i)
+    {
+        s += coeffs[i] / (x + (float)i);
+    }
+    s += coeffs[0];
+
+    float res = ((log(sqrt(2 * M_PI)) + log(s)) - base) + log(base) * (x + 0.5f);
+    if (reflect)
+    {
+        // Apply the Gamma reflection formula (in log-space).
+        res = log(abs(M_PI / sin(M_PI * x_))) - res;
+    }
+    return res;
+}
+
+/**
+ * Gamma function.
+ */
+float gamma(float x)
+{
+    return exp(lgamma(x));
+}
+
+/**
+ * Beta function.
+ */
+float beta(float x, float y)
+{
+    return gamma(x) * gamma(y) / gamma(x + y);
+}
+
+/**
+ * Given two vectors, will orthonormalized them, preserving v1 and v2.
+ * Vector v1 must be already normalized, v2 will be renormalized as part of the adjustment.
+ * Vector v2 is assumed to be non-zero and already somewhat orthogonal to v1, as this code does not handle v2=0 or v2=v1
+ *
+ * @param[in] v1 A normalized vector to orthogonalize v2 to.
+ * @param[in,out] v2 Vector to be adjusted to be orthonormal to v2.
+ */
+void orthogonalizeVectors(const float3 v1, inout float3 v2)
+{
+    v2 = normalize(v2 - dot(v1, v2) * v1);
+}
+
+/**
+ * Rotate a 3D vector counterclockwise around the X-axis.
+ * The rotation angle is positive for a rotation that is counterclockwise when looking along the x-axis towards the origin.
+ * @param[in] v Original vector.
+ * @param[in] angle Angle in radians.
+ * @return Transformed vector.
+ */
+[BackwardDifferentiable]
+float3 rotate_x(const float3 v, const float angle)
+{
+    float c, s;
+    sincos(angle, s, c);
+    return float3(v.x, v.y * c - v.z * s, v.y * s + v.z * c);
+}
+
+/**
+ * Rotate a 3D vector counterclockwise around the Y-axis.
+ * The rotation angle is positive for a rotation that is counterclockwise when looking along the y-axis towards the origin.
+ * @param[in] v Original vector.
+ * @param[in] angle Angle in radians.
+ * @return Transformed vector.
+ */
+[BackwardDifferentiable]
+float3 rotate_y(const float3 v, const float angle)
+{
+    float c, s;
+    sincos(angle, s, c);
+    return float3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c);
+}
+
+/**
+ * Rotate a 3D vector counterclockwise around the Z-axis.
+ * The rotation angle is positive for a rotation that is counterclockwise when looking along the z-axis towards the origin.
+ * @param[in] v Original vector.
+ * @param[in] angle Angle in radians.
+ * @return Transformed vector.
+ */
+[BackwardDifferentiable]
+float3 rotate_z(const float3 v, const float angle)
+{
+    float c, s;
+    sincos(angle, s, c);
+    return float3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+}
+
+/**
+ * Normalize a 3D vector, but return 0 if the vector is zero.
+ * @param[in] v Original vector.
+ * @return Normalized vector, or 0 if the vector is zero.
+ */
+[Differentiable]
+[PreferRecompute]
+float3 normalizeSafe(float3 v)
+{
+    float len = length(v);
+    return len > 0.f ? v / len : float3(0.f);
 }

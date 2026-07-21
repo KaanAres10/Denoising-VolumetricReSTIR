@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,48 +26,59 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
+#include "fwd.h"
+#include "Device.h"
+#include "Handles.h"
+#include "NativeHandle.h"
+#include "Core/Macros.h"
+#include "Core/Object.h"
 #include "Core/Program/ProgramVersion.h"
-#include "Core/API/RootSignature.h"
 
 namespace Falcor
 {
-    class dlldecl ComputeStateObject
+#if FALCOR_HAS_D3D12
+class D3D12RootSignature;
+#endif
+
+struct ComputeStateObjectDesc
+{
+    ref<const ProgramKernels> pProgramKernels;
+#if FALCOR_HAS_D3D12
+    ref<const D3D12RootSignature> pD3D12RootSignatureOverride;
+#endif
+
+    bool operator==(const ComputeStateObjectDesc& other) const
     {
-    public:
-        using SharedPtr = std::shared_ptr<ComputeStateObject>;
-        using SharedConstPtr = std::shared_ptr<const ComputeStateObject>;
-        using ApiHandle = ComputeStateHandle;
+        bool result = true;
+        result = result && (pProgramKernels == other.pProgramKernels);
+#if FALCOR_HAS_D3D12
+        result = result && (pD3D12RootSignatureOverride == other.pD3D12RootSignatureOverride);
+#endif
+        return result;
+    }
+};
 
-        class dlldecl Desc
-        {
-        public:
-            Desc& setRootSignature(RootSignature::SharedPtr pSignature) { mpRootSignature = pSignature; return *this; }
-            Desc& setProgramKernels(const ProgramKernels::SharedConstPtr& pProgram) { mpProgram = pProgram; return *this; }
-            const ProgramKernels::SharedConstPtr getProgramKernels() const { return mpProgram; }
-            ProgramVersion::SharedConstPtr getProgramVersion() const { return mpProgram->getProgramVersion(); }
-            bool operator==(const Desc& other) const;
-        private:
-            friend class ComputeStateObject;
-            ProgramKernels::SharedConstPtr mpProgram;
-            RootSignature::SharedPtr mpRootSignature;
-        };
+class FALCOR_API ComputeStateObject : public Object
+{
+    FALCOR_OBJECT(ComputeStateObject)
+public:
+    ComputeStateObject(ref<Device> pDevice, ComputeStateObjectDesc desc);
+    ~ComputeStateObject();
 
-        ~ComputeStateObject();
+    gfx::IPipelineState* getGfxPipelineState() const { return mGfxPipelineState; }
 
-        /** Create a compute state object.
-            \param[in] desc State object description.
-            \return New object, or throws an exception if creation failed.
-        */
-        static SharedPtr create(const Desc& desc);
+    /**
+     * Returns the native API handle:
+     * - D3D12: ID3D12PipelineState*
+     * - Vulkan: VkPipeline
+     */
+    NativeHandle getNativeHandle() const;
 
-        const ApiHandle& getApiHandle() { return mApiHandle; }
-        const Desc& getDesc() const { return mDesc; }
+    const ComputeStateObjectDesc& getDesc() const { return mDesc; }
 
-    private:
-        ComputeStateObject(const Desc& desc);
-        void apiInit();
-
-        Desc mDesc;
-        ApiHandle mApiHandle;
-    };
-}
+private:
+    ref<Device> mpDevice;
+    ComputeStateObjectDesc mDesc;
+    Slang::ComPtr<gfx::IPipelineState> mGfxPipelineState;
+};
+} // namespace Falcor

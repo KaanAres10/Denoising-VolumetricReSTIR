@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-22, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,15 +25,12 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
+#include "Falcor.h"
 #include "AppData.h"
-#define RAPIDJSON_HAS_STDSTRING 1
-#include "rapidjson/document.h"
-#include "rapidjson/istreamwrapper.h"
-#include "rapidjson/ostreamwrapper.h"
-#include "rapidjson/prettywriter.h"
-#include "rapidjson/error/en.h"
+#include <nlohmann/json.hpp>
 #include <fstream>
+
+using json = nlohmann::json;
 
 using namespace Falcor;
 
@@ -56,32 +53,35 @@ namespace Mogwai
         loadFromFile(mPath);
     }
 
-    void AppData::addRecentScript(const std::string& filename)
+    void AppData::addRecentScript(const std::filesystem::path& path)
     {
-        addRecentFile(mRecentScripts, filename);
+        addRecentPath(mRecentScripts, path);
     }
 
-    void AppData::addRecentScene(const std::string& filename)
+    void AppData::addRecentScene(const std::filesystem::path& path)
     {
-        addRecentFile(mRecentScenes, filename);
+        addRecentPath(mRecentScenes, path);
     }
 
-    void AppData::addRecentFile(std::vector<std::string>& recentFiles, const std::string& filename)
+    void AppData::addRecentPath(std::vector<std::filesystem::path>& paths, const std::filesystem::path& path)
     {
-        std::filesystem::path path = std::filesystem::absolute(filename);
         if (!std::filesystem::exists(path)) return;
-        std::string entry = canonicalizeFilename(path.string());
-        recentFiles.erase(std::remove(recentFiles.begin(), recentFiles.end(), entry), recentFiles.end());
-        recentFiles.insert(recentFiles.begin(), entry);
-        if (recentFiles.size() > kMaxRecentFiles) recentFiles.resize(kMaxRecentFiles);
+        std::filesystem::path fullPath = std::filesystem::canonical(path);
+        paths.erase(std::remove(paths.begin(), paths.end(), fullPath), paths.end());
+        paths.insert(paths.begin(), fullPath);
+        if (paths.size() > kMaxRecentFiles) paths.resize(kMaxRecentFiles);
         save();
     }
 
-    void AppData::removeNonExistingFiles(std::vector<std::string>& files)
+    void AppData::removeNonExistingPaths(std::vector<std::filesystem::path>& paths)
     {
-        files.erase(std::remove_if(files.begin(), files.end(), [](const std::string& filename) {
-            return !doesFileExist(filename);
-        }), files.end());
+        paths.erase(std::remove_if(paths.begin(), paths.end(), [](const auto& path) {
+            // Remove path if file does not exist.
+            if (!std::filesystem::exists(path)) return true;
+            auto canonicalPath = std::filesystem::canonical(path);
+            // Remove path if not in canonical form.
+            return path != canonicalPath;
+        }), paths.end());
     }
 
     void AppData::save()
@@ -91,61 +91,48 @@ namespace Mogwai
 
     void AppData::loadFromFile(const std::filesystem::path& path)
     {
-        rapidjson::Document document;
-
         std::ifstream ifs(path);
         if (!ifs.good()) return;
 
-        rapidjson::IStreamWrapper isw(ifs);
-        document.ParseStream(isw);
-
-        if (document.HasParseError())
+        auto readPathArray = [](const json& j)
         {
-            logWarning("Failed to parse Mogwai settings file " + path.string() + ": " + rapidjson::GetParseError_En(document.GetParseError()));
-            return;
-        }
-
-        auto readStringArray = [](const rapidjson::Value& value)
-        {
-            std::vector<std::string> strings;
-            if (value.IsArray())
-            {
-                for (const auto& item : value.GetArray())
-                {
-                    if (item.IsString()) strings.push_back(item.GetString());
-                }
-            }
-            return strings;
+            std::vector<std::string> strings = j.get<std::vector<std::string>>();
+            std::vector<std::filesystem::path> paths;
+            std::transform(strings.begin(), strings.end(), std::back_inserter(paths), [](const std::string& str) { return str; });
+            return paths;
         };
 
-        mRecentScripts = readStringArray(document[kRecentScripts]);
-        mRecentScenes = readStringArray(document[kRecentScenes]);
+        try
+        {
+            const json j = json::parse(ifs);
+            mRecentScripts = readPathArray(j[kRecentScripts]);
+            mRecentScenes = readPathArray(j[kRecentScenes]);
+        }
+        catch (const std::exception& e)
+        {
+            logWarning("Failed to parse Mogwai settings file '{}': {}", path, e.what());
+        }
 
-        removeNonExistingFiles(mRecentScripts);
-        removeNonExistingFiles(mRecentScenes);
+        removeNonExistingPaths(mRecentScripts);
+        removeNonExistingPaths(mRecentScenes);
     }
 
     void AppData::saveToFile(const std::filesystem::path& path)
     {
-        rapidjson::Document document;
-        document.SetObject();
-        auto& allocator = document.GetAllocator();
-
-        auto writeStringArray = [&allocator](const std::vector<std::string>& strings)
+        auto getPathArray = [](const std::vector<std::filesystem::path>& paths)
         {
-            rapidjson::Value value(rapidjson::kArrayType);
-            for (const auto& item : strings) value.PushBack(rapidjson::StringRef(item), allocator);
-            return value;
+            std::vector<std::string> strings;
+            std::transform(paths.begin(), paths.end(), std::back_inserter(strings), [](const std::filesystem::path& path) { return path.string(); });
+            return json(strings);
         };
 
-        document.AddMember(kRecentScripts, writeStringArray(mRecentScripts), allocator);
-        document.AddMember(kRecentScenes, writeStringArray(mRecentScenes), allocator);
+        json j = json::object();
+        j[kRecentScripts] = getPathArray(mRecentScripts);
+        j[kRecentScenes] = getPathArray(mRecentScenes);
 
         std::ofstream ofs(path);
         if (!ofs.good()) return;
 
-        rapidjson::OStreamWrapper osw(ofs);
-        rapidjson::PrettyWriter<rapidjson::OStreamWrapper> writer(osw);
-        document.Accept(writer);
+        ofs << j.dump(4);
     }
 }

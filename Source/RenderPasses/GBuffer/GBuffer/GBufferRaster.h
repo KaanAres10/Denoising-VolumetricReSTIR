@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,44 +27,48 @@
  **************************************************************************/
 #pragma once
 #include "GBuffer.h"
-#include "../RenderPasses/DepthPass/DepthPass.h"
+#include "RenderGraph/RenderGraph.h"
+#include "RenderGraph/RenderPass.h"
 
 using namespace Falcor;
 
-/** Raster G-buffer pass.
-    This pass renders a fixed set of G-buffer channels using rasterization.
-*/
+/**
+ * Raster G-buffer pass.
+ * This pass renders a fixed set of G-buffer channels using rasterization.
+ */
 class GBufferRaster : public GBuffer
 {
 public:
-    using SharedPtr = std::shared_ptr<GBufferRaster>;
+    FALCOR_PLUGIN_CLASS(GBufferRaster, "GBufferRaster", "Rasterized G-buffer generation pass.");
 
-    static SharedPtr create(RenderContext* pRenderContext = nullptr, const Dictionary& dict = {});
+    static ref<GBufferRaster> create(ref<Device> pDevice, const Properties& props) { return make_ref<GBufferRaster>(pDevice, props); }
+
+    GBufferRaster(ref<Device> pDevice, const Properties& props);
 
     RenderPassReflection reflect(const CompileData& compileData) override;
     void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
-    void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
-    std::string getDesc(void) override { return kDesc; }
-    virtual void compile(RenderContext* pContext, const CompileData& compileData) override;
+    void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
+    void onSceneUpdates(RenderContext* pRenderContext, IScene::UpdateFlags sceneUpdates) override;
+    virtual void compile(RenderContext* pRenderContext, const CompileData& compileData) override;
 
 private:
-    GBufferRaster(const Dictionary& dict);
-    void setCullMode(RasterizerState::CullMode mode) override;
+    void recreatePrograms();
 
     // Internal state
-    DepthPass::SharedPtr            mpDepthPrePass;
-    RenderGraph::SharedPtr          mpDepthPrePassGraph;
-    Fbo::SharedPtr                  mpFbo;
+    ref<Fbo> mpFbo;
+
+    struct
+    {
+        ref<GraphicsState> pState;
+        ref<Program> pProgram;
+        ref<ProgramVars> pVars;
+    } mDepthPass;
 
     // Rasterization resources
     struct
     {
-        RasterizerState::SharedPtr pRsState;
-        GraphicsState::SharedPtr pState;
-        GraphicsProgram::SharedPtr pProgram;
-        GraphicsVars::SharedPtr pVars;
-    } mRaster;
-
-    static const char* kDesc;
-    friend void getPasses(Falcor::RenderPassLibrary& lib);
+        ref<GraphicsState> pState;
+        ref<Program> pProgram;
+        ref<ProgramVars> pVars;
+    } mGBufferPass;
 };

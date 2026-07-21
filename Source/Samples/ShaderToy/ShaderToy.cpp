@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,9 +27,11 @@
  **************************************************************************/
 #include "ShaderToy.h"
 
-ShaderToy::~ShaderToy()
-{
-}
+FALCOR_EXPORT_D3D12_AGILITY_SDK
+
+ShaderToy::ShaderToy(const SampleAppConfig& config) : SampleApp(config) {}
+
+ShaderToy::~ShaderToy() {}
 
 void ShaderToy::onLoad(RenderContext* pRenderContext)
 {
@@ -48,75 +50,45 @@ void ShaderToy::onLoad(RenderContext* pRenderContext)
 
     // Texture sampler
     Sampler::Desc samplerDesc;
-    samplerDesc.setFilterMode(Sampler::Filter::Linear, Sampler::Filter::Linear, Sampler::Filter::Linear).setMaxAnisotropy(8);
-    mpLinearSampler = Sampler::create(samplerDesc);
+    samplerDesc.setFilterMode(TextureFilteringMode::Linear, TextureFilteringMode::Linear, TextureFilteringMode::Linear).setMaxAnisotropy(8);
+    mpLinearSampler = getDevice()->createSampler(samplerDesc);
 
     // Load shaders
-    mpMainPass = FullScreenPass::create("Samples/ShaderToy/Toy.ps.slang");
+    mpMainPass = FullScreenPass::create(getDevice(), "Samples/ShaderToy/Toy.ps.slang");
 }
 
-void ShaderToy::onFrameRender(RenderContext* pRenderContext, const Fbo::SharedPtr& pTargetFbo)
+void ShaderToy::onResize(uint32_t width, uint32_t height)
+{
+    mAspectRatio = (float(width) / float(height));
+}
+
+void ShaderToy::onFrameRender(RenderContext* pRenderContext, const ref<Fbo>& pTargetFbo)
 {
     // iResolution
     float width = (float)pTargetFbo->getWidth();
     float height = (float)pTargetFbo->getHeight();
-    mpMainPass["ToyCB"]["iResolution"] = float2(width, height);
-    mpMainPass["ToyCB"]["iGlobalTime"] = (float)gpFramework->getGlobalClock().getTime();
+    auto var = mpMainPass->getRootVar()["ToyCB"];
+    var["iResolution"] = float2(width, height);
+    var["iGlobalTime"] = (float)getGlobalClock().getTime();
 
     // run final pass
     mpMainPass->execute(pRenderContext, pTargetFbo);
 }
 
-void ShaderToy::onShutdown()
+int runMain(int argc, char** argv)
 {
-}
-
-bool ShaderToy::onKeyEvent(const KeyboardEvent& keyEvent)
-{
-    bool bHandled = false;
-    {
-        if(keyEvent.type == KeyboardEvent::Type::KeyPressed)
-        {
-            //switch(keyEvent.key)
-            //{
-            //default:
-            //    bHandled = false;
-            //}
-        }
-    }
-    return bHandled;
-}
-
-bool ShaderToy::onMouseEvent(const MouseEvent& mouseEvent)
-{
-    bool bHandled = false;
-    return bHandled;
-}
-
-void ShaderToy::onResizeSwapChain(uint32_t width, uint32_t height)
-{
-    mAspectRatio = (float(width) / float(height));
-}
-
-#ifdef _WIN32
-int WINAPI WinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPSTR lpCmdLine, _In_ int nShowCmd)
-#else
-int main(int argc, char** argv)
-#endif
-{
-    ShaderToy::UniquePtr pRenderer = std::make_unique<ShaderToy>();
-    SampleConfig config;
+    SampleAppConfig config;
     config.windowDesc.width = 1280;
     config.windowDesc.height = 720;
-    config.deviceDesc.enableVsync = true;
     config.windowDesc.resizableWindow = true;
+    config.windowDesc.enableVSync = true;
     config.windowDesc.title = "Falcor Shader Toy";
-#ifdef _WIN32
-    Sample::run(config, pRenderer);
-#else
-    config.argc = (uint32_t)argc;
-    config.argv = argv;
-    Sample::run(config, pRenderer);
-#endif
-    return 0;
+
+    ShaderToy shaderToy(config);
+    return shaderToy.run();
+}
+
+int main(int argc, char** argv)
+{
+    return catchAndReportAllExceptions([&]() { return runMain(argc, argv); });
 }

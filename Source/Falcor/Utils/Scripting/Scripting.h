@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,141 +26,155 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include "ScriptBindings.h"
-#include <functional>
-#include "Utils/StringUtils.h"
-#include "Utils/Scripting/Dictionary.h"
-
-using namespace pybind11::literals;
+#include "Core/Macros.h"
+#include "Core/Platform/OS.h"
+#include <pybind11/pybind11.h>
+#include <exception>
+#include <filesystem>
+#include <string>
+#include <vector>
 
 namespace Falcor
 {
-    class Gui;
+class FALCOR_API Scripting
+{
+public:
+    static const FileDialogFilterVec kFileExtensionFilters;
 
-    class dlldecl Scripting
+    /**
+     * Represents a context for executing scripts.
+     * Wraps the globals dictionary that is passed to the script on execution.
+     * The context can be used to pass/retrieve variables to/from the executing script.
+     */
+    class Context
     {
-        public:
-            static const FileDialogFilterVec kFileExtensionFilters;
+    public:
+        Context(pybind11::dict globals) : mGlobals(globals) {}
 
-            class Context
+        Context()
+        {
+            // Copy __builtins__ to our empty globals dictionary.
+            mGlobals["__builtins__"] = pybind11::globals()["__builtins__"];
+        }
+
+        ~Context()
+        {
+            // We need to manually cleanup the globals dictionary to avoid keeping references to objects.
+            for (const auto& it : mGlobals)
+                mGlobals[it.first] = nullptr;
+        }
+
+        template<typename T>
+        struct ObjectDesc
+        {
+            ObjectDesc(const std::string& name_, const T& obj_) : name(name_), obj(obj_) {}
+            operator const T&() const { return obj; }
+            std::string name;
+            T obj;
+        };
+
+        template<typename T>
+        std::vector<ObjectDesc<T>> getObjects()
+        {
+            std::vector<ObjectDesc<T>> v;
+            for (const auto& l : mGlobals)
             {
-            public:
-                template<typename T>
-                struct ObjectDesc
+                try
                 {
-                    ObjectDesc(const std::string& name_, const T& obj_) : name(name_), obj(obj_) {}
-                    operator const T&() const { return obj; }
-                    std::string name;
-                    T obj;
-                };
-
-                template<typename T>
-                std::vector<ObjectDesc<T>> getObjects()
-                {
-                    std::vector<ObjectDesc<T>> v;
-                    for (const auto& l : mLocals)
+                    if (!l.second.is_none())
                     {
-                        try
-                        {
-                            if(!l.second.is_none())
-                            {
-                                v.push_back(ObjectDesc<T>(l.first.cast<std::string>(), l.second.cast<T>()));
-                            }
-                        }
-                        catch (const std::exception&) {}
+                        v.push_back(ObjectDesc<T>(l.first.cast<std::string>(), l.second.cast<T>()));
                     }
-                    return v;
                 }
-
-                template<typename T>
-                void setObject(const std::string& name, T obj)
-                {
-                    mLocals[name.c_str()] = obj;
-                }
-
-                template<typename T>
-                T getObject(const std::string& name) const
-                {
-                    return mLocals[name.c_str()].cast<T>();
-                }
-
-                bool containsObject(const std::string& name) const
-                {
-                    return mLocals.contains(name.c_str());
-                }
-
-            private:
-                friend class Scripting;
-                pybind11::dict mLocals;
-            };
-
-            static bool start();
-            static void shutdown();
-            static std::string runScript(const std::string& script);
-            static std::string runScript(const std::string& script, Context& context);
-            static std::string runScriptFromFile(const std::string& filename, Context& context);
-            static std::string interpretScript(const std::string& script);
-            static Context getGlobalContext();
-            static bool isRunning() { return sRunning; }
-
-            static std::string makeFunc(const std::string& func)
-            {
-                return func + "()\n";
+                catch (const std::exception&)
+                {}
             }
+            return v;
+        }
 
-            template<typename T>
-            static std::string getArgString(const T& arg)
-            {
-                return ScriptBindings::repr(arg);
-            }
+        template<typename T>
+        void setObject(const std::string& name, T obj)
+        {
+            mGlobals[name.c_str()] = obj;
+        }
 
-            template<>
-            static std::string getArgString(const Dictionary& dictionary)
-            {
-                return dictionary.toString();
-            }
+        template<typename T>
+        T getObject(const std::string& name) const
+        {
+            return mGlobals[name.c_str()].cast<T>();
+        }
 
-            template<typename Arg, typename...Args>
-            static std::string makeFunc(const std::string& func, Arg first, Args...args)
-            {
-                std::string s = func + "(" + getArgString(first);
-                int32_t dummy[] = { 0, (s += ", " + getArgString(args), 0)... };
-                s += ")\n";
-                return s;
-            }
-
-            static std::string makeMemberFunc(const std::string& var, const std::string& func)
-            {
-                return std::string(var) + "." + makeFunc(func);
-            }
-
-            template<typename Arg, typename...Args>
-            static std::string makeMemberFunc(const std::string& var, const std::string& func, Arg first, Args...args)
-            {
-                std::string s(var);
-                s += std::string(".") + makeFunc(func, first, args...);
-                return s;
-            }
-
-            static std::string makeGetProperty(const std::string& var, const std::string& property)
-            {
-                return var + "." + property + "\n";
-            }
-
-            template<typename Arg>
-            static std::string makeSetProperty(const std::string& var, const std::string& property, Arg arg)
-            {
-                return var + "." + property + " = " + getArgString(arg) + "\n";
-            }
-
-            static std::string getFilenameString(const std::string& s, bool stripDataDirs = true)
-            {
-                std::string filename = stripDataDirs ? stripDataDirectories(s) : s;
-                std::replace(filename.begin(), filename.end(), '\\', '/');
-                return filename;
-            }
+        bool containsObject(const std::string& name) const { return mGlobals.contains(name.c_str()); }
 
     private:
-        static bool sRunning;
+        friend class Scripting;
+        pybind11::dict mGlobals;
     };
-}
+
+    /**
+     * Starts the script engine.
+     * This will initialize the Python interpreter and setup the default context.
+     */
+    static void start();
+
+    /**
+     * Shuts the script engine down.
+     */
+    static void shutdown();
+
+    /**
+     * Returns true if the script engine is running.
+     */
+    static bool isRunning() { return sRunning; }
+
+    /**
+     * Returns the default context.
+     */
+    static Context& getDefaultContext();
+
+    /**
+     * Returns the context of the currently executing script.
+     */
+    static Context getCurrentContext();
+
+    struct RunResult
+    {
+        std::string out;
+        std::string err;
+    };
+
+    /**
+     * Run a script.
+     * @param[in] script Script to run.
+     * @param[in] context Script execution context.
+     * @param[in] captureOutput Enable capturing stdout/stderr and returning it in RunResult.
+     * @return Returns the captured output if enabled.
+     */
+    static RunResult runScript(std::string_view script, Context& context = getDefaultContext(), bool captureOutput = false);
+
+    /**
+     * Run a script from a file.
+     * @param[in] path Path of the script to run.
+     * @param[in] context Script execution context.
+     * @param[in] captureOutput Enable capturing stdout/stderr and returning it in RunResult.
+     * @return Returns the captured output if enabled.
+     */
+    static RunResult runScriptFromFile(
+        const std::filesystem::path& path,
+        Context& context = getDefaultContext(),
+        bool captureOutput = false
+    );
+
+    /**
+     * Interpret a script and return the evaluated result.
+     * @param[in] script Script to run.
+     * @param[in] context Script execution context.
+     * @return Returns a string representation of the evaluated result of the script.
+     */
+    static std::string interpretScript(const std::string& script, Context& context = getDefaultContext());
+
+private:
+    static bool sRunning;                            // TODO: REMOVEGLOBAL
+    static std::unique_ptr<Context> sDefaultContext; // TODO: REMOVEGLOBAL
+};
+} // namespace Falcor

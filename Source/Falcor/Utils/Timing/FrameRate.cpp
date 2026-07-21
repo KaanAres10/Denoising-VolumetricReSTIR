@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,19 +25,17 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "FrameRate.h"
-#include <sstream>
+#include <fmt/core.h>
 
 namespace Falcor
 {
-    std::string FrameRate::getMsg(bool vsyncOn) const
-    {
-        float msPerFrame = (float)getAverageFrameTime();
-        std::stringstream strstr;
-        std::string msStr = std::to_string(msPerFrame);
-        std::string s = std::to_string(int(ceil(1000 / msPerFrame))) + " FPS (" + msStr.erase(msStr.size() - 4) + " ms/frame)";
-        if (vsyncOn) s += std::string(", VSync");
-        return s;
-    }
+std::string FrameRate::getMsg(bool vsyncOn) const
+{
+    double frameTime = getAverageFrameTime();
+    std::string msg = fmt::format("{:.1f} FPS ({:.1f} ms/frame)", 1.f / frameTime, frameTime * 1000.0);
+    if (vsyncOn)
+        msg += std::string(", VSync");
+    return msg;
 }
+} // namespace Falcor

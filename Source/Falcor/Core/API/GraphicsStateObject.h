@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,109 +26,86 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
+#include "Handles.h"
+#include "Core/Macros.h"
+#include "Core/Object.h"
 #include "Core/API/VertexLayout.h"
 #include "Core/API/FBO.h"
-#include "Core/Program/ProgramVersion.h"
 #include "Core/API/RasterizerState.h"
 #include "Core/API/DepthStencilState.h"
 #include "Core/API/BlendState.h"
-#include "Core/API/RootSignature.h"
-#include "Core/API/VAO.h"
+#include "Core/Program/ProgramVersion.h"
 
 namespace Falcor
 {
-    class dlldecl GraphicsStateObject
+
+struct GraphicsStateObjectDesc
+{
+    static constexpr uint32_t kSampleMaskAll = -1;
+
+    /**
+     * Primitive topology
+     */
+    enum class PrimitiveType
     {
-    public:
-        using SharedPtr = std::shared_ptr<GraphicsStateObject>;
-        using SharedConstPtr = std::shared_ptr<const GraphicsStateObject>;
-        using ApiHandle = GraphicsStateHandle;
-
-        static const uint32_t kSampleMaskAll = -1;
-
-        /** Primitive topology
-        */
-        enum class PrimitiveType
-        {
-            Undefined,
-            Point,
-            Line,
-            Triangle,
-            Patch,
-        };
-
-        class dlldecl Desc
-        {
-        public:
-            Desc& setRootSignature(RootSignature::SharedPtr pSignature) { mpRootSignature = pSignature; return *this; }
-            Desc& setVertexLayout(VertexLayout::SharedConstPtr pLayout) { mpLayout = pLayout; return *this; }
-            Desc& setFboFormats(const Fbo::Desc& fboFormats) { mFboDesc = fboFormats; return *this; }
-            Desc& setProgramKernels(ProgramKernels::SharedConstPtr pProgram) { mpProgram = pProgram; return *this; }
-            Desc& setBlendState(BlendState::SharedPtr pBlendState) { mpBlendState = pBlendState; return *this; }
-            Desc& setRasterizerState(RasterizerState::SharedPtr pRasterizerState) { mpRasterizerState = pRasterizerState; return *this; }
-            Desc& setDepthStencilState(DepthStencilState::SharedPtr pDepthStencilState) { mpDepthStencilState = pDepthStencilState; return *this; }
-            Desc& setSampleMask(uint32_t sampleMask) { mSampleMask = sampleMask; return *this; }
-            Desc& setPrimitiveType(PrimitiveType type) { mPrimType = type; return *this; }
-
-            BlendState::SharedPtr getBlendState() const { return mpBlendState; }
-            RasterizerState::SharedPtr getRasterizerState() const { return mpRasterizerState; }
-            DepthStencilState::SharedPtr getDepthStencilState() const { return mpDepthStencilState; }
-            ProgramKernels::SharedConstPtr getProgramKernels() const { return mpProgram; }
-            ProgramVersion::SharedConstPtr getProgramVersion() const { return mpProgram->getProgramVersion(); }
-            RootSignature::SharedPtr getRootSignature() const { return mpRootSignature; }
-            uint32_t getSampleMask() const { return mSampleMask; }
-            VertexLayout::SharedConstPtr getVertexLayout() const { return mpLayout; }
-            PrimitiveType getPrimitiveType() const { return mPrimType; }
-            Fbo::Desc getFboDesc() const { return mFboDesc; }
-
-            bool operator==(const Desc& other) const;
-
-        private:
-            friend class GraphicsStateObject;
-            Fbo::Desc mFboDesc;
-            VertexLayout::SharedConstPtr mpLayout;
-            ProgramKernels::SharedConstPtr mpProgram;
-            RasterizerState::SharedPtr mpRasterizerState;
-            DepthStencilState::SharedPtr mpDepthStencilState;
-            BlendState::SharedPtr mpBlendState;
-            uint32_t mSampleMask = kSampleMaskAll;
-            RootSignature::SharedPtr mpRootSignature;
-            PrimitiveType mPrimType = PrimitiveType::Undefined;
-
-#ifdef FALCOR_VK
-        public:
-            Desc& setVao(const Vao::SharedConstPtr& pVao) { mpVao = pVao; return *this; }
-            Desc& setRenderPass(VkRenderPass renderPass) { mRenderPass = renderPass; return *this; }
-            const Vao::SharedConstPtr& getVao() const { return mpVao; }
-            VkRenderPass getRenderPass() const {return mRenderPass;}
-        private:
-            Vao::SharedConstPtr mpVao;
-            VkRenderPass mRenderPass;
-#endif
-        };
-
-        ~GraphicsStateObject();
-
-        /** Create a graphics state object.
-            \param[in] desc State object description.
-            \return New object, or throws an exception if creation failed.
-        */
-        static SharedPtr create(const Desc& desc);
-
-        const ApiHandle& getApiHandle() { return mApiHandle; }
-
-        const Desc& getDesc() const { return mDesc; }
-
-    private:
-        GraphicsStateObject(const Desc& desc);
-        void apiInit();
-
-        Desc mDesc;
-        ApiHandle mApiHandle;
-
-        // Default state objects
-        static BlendState::SharedPtr spDefaultBlendState;
-        static RasterizerState::SharedPtr spDefaultRasterizerState;
-        static DepthStencilState::SharedPtr spDefaultDepthStencilState;
+        Undefined,
+        Point,
+        Line,
+        Triangle,
+        Patch,
     };
-}
+
+    Fbo::Desc fboDesc;
+    ref<const VertexLayout> pVertexLayout;
+    ref<const ProgramKernels> pProgramKernels;
+    ref<RasterizerState> pRasterizerState;
+    ref<DepthStencilState> pDepthStencilState;
+    ref<BlendState> pBlendState;
+    uint32_t sampleMask = kSampleMaskAll;
+    PrimitiveType primitiveType = PrimitiveType::Undefined;
+
+    bool operator==(const GraphicsStateObjectDesc& other) const
+    {
+        bool result = true;
+        result = result && (fboDesc == other.fboDesc);
+        result = result && (pVertexLayout == other.pVertexLayout);
+        result = result && (pProgramKernels == other.pProgramKernels);
+        result = result && (sampleMask == other.sampleMask);
+        result = result && (primitiveType == other.primitiveType);
+        result = result && (pRasterizerState == other.pRasterizerState);
+        result = result && (pBlendState == other.pBlendState);
+        result = result && (pDepthStencilState == other.pDepthStencilState);
+        return result;
+    }
+};
+
+class FALCOR_API GraphicsStateObject : public Object
+{
+    FALCOR_OBJECT(GraphicsStateObject)
+public:
+    GraphicsStateObject(ref<Device> pDevice, const GraphicsStateObjectDesc& desc);
+    ~GraphicsStateObject();
+
+    gfx::IPipelineState* getGfxPipelineState() const { return mGfxPipelineState; }
+
+    const GraphicsStateObjectDesc& getDesc() const { return mDesc; }
+
+    gfx::IRenderPassLayout* getGFXRenderPassLayout() const { return mpGFXRenderPassLayout.get(); }
+
+    void breakStrongReferenceToDevice();
+
+private:
+    BreakableReference<Device> mpDevice;
+    GraphicsStateObjectDesc mDesc;
+    Slang::ComPtr<gfx::IPipelineState> mGfxPipelineState;
+
+    Slang::ComPtr<gfx::IInputLayout> mpGFXInputLayout;
+    Slang::ComPtr<gfx::IFramebufferLayout> mpGFXFramebufferLayout;
+    Slang::ComPtr<gfx::IRenderPassLayout> mpGFXRenderPassLayout;
+
+    // Default state objects
+    static ref<BlendState> spDefaultBlendState;               // TODO: REMOVEGLOBAL
+    static ref<RasterizerState> spDefaultRasterizerState;     // TODO: REMOVEGLOBAL
+    static ref<DepthStencilState> spDefaultDepthStencilState; // TODO: REMOVEGLOBAL
+};
+} // namespace Falcor

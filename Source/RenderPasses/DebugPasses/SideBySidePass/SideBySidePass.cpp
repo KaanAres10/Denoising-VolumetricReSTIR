@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -27,45 +27,39 @@
  **************************************************************************/
 #include "SideBySidePass.h"
 
-const char* SideBySidePass::kDesc = "Allows the user to compare two inputs side-by-side.";
-
 namespace
 {
-    const std::string kImageLeftBound = "imageLeftBound";
+const std::string kImageLeftBound = "imageLeftBound";
 
-    // Where is our shader located?
-    const std::string kSplitShader = "RenderPasses/DebugPasses/SideBySidePass/SideBySide.ps.slang";
-}
+// Where is our shader located?
+const std::string kSplitShader = "RenderPasses/DebugPasses/SideBySidePass/SideBySide.ps.slang";
+} // namespace
 
-SideBySidePass::SideBySidePass()
+SideBySidePass::SideBySidePass(ref<Device> pDevice, const Properties& props) : ComparisonPass(pDevice)
 {
     createProgram();
-}
 
-SideBySidePass::SharedPtr SideBySidePass::create(RenderContext* pRenderContext, const Dictionary& dict)
-{
-    SharedPtr pPass = SharedPtr(new SideBySidePass());
-    for (const auto& [key, value] : dict)
+    for (const auto& [key, value] : props)
     {
-        if (key == kImageLeftBound) pPass->mImageLeftBound = value;
-        else if (!pPass->parseKeyValuePair(key, value))
+        if (key == kImageLeftBound)
+            mImageLeftBound = value;
+        else if (!parseKeyValuePair(key, value))
         {
-            logWarning("Unknown field '" + key + "' in a SideBySidePass dictionary");
+            logWarning("Unknown property '{}' in a SideBySidePass properties.", key);
         }
     }
-    return pPass;
 }
 
 void SideBySidePass::createProgram()
 {
     // Create our shader that splits the screen.
-    mpSplitShader = FullScreenPass::create(kSplitShader);
+    mpSplitShader = FullScreenPass::create(mpDevice, kSplitShader);
 }
 
-void SideBySidePass::execute(RenderContext* pContext, const RenderData& renderData)
+void SideBySidePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
-    mpSplitShader["GlobalCB"]["gLeftBound"] = mImageLeftBound;
-    ComparisonPass::execute(pContext, renderData);
+    mpSplitShader->getRootVar()["GlobalCB"]["gLeftBound"] = mImageLeftBound;
+    ComparisonPass::execute(pRenderContext, renderData);
 }
 
 void SideBySidePass::renderUI(Gui::Widgets& widget)

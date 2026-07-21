@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,63 +25,59 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-#include "stdafx.h"
 #include "ComputeState.h"
+#include "Core/ObjectPython.h"
 #include "Core/Program/ProgramVars.h"
+#include "Utils/Scripting/ScriptBindings.h"
 
 namespace Falcor
 {
-    ComputeState::ComputeState()
-    {
-        mpCsoGraph = StateGraph::create();
-    }
 
-    ComputeStateObject::SharedPtr ComputeState::getCSO(const ComputeVars* pVars)
-    {
-        auto pProgramKernels = mpProgram ? mpProgram->getActiveVersion()->getKernels(pVars) : nullptr;
-        bool newProgram = (pProgramKernels.get() != mCachedData.pProgramKernels);
-        if (newProgram)
-        {
-            mCachedData.pProgramKernels = pProgramKernels.get();
-            mpCsoGraph->walk((void*)mCachedData.pProgramKernels);
-        }
-
-        RootSignature::SharedPtr pRoot = pProgramKernels ? pProgramKernels->getRootSignature() : RootSignature::getEmpty();
-
-        if (mCachedData.pRootSig != pRoot.get())
-        {
-            mCachedData.pRootSig = pRoot.get();
-            mpCsoGraph->walk((void*)mCachedData.pRootSig);
-        }
-
-        ComputeStateObject::SharedPtr pCso = mpCsoGraph->getCurrentNode();
-
-        if(pCso == nullptr)
-        {
-            mDesc.setProgramKernels(pProgramKernels);
-            mDesc.setRootSignature(pRoot);
-
-            StateGraph::CompareFunc cmpFunc = [&desc = mDesc](ComputeStateObject::SharedPtr pCso) -> bool
-            {
-                return pCso && (desc == pCso->getDesc());
-            };
-
-            if (mpCsoGraph->scanForMatchingNode(cmpFunc))
-            {
-                pCso = mpCsoGraph->getCurrentNode();
-            }
-            else
-            {
-                pCso = ComputeStateObject::create(mDesc);
-                mpCsoGraph->setCurrentNodeData(pCso);
-            }
-        }
-
-        return pCso;
-    }
-
-    SCRIPT_BINDING(ComputeState)
-    {
-        pybind11::class_<ComputeState, ComputeState::SharedPtr>(m, "ComputeState");
-    }
+ref<ComputeState> ComputeState::create(ref<Device> pDevice)
+{
+    return ref<ComputeState>(new ComputeState(pDevice));
 }
+
+ComputeState::ComputeState(ref<Device> pDevice) : mpDevice(pDevice)
+{
+    mpCsoGraph = std::make_unique<ComputeStateGraph>();
+}
+
+ref<ComputeStateObject> ComputeState::getCSO(const ProgramVars* pVars)
+{
+    auto pProgramKernels = mpProgram ? mpProgram->getActiveVersion()->getKernels(mpDevice.get(), pVars) : nullptr;
+    bool newProgram = (pProgramKernels.get() != mCachedData.pProgramKernels);
+    if (newProgram)
+    {
+        mCachedData.pProgramKernels = pProgramKernels.get();
+        mpCsoGraph->walk((void*)mCachedData.pProgramKernels);
+    }
+
+    ref<ComputeStateObject> pCso = mpCsoGraph->getCurrentNode();
+
+    if (pCso == nullptr)
+    {
+        mDesc.pProgramKernels = pProgramKernels;
+
+        ComputeStateGraph::CompareFunc cmpFunc = [&desc = mDesc](ref<ComputeStateObject> pCso) -> bool
+        { return pCso && (desc == pCso->getDesc()); };
+
+        if (mpCsoGraph->scanForMatchingNode(cmpFunc))
+        {
+            pCso = mpCsoGraph->getCurrentNode();
+        }
+        else
+        {
+            pCso = mpDevice->createComputeStateObject(mDesc);
+            mpCsoGraph->setCurrentNodeData(pCso);
+        }
+    }
+
+    return pCso;
+}
+
+FALCOR_SCRIPT_BINDING(ComputeState)
+{
+    pybind11::class_<ComputeState, ref<ComputeState>>(m, "ComputeState");
+}
+} // namespace Falcor

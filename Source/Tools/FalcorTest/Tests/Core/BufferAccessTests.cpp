@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -29,112 +29,130 @@
 
 namespace Falcor
 {
-    namespace
+namespace
+{
+const uint32_t kElementCount = 256;
+
+std::vector<uint32_t> getTestData()
+{
+    std::vector<uint32_t> data(kElementCount);
+    for (uint32_t i = 0; i < kElementCount; i++)
+        data[i] = i;
+    return data;
+}
+
+const std::vector<uint32_t> kTestData = getTestData();
+
+/** Create buffer with the given CPU access and elements initialized to 0,1,2,...
+ */
+ref<Buffer> createTestBuffer(GPUUnitTestContext& ctx, MemoryType memoryType, bool initialize)
+{
+    return ctx.getDevice()->createBuffer(
+        kElementCount * sizeof(uint32_t),
+        ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess,
+        memoryType,
+        initialize ? kTestData.data() : nullptr
+    );
+}
+
+void checkData(GPUUnitTestContext& ctx, const uint32_t* pData)
+{
+    for (uint32_t i = 0; i < kElementCount; i++)
+        EXPECT_EQ(pData[i], i) << "i = " << i;
+}
+
+void initBufferIndirect(GPUUnitTestContext& ctx, ref<Buffer> pBuffer)
+{
+    auto pInitData = createTestBuffer(ctx, MemoryType::DeviceLocal, true);
+    ctx.getRenderContext()->copyResource(pBuffer.get(), pInitData.get());
+    ctx.getRenderContext()->submit(true);
+}
+
+std::vector<uint32_t> readBufferIndirect(GPUUnitTestContext& ctx, ref<Buffer> pBuffer)
+{
+    ref<Buffer> pResult = createTestBuffer(ctx, MemoryType::DeviceLocal, false);
+    ctx.getRenderContext()->copyResource(pResult.get(), pBuffer.get());
+    ctx.getRenderContext()->submit(true);
+    return pResult->getElements<uint32_t>();
+}
+
+void checkBufferIndirect(GPUUnitTestContext& ctx, ref<Buffer> pBuffer)
+{
+    return checkData(ctx, readBufferIndirect(ctx, pBuffer).data());
+}
+
+} // namespace
+
+GPU_TEST(BufferDeviceLocalWrite)
+{
+    // Create without init data, then set data using setBlob().
     {
-        const uint32_t elems = 256;
-
-        /** Create buffer with the given CPU access and elements initialized to 0,1,2,...
-        */
-        Buffer::SharedPtr createTestBuffer(Buffer::CpuAccess cpuAccess, bool initialize = true)
-        {
-            std::vector<uint32_t> initData(elems);
-            for (uint32_t i = 0; i < elems; i++) initData[i] = i;
-            return Buffer::create(elems * sizeof(uint32_t), Resource::BindFlags::ShaderResource, cpuAccess, initialize ? initData.data() : nullptr);
-        }
-
-        /** Tests readback from buffer created with the given CPU access flag work.
-            The test binds the buffer to a compute program which reads back the data.
-        */
-        void testBufferReadback(GPUUnitTestContext& ctx, Buffer::CpuAccess cpuAccess)
-        {
-            auto pBuf = createTestBuffer(cpuAccess);
-
-            // Run program that copies the buffer elements into result buffer.
-            ctx.createProgram("Tests/Core/BufferAccessTests.cs.slang", "readback", Program::DefineList(), Shader::CompilerFlags::None);
-            ctx.allocateStructuredBuffer("result", elems);
-            ctx["buffer"] = pBuf;
-            ctx.runProgram(elems, 1, 1);
-
-            const uint32_t* result = ctx.mapBuffer<const uint32_t>("result");
-            for (uint32_t i = 0; i < elems; i++)
-            {
-                EXPECT_EQ(result[i], i) << "i = " << i;
-            }
-            ctx.unmapBuffer("result");
-        }
+        ref<Buffer> pBuffer = createTestBuffer(ctx, MemoryType::DeviceLocal, false);
+        pBuffer->setBlob(kTestData.data(), 0, kTestData.size() * sizeof(uint32_t));
+        checkBufferIndirect(ctx, pBuffer);
     }
 
-    /** Test that initialization of buffer with CPU write access works.
-        The test copies the data to a staging buffer on the GPU.
-    */
-    GPU_TEST(CopyBufferCpuAccessWrite)
+    // Create with init data.
     {
-        auto pBuf = createTestBuffer(Buffer::CpuAccess::Write);
-
-        // Copy buffer to staging buffer on the GPU.
-        // Note we have to use copyBufferRegion() as our buffer is allocated within a page on the upload heap.
-        auto pStaging = Buffer::create(elems * sizeof(uint32_t), Resource::BindFlags::None, Buffer::CpuAccess::Read);
-        ctx.getRenderContext()->copyBufferRegion(pStaging.get(), 0, pBuf.get(), 0, elems * sizeof(uint32_t));
-
-        // We have to flush here so that the copy is guaranteed to have finished by the time we map.
-        // In user code, we normally want to use a GpuFence to signal this instead of a full flush.
-        ctx.getRenderContext()->flush(true);
-
-        const uint32_t* result = static_cast<const uint32_t*>(pStaging->map(Buffer::MapType::Read));
-        for (uint32_t i = 0; i < elems; i++)
-        {
-            EXPECT_EQ(result[i], i) << "i = " << i;
-        }
-        pStaging->unmap();
-    }
-
-    // This test is disabled due to bug in creation of SRV/UAVs for buffers on the upload heap.
-
-    /** Test setBlob() into buffer with CPU write access.
-    */
-    GPU_TEST(SetBlobBufferCpuAccessWrite, "Disabled due to issue with SRV/UAVs for resources on the upload heap (#638)")
-    {
-        auto pBuf = createTestBuffer(Buffer::CpuAccess::Write, false);
-
-        // Set data into buffer using its setBlob() function.
-        std::vector<uint32_t> initData(elems);
-        for (uint32_t i = 0; i < elems; i++) initData[i] = i;
-        pBuf->setBlob(initData.data(), 0, elems * sizeof(uint32_t));
-
-        // Run program that copies the buffer elements into result buffer.
-        ctx.createProgram("Tests/Core/BufferAccessTests.cs.slang", "readback", Program::DefineList(), Shader::CompilerFlags::None);
-        ctx.allocateStructuredBuffer("result", elems);
-        ctx["buffer"] = pBuf;
-        ctx.runProgram(elems, 1, 1);
-
-        const uint32_t* result = ctx.mapBuffer<const uint32_t>("result");
-        for (uint32_t i = 0; i < elems; i++)
-        {
-            EXPECT_EQ(result[i], i) << "i = " << i;
-        }
-        ctx.unmapBuffer("result");
-    }
-
-    /** Test that GPU reads from buffer created without CPU access works.
-    */
-    GPU_TEST(BufferCpuAccessNone)
-    {
-        testBufferReadback(ctx, Buffer::CpuAccess::None);
-    }
-
-    /** Test that GPU reads from buffer created with CPU read access works.
-    */
-    GPU_TEST(BufferCpuAccessRead)
-    {
-        testBufferReadback(ctx, Buffer::CpuAccess::Read);
-    }
-
-    // This test is disabled due to bug in creation of SRV/UAVs for buffers on the upload heap.
-
-    /** Test that GPU reads from buffer created with CPU write access works.
-    */
-    GPU_TEST(BufferCpuAccessWrite, "Disabled due to issue with SRV/UAVs for resources on the upload heap (#638)")
-    {
-        testBufferReadback(ctx, Buffer::CpuAccess::Write);
+        ref<Buffer> pBuffer = createTestBuffer(ctx, MemoryType::DeviceLocal, true);
+        checkBufferIndirect(ctx, pBuffer);
     }
 }
+
+GPU_TEST(BufferDeviceLocalRead)
+{
+    ref<Buffer> pBuffer = createTestBuffer(ctx, MemoryType::DeviceLocal, false);
+    initBufferIndirect(ctx, pBuffer);
+
+    std::vector<uint32_t> data(kElementCount);
+    pBuffer->getBlob(data.data(), 0, kElementCount * sizeof(uint32_t));
+    checkData(ctx, data.data());
+}
+
+GPU_TEST(BufferUploadWrite)
+{
+    // Create without init data, then set data using setBlob().
+    {
+        ref<Buffer> pBuffer = createTestBuffer(ctx, MemoryType::Upload, false);
+        pBuffer->setBlob(kTestData.data(), 0, kTestData.size() * sizeof(uint32_t));
+        checkBufferIndirect(ctx, pBuffer);
+    }
+
+    // Create with init data.
+    {
+        ref<Buffer> pBuffer = createTestBuffer(ctx, MemoryType::Upload, true);
+        checkBufferIndirect(ctx, pBuffer);
+    }
+}
+
+GPU_TEST(BufferUploadMap)
+{
+    ref<Buffer> pBuffer = createTestBuffer(ctx, MemoryType::Upload, false);
+    uint32_t* pData = reinterpret_cast<uint32_t*>(pBuffer->map());
+    for (uint32_t i = 0; i < kElementCount; ++i)
+        pData[i] = kTestData[i];
+    pBuffer->unmap();
+    checkBufferIndirect(ctx, pBuffer);
+}
+
+GPU_TEST(BufferReadbackRead)
+{
+    ref<Buffer> pBuffer = createTestBuffer(ctx, MemoryType::ReadBack, false);
+    initBufferIndirect(ctx, pBuffer);
+
+    std::vector<uint32_t> data(kElementCount);
+    pBuffer->getBlob(data.data(), 0, kElementCount * sizeof(uint32_t));
+    checkData(ctx, data.data());
+}
+
+GPU_TEST(BufferReadbackMap)
+{
+    ref<Buffer> pBuffer = createTestBuffer(ctx, MemoryType::ReadBack, false);
+    initBufferIndirect(ctx, pBuffer);
+
+    const uint32_t* pData = reinterpret_cast<const uint32_t*>(pBuffer->map());
+    checkData(ctx, pData);
+    pBuffer->unmap();
+}
+
+} // namespace Falcor

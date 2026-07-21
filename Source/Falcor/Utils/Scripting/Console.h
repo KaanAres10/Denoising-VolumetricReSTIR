@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2020, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -26,52 +26,52 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #pragma once
-#include "ScriptBindings.h"
-#include <functional>
+#include "Core/Macros.h"
+#include <optional>
+#include <string>
+#include <vector>
 
 // Forward declaration.
 struct ImGuiInputTextCallbackData;
 
 namespace Falcor
 {
-    class dlldecl Console
-    {
-    public:
-        /** Clears the console.
-        */
-        void clear();
+class Gui;
 
-        /** Renders the console and handles important keyboard input events:
-            - The "`" key is used to open/close the console.
-            - The ESC key is used to close the console if currently open.
-            - The UP/DOWN keys are used to browse through the history.
-            \param[in] pGui GUI.
-            \param[in/out] show Flag to indicate if console is shown.
-        */
-        void render(Gui* pGui, bool& show);
+class FALCOR_API Console
+{
+public:
+    /**
+     * Clears the console.
+     */
+    void clear();
 
-        /** Processes console input. Should be called once at the end of every frame.
-            \return Returns true if some processing occured.
-        */
-        bool flush();
+    /**
+     * Renders the console and handles important keyboard input events:
+     * - The "`" key is used to open/close the console.
+     * - The ESC key is used to close the console if currently open.
+     * - The UP/DOWN keys are used to browse through the history.
+     * @param[in] pGui GUI.
+     * @param[in,out] show Flag to indicate if console is shown.
+     */
+    void render(Gui* pGui, bool& show);
 
-        /** Global console instance.
-            \return Returns the global console instance.
-        */
-        static Console& instance();
+    /**
+     * Processes console input. Should be called once at the end of every frame.
+     * @return Returns true if some processing occured.
+     */
+    bool flush();
 
-    private:
-        Console() = default;
+private:
+    void enterCommand();
+    std::optional<std::string> browseHistory(bool upOrDown);
+    static int inputTextCallback(ImGuiInputTextCallbackData* data);
 
-        void enterCommand();
-        std::optional<std::string> browseHistory(bool upOrDown);
-        static int inputTextCallback(ImGuiInputTextCallbackData* data);
-
-        std::string mLog;
-        char mCmdBuffer[2048] = {};
-        std::string mCmdPending;
-        std::vector<std::string> mHistory;
-        int32_t mHistoryIndex = -1;
-        bool mScrollToBottom = true;
-    };
-}
+    std::string mLog;
+    char mCmdBuffer[2048] = {};
+    std::string mCmdPending;
+    std::vector<std::string> mHistory;
+    int32_t mHistoryIndex = -1;
+    bool mScrollToBottom = true;
+};
+} // namespace Falcor
