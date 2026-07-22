@@ -8,6 +8,27 @@ import Utils.Debug.PixelDebug;
 
 __exported import HostDeviceSharedConstants;
 
+/** [8.0 port] Falcor 4.x's sampleTriangle offset the sampled position off the light triangle
+    (computeRayOrigin) "so the shadow ray won't go beyond triangle". Falcor 8.0 dropped that offset,
+    which lets the shadow ray self-intersect the emitter and darkens emissive lighting. This wrapper
+    restores the 4.x behaviour: apply the offset and recompute the derived direction/distance/pdf.
+*/
+bool sampleTriangleOffset(const float3 posW, const uint triangleIndex, const float2 u, out TriangleLightSample ls)
+{
+    if (!sampleTriangle(posW, triangleIndex, u, ls)) return false;
+
+    ls.posW = computeRayOrigin(ls.posW, ls.normalW);
+    float3 toLight = ls.posW - posW;
+    float distSqr = max(1e-38f, dot(toLight, toLight));
+    ls.distance = sqrt(distSqr);
+    ls.dir = toLight / ls.distance;
+
+    float cosTheta = dot(ls.normalW, -ls.dir);
+    if (cosTheta <= 0.f) return false;
+    ls.pdf = distSqr / max(1e-38f, cosTheta * gScene.lightCollection.getTriangle(triangleIndex).area);
+    return true;
+}
+
 float3 decodeEmissivePosition(int lightID, float2 lightUV)
 {
     return float3(lightUV.x, lightUV.y, asfloat(lightID));
@@ -455,9 +476,9 @@ float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, i
     // voxel light
     if (lightID < 0)
     {
-        float3 wiWorld = gScene.envMap.uvToWorld(lightUV); // [8.0 port] was envMapSampler.decodeLightUV
+        float3 wiWorld = gScene.envMap.uvToWorld(lightUV, isLastFrame); // [8.0 port] was envMapSampler.decodeLightUV (prev-frame env transform preserved)
         shadowRay = { mi.p, wiWorld, 0, kRayTMax };
-        Ld = gScene.envMap.eval(wiWorld) * mi.phaseFunction(mi.wo, wiWorld); // [8.0 port] was envMapSampler.eval
+        Ld = gScene.envMap.eval(wiWorld, 0.f, isLastFrame) * mi.phaseFunction(mi.wo, wiWorld); // [8.0 port] was envMapSampler.eval
     }
     // analytical light (currently only supporting directional and point lights
     else if (lightID < (int)gScene.getLightCount())
@@ -473,7 +494,7 @@ float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, i
         // [8.0 port] getEmissiveLightSample -> sampleTriangle. The reservoir stores the uniform u
         // (TriangleLightSample.uv), and sampleTriangle is deterministic in u, so this reconstructs
         // the exact same sample. cosTheta at the light = dot(normalW, -dir).
-        isValidSample = sampleTriangle(mi.p, (uint)(lightID - (int)gScene.getLightCount()), lightUV, ls);
+        isValidSample = sampleTriangleOffset(mi.p, (uint)(lightID - (int)gScene.getLightCount()), lightUV, ls);
         if (isValidSample)
         {
             shadowRay = { mi.p, ls.dir, 0, ls.distance };
@@ -515,9 +536,9 @@ float3 evaluate_L_on_surface(SurfaceShadingData shadingInfo, int lightID, float2
     // voxel light
     if (lightID < 0)
     {
-        float3 wiWorld = gScene.envMap.uvToWorld(lightUV); // [8.0 port] was envMapSampler.decodeLightUV
+        float3 wiWorld = gScene.envMap.uvToWorld(lightUV, isLastFrame); // [8.0 port] was envMapSampler.decodeLightUV (prev-frame env transform preserved)
         shadowRay = { shadingInfo.posW, wiWorld, 0, kRayTMax };
-        Ld = gScene.envMap.eval(wiWorld) * evalBSDFCosine(shadingInfo, wiWorld, sg);
+        Ld = gScene.envMap.eval(wiWorld, 0.f, isLastFrame) * evalBSDFCosine(shadingInfo, wiWorld, sg);
     }
     // analytical light (currently only supporting directional and point lights
     else if (lightID < (int)gScene.getLightCount())
@@ -531,7 +552,7 @@ float3 evaluate_L_on_surface(SurfaceShadingData shadingInfo, int lightID, float2
     {
         TriangleLightSample ls;
         // [8.0 port] getEmissiveLightSample -> sampleTriangle (deterministic in the stored u).
-        isValidSample = sampleTriangle(shadingInfo.posW, (uint)(lightID - (int)gScene.getLightCount()), lightUV, ls);
+        isValidSample = sampleTriangleOffset(shadingInfo.posW, (uint)(lightID - (int)gScene.getLightCount()), lightUV, ls);
         if (isValidSample)
         {
             shadowRay = { shadingInfo.posW, ls.dir, 0, ls.distance };

@@ -117,8 +117,12 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
             //if (!valid || dot(sd.N, lightSample.dir) < kMinCosTheta) return false;
             // Evaluate MIS with BRDF sampling as the other sampling strategy.
             float pdf = selectionPdf * lightSample.pdf;
-            // [8.0 port] TriangleLightSample.pdfArea removed; reconstruct area-measure pdf from the
-            // solid-angle pdf: pdfArea = pdfSolidAngle * |cos(thetaLight)| / distance^2.
+            // [8.0 port] TriangleLightSample.pdfArea was removed in 8.0. In 4.x the sampler produced
+            // pdfArea = (1/triangleArea) * triangleSelectionPdf (sampleTriangle set 1/area, then
+            // sampleLight scaled it by the selection pdf, exactly as it did for the solid-angle pdf).
+            // That equals the solid-angle pdf converted to the area measure, so reconstruct it as
+            // pdfArea = pdfSolidAngle * |cos(thetaLight)| / distance^2 -- verified numerically
+            // equivalent to the 4.x value.
             float lightSamplePdfArea = lightSample.pdf * abs(dot(lightSample.normalW, lightSample.dir)) / max(1e-9f, lightSample.distance * lightSample.distance);
             float pdfArea = selectionPdf * lightSamplePdfArea;
             // Compute offset light sample position to reduce self-intersections at the light.

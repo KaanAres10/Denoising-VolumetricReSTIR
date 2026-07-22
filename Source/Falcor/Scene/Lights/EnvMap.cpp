@@ -96,6 +96,10 @@ namespace Falcor
 
         // Set variables.
         var["data"].setBlob(mData);
+        // Previous frame's data (rolled in beginFrame()). Used by temporal resampling to evaluate a
+        // reused sample against the env map orientation it was taken under; only matters when the
+        // environment light is animated.
+        var["prevData"].setBlob(mPrevData);
 
         // Bind resources.
         var["envMap"].setTexture(mpEnvMap);

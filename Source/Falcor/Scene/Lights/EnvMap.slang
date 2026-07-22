@@ -36,6 +36,11 @@ struct EnvMap
     SamplerState    envSampler;     ///< Environment map texture sampler.
 
     EnvMapData      data;           ///< Environment map data.
+    EnvMapData      prevData;       ///< Previous frame's environment map data. Only the transform is
+                                    ///< used (via isLastFrame), so that temporal resampling can
+                                    ///< evaluate a reused sample against the orientation the env map
+                                    ///< actually had when that sample was taken. Matters when the
+                                    ///< environment light is animated/rotated.
 
     /** Returns the dimensions of the env map texture.
     */
@@ -62,9 +67,9 @@ struct EnvMap
 
     /** Evaluates the radiance coming from world space direction 'dir'.
     */
-    float3 eval(float3 dir, float lod = 0.f)
+    float3 eval(float3 dir, float lod = 0.f, bool isLastFrame = false)
     {
-        return eval(worldToUv(dir), lod);
+        return eval(worldToUv(dir, isLastFrame), lod);
     }
 
     /** Transform direction in local space to uv coordinates.
@@ -83,32 +88,32 @@ struct EnvMap
 
     /** Transform direction in world space to uv coordinates.
     */
-    float2 worldToUv(float3 dir)
+    float2 worldToUv(float3 dir, bool isLastFrame = false)
     {
-        return localToUv(toLocal(dir));
+        return localToUv(toLocal(dir, isLastFrame));
     }
 
     /** Transform uv coordinates to direction in world space.
     */
-    float3 uvToWorld(float2 uv)
+    float3 uvToWorld(float2 uv, bool isLastFrame = false)
     {
-        return toWorld(uvToLocal(uv));
+        return toWorld(uvToLocal(uv), isLastFrame);
     }
 
     /** Transform direction from local to world space.
     */
-    float3 toWorld(float3 dir)
+    float3 toWorld(float3 dir, bool isLastFrame = false)
     {
         // TODO: For identity transform we might want to skip this statically.
-        return mul((float3x3)data.transform, dir);
+        return mul((float3x3)(isLastFrame ? prevData.transform : data.transform), dir);
     }
 
     /** Transform direction from world to local space.
     */
-    float3 toLocal(float3 dir)
+    float3 toLocal(float3 dir, bool isLastFrame = false)
     {
         // TODO: For identity transform we might want to skip this statically.
-        return mul((float3x3)data.invTransform, dir);
+        return mul((float3x3)(isLastFrame ? prevData.invTransform : data.invTransform), dir);
     }
 
     /** Get the intensity scaling factor (including tint).
