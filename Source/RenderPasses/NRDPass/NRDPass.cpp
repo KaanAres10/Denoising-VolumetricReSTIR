@@ -656,14 +656,17 @@ RenderPassReflection NRDPass::reflect(const CompileData& compileData)
         // radiance on the same pin name the radiance path uses. Exposing coefficients as the pass
         // output would let ModulateIllumination multiply albedo into SH coefficients -- which yields
         // something that looks like an image and is not one.
-        reflector.addOutput(kOutputDiffuseSh0, "Filtered diffuse SH0 (internal)")
+        // NOT Optional, despite nothing downstream consuming them. NRD writes OUT_DIFF_SH0/SH1 and
+        // the resolve reads them back, so they are scratch that must exist. Marking them optional
+        // means the graph does not allocate them when unconsumed, and NRD then writes through a null
+        // texture -- an access violation, not a diagnosable error. (The bypass path survived it only
+        // because it resolves from the INPUT pair, which the adapter does connect.)
+        reflector.addOutput(kOutputDiffuseSh0, "Filtered diffuse SH0 (internal scratch)")
             .format(ResourceFormat::RGBA16Float)
-            .texture2D(sz.x, sz.y)
-            .flags(RenderPassReflection::Field::Flags::Optional);
-        reflector.addOutput(kOutputDiffuseSh1, "Filtered diffuse SH1 (internal)")
+            .texture2D(sz.x, sz.y);
+        reflector.addOutput(kOutputDiffuseSh1, "Filtered diffuse SH1 (internal scratch)")
             .format(ResourceFormat::RGBA16Float)
-            .texture2D(sz.x, sz.y)
-            .flags(RenderPassReflection::Field::Flags::Optional);
+            .texture2D(sz.x, sz.y);
         reflector.addOutput(kOutputFilteredDiffuseRadianceHitDist, "Diffuse radiance resolved from SH")
             .format(ResourceFormat::RGBA16Float)
             .texture2D(sz.x, sz.y);
@@ -1744,7 +1747,14 @@ void NRDPass::resolveSh(
 )
 {
     FALCOR_PROFILE(pRenderContext, "ResolveSh");
-    FALCOR_CHECK(pSh0 && pSh1 && pOut, "NRDPass: SH resolve is missing one of its textures.");
+    // Names the missing one. An unallocated SH texture presents as a null here and, if passed on,
+    // faults inside the dispatch with no indication of which resource was at fault.
+    FALCOR_CHECK(
+        pSh0 && pSh1 && pOut,
+        "NRDPass: SH resolve is missing a texture (sh0={}, sh1={}, out={}). An SH pin declared "
+        "Optional is not allocated when nothing consumes it.",
+        pSh0 != nullptr, pSh1 != nullptr, pOut != nullptr
+    );
 
     ref<ComputePass> pResolve = (mShResolveMode == ShResolveMode::Cosine) ? mpResolveShPassCosine : mpResolveShPassDc;
     auto var = pResolve->getRootVar()["PerImageCB"];

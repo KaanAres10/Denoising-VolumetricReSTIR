@@ -663,10 +663,16 @@ def advance_and_hold(frame, accum="Accum", graph=None, volume_frames=None, resti
     m.clock.framerate = 0
 
     # An animated VDB sequence ignores the clock entirely -- see hold_volume_frame. Pin it to
-    # whichever frame the run actually reached: the sequence advances once per rendered frame and
-    # wraps, so that is `frame % volume_frames`.
+    # whichever frame the run actually reached.
+    #
+    # The arithmetic is NOT `frame % numFrames`. addGVDBVolumeSequence starts the index at
+    # numFrames - 1 and advanceVolumeAnimation PRE-increments `(id + 1) % numFrames`, so after N
+    # rendered frames the index is (N - 1) % numFrames. Getting this off by one silently references a
+    # DIFFERENT volume state than the run being scored -- which inflates every row uniformly and
+    # looks like "all the denoisers are bad" rather than like a bug.
     if volume_frames:
-        hold_volume_frame(max(0, frame) % int(volume_frames), restir=restir, graph=graph)
+        n = int(volume_frames)
+        hold_volume_frame((max(0, frame) - 1) % n if frame > 0 else (n - 1), restir=restir, graph=graph)
 
     # Guard the failure this function was rewritten to avoid: if the hold ever stops the frame
     # counter again, FrameCapture never fires and the run writes NOTHING while reporting success.
