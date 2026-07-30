@@ -116,6 +116,57 @@ rather than blitting, making it an exact identity test of the transform independ
 | SH pack → resolve (`Dc`) | **3.02e-11** — four orders below the 1.7e-07 noise floor |
 | SH pack → resolve (`Cosine`) | 1.36e-02 — as expected from its 1/π factor |
 
+## First measurement where NRD actually filters
+
+Animated plume (100-frame `fire115` sequence with velocity), frame 80, scored against a per-frame
+reference held at the same volume state, 1200 spp, 960×540.
+
+| run | MSE |
+|---|---|
+| NRD SH, resolve=Cosine | **2.756e-02** |
+| raw ReSTIR | 3.055e-02 |
+| OIDN GPU | 3.122e-02 |
+| NRD radiance, `viewZ=gbuffer` (all zeros) | 3.285e-02 |
+| NRD radiance, `viewZ=restir` | 3.757e-02 |
+| NRD SH, resolve=Dc | 3.756e-02 |
+| NRD radiance, surface mvec | 3.757e-02 |
+| NRD radiance, volume mvec | 3.759e-02 |
+
+**Read the images before the table.** NRD is now removing the plume's noise plainly and obviously —
+the raw estimate is heavily speckled and the NRD outputs are not. What the metric is punishing is a
+systematic **brightness bias**: both NRD variants come out too bright and smear the background. That
+bias costs more MSE than the noise it removed, which is why a working denoiser ranks below raw. This
+is the same trap as the Bistro column, in a different guise, and it is unresolved.
+
+Three things that follow directly:
+
+* **`viewZ=gbuffer` scoring "better" than `viewZ=restir` is not an argument for the zero depth.** The
+  all-zero depth disables filtering, so that row is approximately raw-passthrough (3.285e-02, between
+  raw and the filtered rows). It is the do-nothing baseline, not a result.
+* **`SH-Dc` ≈ `radiance` (3.756e-02 vs 3.757e-02)** — expected, since the DC resolve reduces to the
+  radiance the pack started from. It is a useful consistency check on the SH path, not a finding.
+* **The motion-vector question is STILL not settled.** Surface vs volume differ by 1.5e-05, which is
+  *below* the reference's own noise of 6.1e-05 and therefore not separable. `VR_NRD_VOLMV` stays off.
+
+`SH-Cosine` being the only row under raw is real at this precision (the gap is ~3e-03, far above the
+6.1e-05 reference noise) but should not be over-read: it applies a cosine lobe about a surface normal
+to a medium that has none, so it may be compensating for the brightness bias rather than modelling
+anything. Chasing the bias first would make this row interpretable.
+
+### Reference validity, checked rather than assumed
+
+The animated numbers sit ~15× higher than the static-scene ones, which looks like a broken reference.
+It is not — two hypotheses were tested and both refuted:
+
+* **Off-by-one in the volume pin** — fixed (`addGVDBVolumeSequence` starts at `numFrames-1` and
+  pre-increments, so after N frames the index is `(N-1) % numFrames`), but the numbers did not move.
+* **The reference is averaging the whole sequence** — refuted: references held at frame 20 and frame
+  80 differ by 1.46e-02, so the pin works, and raw@80 is closer to ref@80 (3.07e-02) than to ref@20
+  (4.06e-02), so the alignment is right.
+
+The high absolute values are the scene: with the volume changing every frame, ReSTIR's temporal reuse
+is repeatedly invalidated, so its per-frame estimate is far noisier than on a static scene.
+
 ## Guards
 
 Every bug in this port failed *silently* — a smeared frame, an empty texture, a run that writes
