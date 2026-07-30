@@ -43,13 +43,26 @@ class NRDPass : public RenderPass
 public:
     FALCOR_PLUGIN_CLASS(NRDPass, "NRD", "NRD denoiser.");
 
+    /// Existing values keep their ordinals: these are serialized into render-graph scripts, so
+    /// renumbering silently reinterprets saved graphs as a different denoiser. New v4 entries are
+    /// appended only.
     enum class DenoisingMethod : uint32_t
     {
         RelaxDiffuseSpecular,
         RelaxDiffuse,
         ReblurDiffuseSpecular,
-        SpecularReflectionMv,
-        SpecularDeltaMv
+        SpecularReflectionMv, // v3.1 only -- removed in v4
+        SpecularDeltaMv,      // v3.1 only -- removed in v4
+        // --- v4 only, appended ---
+        RelaxSpecular,
+        ReblurDiffuse,
+        ReblurSpecular,
+        ReblurDiffuseOcclusion,
+        SigmaShadow,
+        SigmaShadowTranslucency,
+        Reference,
+        RelaxDiffuseSh,
+        ReblurDiffuseSh,
     };
 
     FALCOR_ENUM_INFO(
@@ -60,6 +73,15 @@ public:
             {DenoisingMethod::ReblurDiffuseSpecular, "ReblurDiffuseSpecular"},
             {DenoisingMethod::SpecularReflectionMv, "SpecularReflectionMv"},
             {DenoisingMethod::SpecularDeltaMv, "SpecularDeltaMv"},
+            {DenoisingMethod::RelaxSpecular, "RelaxSpecular"},
+            {DenoisingMethod::ReblurDiffuse, "ReblurDiffuse"},
+            {DenoisingMethod::ReblurSpecular, "ReblurSpecular"},
+            {DenoisingMethod::ReblurDiffuseOcclusion, "ReblurDiffuseOcclusion"},
+            {DenoisingMethod::SigmaShadow, "SigmaShadow"},
+            {DenoisingMethod::SigmaShadowTranslucency, "SigmaShadowTranslucency"},
+            {DenoisingMethod::Reference, "Reference"},
+            {DenoisingMethod::RelaxDiffuseSh, "RelaxDiffuseSh"},
+            {DenoisingMethod::ReblurDiffuseSh, "ReblurDiffuseSh"},
         }
     );
 
@@ -86,7 +108,16 @@ private:
     void executeInternal(RenderContext* pRenderContext, const RenderData& renderData);
     void dispatch(RenderContext* pRenderContext, const RenderData& renderData, const nrd::DispatchDesc& dispatchDesc);
 
+#if FALCOR_HAS_NRD4
+    /// v4 renames the opaque handle: an "Instance" hosts one or more denoisers, each keyed by an
+    /// application-chosen Identifier. (v4 reuses the name "Denoiser" for what v3.1 called "Method".)
+    nrd::Instance* mpInstance = nullptr;
+    /// The identifier we register our single denoiser under. Any uint32_t will do as long as it is
+    /// unique within the instance; CreateInstance returns NON_UNIQUE_IDENTIFIER otherwise.
+    static constexpr nrd::Identifier kDenoiserIdentifier = 0;
+#else
     nrd::Denoiser* mpDenoiser = nullptr;
+#endif
 
     bool mEnabled = true;
     DenoisingMethod mDenoisingMethod = DenoisingMethod::RelaxDiffuseSpecular;
@@ -94,10 +125,34 @@ private:
     bool mWorldSpaceMotion = true;
     float mMaxIntensity = 1000.f;
     float mDisocclusionThreshold = 2.f;
+#if FALCOR_HAS_NRD4
+    /// v4 CommonSettings additions. Defaults mirror the SDK's own so behaviour is unchanged until
+    /// something is deliberately altered.
+    float mDisocclusionThresholdAlternate = 5.f;   ///< Percent, as with mDisocclusionThreshold.
+    float mStrandThickness = 80e-6f;
+    float mStrandMaterialID = 999.f;
+    float mCameraAttachedReflectionMaterialID = 999.f;
+    float mSplitScreen = 0.f;                      ///< [0;1] noisy input vs denoised, for eyeballing.
+    /// Renders NRD's own debug view (viewZ, normals, motion, history length) into OUT_VALIDATION.
+    /// The output is only reflected when this is on, so turning it on triggers a graph recompile.
+    bool mEnableValidation = false;
+#endif
     nrd::CommonSettings mCommonSettings = {};
+#if FALCOR_HAS_NRD4
+    /// v4 merges RelaxDiffuseSettings + RelaxDiffuseSpecularSettings + RelaxSpecularSettings into
+    /// one struct shared by all six RELAX denoisers.
+    nrd::RelaxSettings mRelaxSettings = {};
+#else
     nrd::RelaxDiffuseSpecularSettings mRelaxDiffuseSpecularSettings = {};
     nrd::RelaxDiffuseSettings mRelaxDiffuseSettings = {};
+#endif
     nrd::ReblurSettings mReblurSettings = {};
+#if FALCOR_HAS_NRD4
+    /// SIGMA (shadow) and REFERENCE (accumulate-only) take their own settings structs. Kept at SDK
+    /// defaults; SigmaSettings::lightDirection matters only for directional lights.
+    nrd::SigmaSettings mSigmaSettings = {};
+    nrd::ReferenceSettings mReferenceSettings = {};
+#endif
 
     std::vector<ref<Sampler>> mpSamplers;
     std::vector<D3D12DescriptorSetLayout> mCBVSRVUAVdescriptorSetLayouts;
@@ -112,6 +167,18 @@ private:
 
     float4x4 mPrevViewMatrix;
     float4x4 mPrevProjMatrix;
+
+#if FALCOR_HAS_NRD4
+    /// v4 requires the PREVIOUS frame's resolution and jitter in CommonSettings; v3.1 had no such
+    /// concept. All default to zero, and zeros degrade reprojection silently rather than erroring,
+    /// so these must be carried frame to frame.
+    uint2 mPrevResourceSize = {};
+    uint2 mPrevRectSize = {};
+    float2 mPrevCameraJitter = {};
+    /// Pool textures are sized from CommonSettings::resourceSize in v4 (TextureDesc no longer
+    /// carries width/height), so a resolution change must reallocate them.
+    uint2 mPoolResourceSize = {};
+#endif
 
     // Additional classic Falcor compute pass and resources for packing radiance and hitT for NRD.
     ref<ComputePass> mpPackRadiancePassRelax;

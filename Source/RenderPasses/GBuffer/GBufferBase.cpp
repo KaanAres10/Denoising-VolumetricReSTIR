@@ -63,6 +63,10 @@ void GBufferBase::parseProperties(const Properties& props)
     {
         if (key == kOutputSize)
             mOutputSizeSelection = value;
+        else if (key == "upscale")
+            mUpscaling = value;
+        else if (key == "upscaleRatio")
+            mUpscaleRatio = value;
         else if (key == kFixedOutputSize)
             mFixedOutputSize = value;
         else if (key == kSamplePattern)
@@ -91,6 +95,9 @@ Properties GBufferBase::getProperties() const
     props[kOutputSize] = mOutputSizeSelection;
     if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed)
         props[kFixedOutputSize] = mFixedOutputSize;
+    props["upscale"] = mUpscaling;
+    if (mUpscaling)
+        props["upscaleRatio"] = mUpscaleRatio;
     props[kSamplePattern] = mSamplePattern;
     props[kSampleCount] = mSampleCount;
     props[kUseAlphaTest] = mUseAlphaTest;
@@ -104,12 +111,37 @@ void GBufferBase::renderUI(Gui::Widgets& widget)
 {
     // Controls for output size.
     // When output size requirements change, we'll trigger a graph recompile to update the render pass I/O sizes.
-    if (widget.dropdown("Output size", mOutputSizeSelection))
-        requestRecompile();
-    if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed)
+    // Writes the GRAPH-WIDE scale, not just this pass: an upscaler needs every input at the same
+    // resolution, so a per-pass toggle would only ever produce a mismatch.
+    if (widget.checkbox("Upscaling", mUpscaling))
     {
-        if (widget.var("Size in pixels", mFixedOutputSize, 32u, 16384u))
+        setRenderScale(mUpscaling, mUpscaleRatio);
+        requestRecompile();
+    }
+    widget.tooltip(
+        "Render at a ratio of the DISPLAY instead of a fixed size, for a DLSS upscaling setup. Must "
+        "be set to the SAME ratio on every pass feeding the upscaler -- Ray Reconstruction needs its "
+        "colour and guides pixel-aligned, and a mismatch shows as a black band or misregistered edges "
+        "rather than an error.",
+        true
+    );
+    if (mUpscaling)
+    {
+        if (widget.var("Render ratio", mUpscaleRatio, 0.25f, 1.f))
+        {
+            setRenderScale(mUpscaling, mUpscaleRatio);
             requestRecompile();
+        }
+    }
+    else
+    {
+        if (widget.dropdown("Output size", mOutputSizeSelection))
+            requestRecompile();
+        if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed)
+        {
+            if (widget.var("Size in pixels", mFixedOutputSize, 32u, 16384u))
+                requestRecompile();
+        }
     }
 
     // Sample pattern controls.
@@ -214,6 +246,26 @@ static ref<CPUSampleGenerator> createSamplePattern(GBufferBase::SamplePattern ty
         FALCOR_UNREACHABLE();
         return nullptr;
     }
+}
+
+uint2 GBufferBase::resolveOutputSize(const uint2 defaultTexDims) const
+{
+    // Adopt the graph-wide render scale whenever it has changed, so a UI toggle on any one pass
+    // brings the whole chain with it. Scripted properties do not bump the generation, so a script's
+    // configuration is never overridden here.
+    if (getRenderScale().generation != mRenderScaleGen)
+    {
+        mRenderScaleGen = getRenderScale().generation;
+        mUpscaling = getRenderScale().enabled;
+        mUpscaleRatio = getRenderScale().ratio;
+    }
+
+    if (!mUpscaling)
+        return RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, defaultTexDims);
+
+    const float r = std::clamp(mUpscaleRatio, 0.25f, 1.f);
+    const uint2 sz = uint2(uint32_t(defaultTexDims.x * r) / 2 * 2, uint32_t(defaultTexDims.y * r) / 2 * 2);
+    return uint2(std::max(sz.x, 32u), std::max(sz.y, 32u));
 }
 
 void GBufferBase::updateFrameDim(const uint2 frameDim)

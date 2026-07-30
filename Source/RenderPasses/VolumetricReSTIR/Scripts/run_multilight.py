@@ -24,7 +24,7 @@
 
 from falcor import *
 
-DATA_DIR = r"C:\Users\aresk\Desktop\Falcor\Denoising-VolumetricReSTIR\Bin\x64\Release\Data"
+DATA_DIR = r"C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData"
 
 m.loadScene(DATA_DIR + r"\bunny_multilight.pyscene")
 m.scene.addGVDBVolume(sigma_a=float3(1, 1, 1), sigma_s=float3(9, 9, 9), g=0.0,

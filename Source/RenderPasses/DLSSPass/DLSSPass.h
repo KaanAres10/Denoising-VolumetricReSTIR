@@ -38,11 +38,17 @@ class DLSSPass : public RenderPass
 public:
     FALCOR_PLUGIN_CLASS(DLSSPass, "DLSSPass", "DL antialiasing/upscaling.");
 
+    /// The complete NVSDK_NGX_PerfQuality_Value set. SDK names, which differ from NVIDIA's UI names:
+    /// MaxQuality = "Quality" (1/1.5), MaxPerf = "Performance" (1/2), UltraPerformance =
+    /// "Ultra Performance" (1/3). UltraQuality (1/1.3) was specified but never shipped commercially.
     enum class Profile : uint32_t
     {
         MaxPerf,
         Balanced,
         MaxQuality,
+        UltraPerformance,
+        UltraQuality,
+        DLAA,   ///< Native resolution, no upscaling -- required to use DLSS as a pure denoiser column.
     };
 
     FALCOR_ENUM_INFO(
@@ -51,6 +57,72 @@ public:
             {Profile::MaxPerf, "MaxPerf"},
             {Profile::Balanced, "Balanced"},
             {Profile::MaxQuality, "MaxQuality"},
+            {Profile::UltraPerformance, "UltraPerformance"},
+            {Profile::UltraQuality, "UltraQuality"},
+            {Profile::DLAA, "DLAA"},
+        }
+    );
+
+    /// Super Resolution denoising network. NOTE these letters mean something DIFFERENT from the Ray
+    /// Reconstruction presets of the same name -- they are separate enums in separate headers. Per
+    /// nvsdk_ngx_defs.h (310.7.0): A..D removed, E/F deprecated, G..I and N/O "do not use", leaving
+    /// J, K, L, M. K is the transformer model and the default for DLAA/Balanced/Quality; L is the
+    /// default for Ultra Performance and M for Performance; J trades ghosting for flicker versus K.
+    /// Which nvngx_dlss.dll -- and therefore which trained network family -- NGX loads.
+    ///
+    /// The preset LETTER alone does not identify a model: the same letter maps to a different network
+    /// in different SDK generations. The architecture is chosen here, the variant within it by
+    /// RenderPreset. Legacy is the only way to reach a convolutional model, because the 310.x line
+    /// removed every CNN preset.
+    enum class SDKVariant : uint32_t
+    {
+        Current,   ///< 310.7.0 (DLSS 4). Transformer. Presets J/K/L/M.
+        LegacyCNN, ///< 3.7.20. Convolutional. Presets A..F. NOTE: no Ray Reconstruction in this line.
+    };
+
+    FALCOR_ENUM_INFO(
+        SDKVariant,
+        {
+            {SDKVariant::Current, "Current"},
+            {SDKVariant::LegacyCNN, "LegacyCNN"},
+        }
+    );
+
+    /// Super Resolution network. Which of these are valid depends on SDKVariant -- an unimplemented
+    /// preset silently reverts to the DLL's default rather than failing, so pairing them wrongly
+    /// produces a plausible image of the wrong model. That is the whole trap this enum documents.
+    ///
+    ///   Current (310.7.0, transformer): J K L M   -- A..D removed, E/F deprecated, rest "do not use"
+    ///   LegacyCNN (3.7.20, CNN):        A..F      -- J..O do not exist in that DLL
+    enum class RenderPreset : uint32_t
+    {
+        Default,                  ///< Let NGX choose: K for DLAA/Balanced/Quality, M for Perf, L for Ultra Perf.
+        A_CNN,                    ///< Legacy only. Stability-oriented CNN.
+        B_CNN,                    ///< Legacy only. As A, tuned for Ultra Performance.
+        C_CNN,                    ///< Legacy only. Favours responsiveness on fast motion.
+        D_CNN,                    ///< Legacy only. The DLSS 2/3-era default CNN.
+        E_CNN,                    ///< Legacy only.
+        F_CNN,                    ///< Legacy only. Default for Ultra Performance / DLAA in 3.x.
+        J_TransformerLessGhost,   ///< Like K, slightly less ghosting for slightly more flicker.
+        K_TransformerBestQuality, ///< Best image quality, higher cost. Default for DLAA/Balanced/Quality.
+        L_TransformerUltraPerf,   ///< Tuned for, and the default of, Ultra Performance.
+        M_TransformerPerf,        ///< Tuned for, and the default of, Performance.
+    };
+
+    FALCOR_ENUM_INFO(
+        RenderPreset,
+        {
+            {RenderPreset::Default, "Default"},
+            {RenderPreset::A_CNN, "A_CNN"},
+            {RenderPreset::B_CNN, "B_CNN"},
+            {RenderPreset::C_CNN, "C_CNN"},
+            {RenderPreset::D_CNN, "D_CNN"},
+            {RenderPreset::E_CNN, "E_CNN"},
+            {RenderPreset::F_CNN, "F_CNN"},
+            {RenderPreset::J_TransformerLessGhost, "J_TransformerLessGhost"},
+            {RenderPreset::K_TransformerBestQuality, "K_TransformerBestQuality"},
+            {RenderPreset::L_TransformerUltraPerf, "L_TransformerUltraPerf"},
+            {RenderPreset::M_TransformerPerf, "M_TransformerPerf"},
         }
     );
 
@@ -85,6 +157,10 @@ private:
     // Options
     bool mEnabled = true;
     Profile mProfile = Profile::Balanced;
+    RenderPreset mPreset = RenderPreset::Default;
+    /// Only read when the NGX session is created. NVSDK_NGX_*_Init is per-device and per-process, so
+    /// this cannot be flipped live once a session exists -- compare the two as separate runs.
+    SDKVariant mSDKVariant = SDKVariant::Current;
     MotionVectorScale mMotionVectorScale = MotionVectorScale::Absolute;
     bool mIsHDR = true;
     float mSharpness = 0.f;
@@ -101,8 +177,10 @@ private:
     ref<Texture> mpOutput;   ///< Internal output buffer. This is used if format/size conversion upon output is needed.
     ref<Texture> mpExposure; ///< Texture of size 1x1 holding exposure value.
 
-    std::unique_ptr<NGXWrapper> mpNGXWrapper;
+    std::shared_ptr<NGXWrapper> mpNGXWrapper;   ///< Shared per-device NGX session, see NGXWrapper::acquire().
 };
 
 FALCOR_ENUM_REGISTER(DLSSPass::Profile);
+FALCOR_ENUM_REGISTER(DLSSPass::RenderPreset);
+FALCOR_ENUM_REGISTER(DLSSPass::SDKVariant);
 FALCOR_ENUM_REGISTER(DLSSPass::MotionVectorScale);

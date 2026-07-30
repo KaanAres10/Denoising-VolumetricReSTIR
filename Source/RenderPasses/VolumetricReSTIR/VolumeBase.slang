@@ -64,30 +64,36 @@ float3 computeNonNormalizedRayDirPinholeScaled(Camera cam, uint2 pixel, int scal
 }
 
 // Prev-frame (explicit ray-tracing frame) variants used by temporal reprojection.
-float3 computeNonNormalizedRayDirPinholeWithFrame(uint2 pixel, float2 offsets, uint2 frameDim, float3 cameraU, float3 cameraV, float3 cameraW)
+// Previous-frame ray reconstruction. `jitter` MUST be the jitter the previous frame was rendered
+// with: the reservoirs being re-evaluated were generated on that jittered ray, so evaluating p-hat
+// on an unjittered one makes p-hat wrong for that domain. Talbot weights renormalise, so the usual
+// cost is variance -- but where the wrong ray flips a hit to a miss (silhouettes) p-hat becomes
+// exactly zero, the weights stop summing to one, and the result is genuinely biased.
+// Passing jitter = 0 reproduces the previous behaviour exactly.
+float3 computeNonNormalizedRayDirPinholeWithFrame(uint2 pixel, float2 offsets, uint2 frameDim, float3 cameraU, float3 cameraV, float3 cameraW, float2 jitter = float2(0, 0))
 {
-    float2 p = (float2(pixel) + offsets) / frameDim;
+    float2 p = (float2(pixel) + offsets) / frameDim + float2(-jitter.x, jitter.y);
     float2 ndc = float2(2, -2) * p + float2(-1, 1);
     return ndc.x * cameraU + ndc.y * cameraV + cameraW;
 }
 
-CameraRay computeRayPinholeWithRayTracingFrameScaled(Camera cam, uint2 pixel, int scale, float2 offset, uint2 frameDim, float3 posW, float3 cameraU, float3 cameraV, float3 cameraW)
+CameraRay computeRayPinholeWithRayTracingFrameScaled(Camera cam, uint2 pixel, int scale, float2 offset, uint2 frameDim, float3 posW, float3 cameraU, float3 cameraV, float3 cameraW, float2 jitter = float2(0, 0))
 {
     float2 pixelPos = (float2(pixel) + offset) * scale;
     CameraRay ray;
     ray.origin = posW;
-    ray.dir = normalize(computeNonNormalizedRayDirPinholeWithFrame(uint2(pixelPos), pixelPos - int2(pixelPos), frameDim, cameraU, cameraV, cameraW));
+    ray.dir = normalize(computeNonNormalizedRayDirPinholeWithFrame(uint2(pixelPos), pixelPos - int2(pixelPos), frameDim, cameraU, cameraV, cameraW, jitter));
     float invCos = 1.f / dot(normalize(cameraW), ray.dir);
     ray.tMin = cam.data.nearZ * invCos;
     ray.tMax = cam.data.farZ * invCos;
     return ray;
 }
 
-float3 computeWorldPositionWithRayTracingFrameScaled(Camera cam, uint2 pixel, int scale, float2 offset, uint2 frameDim, float3 posW, float3 cameraU, float3 cameraV, float3 cameraW, float depth)
+float3 computeWorldPositionWithRayTracingFrameScaled(Camera cam, uint2 pixel, int scale, float2 offset, uint2 frameDim, float3 posW, float3 cameraU, float3 cameraV, float3 cameraW, float depth, float2 jitter = float2(0, 0))
 {
     float2 pixelPos = (float2(pixel) + offset) * scale;
     float3 origin = posW;
-    float3 dir = normalize(computeNonNormalizedRayDirPinholeWithFrame(uint2(pixelPos), pixelPos - int2(pixelPos), frameDim, cameraU, cameraV, cameraW));
+    float3 dir = normalize(computeNonNormalizedRayDirPinholeWithFrame(uint2(pixelPos), pixelPos - int2(pixelPos), frameDim, cameraU, cameraV, cameraW, jitter));
     return origin + depth * dir;
 }
 

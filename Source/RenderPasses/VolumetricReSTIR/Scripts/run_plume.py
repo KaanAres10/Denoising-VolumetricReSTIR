@@ -16,7 +16,7 @@
 
 from falcor import *
 
-DATA_DIR = r"C:\Users\aresk\Desktop\Falcor\Denoising-VolumetricReSTIR\Bin\x64\Release\Data"
+DATA_DIR = r"C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData"
 
 # How many consecutive frames have been baked, starting at START_FRAME (the fork used 100..299).
 START_FRAME = 100

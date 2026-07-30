@@ -75,7 +75,7 @@ VBufferRT::VBufferRT(ref<Device> pDevice, const Properties& props) : GBufferBase
 RenderPassReflection VBufferRT::reflect(const CompileData& compileData)
 {
     RenderPassReflection reflector;
-    const uint2 sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, compileData.defaultTexDims);
+    const uint2 sz = resolveOutputSize(compileData.defaultTexDims);
 
     // Add the required output. This always exists.
     reflector.addOutput(kVBufferName, kVBufferDesc)

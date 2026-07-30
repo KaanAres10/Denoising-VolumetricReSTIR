@@ -73,6 +73,37 @@ struct FALCOR_API RenderPassHelpers
     static uint2 calculateIOSize(const IOSize selection, const uint2 fixedSize, const uint2 windowSize);
 };
 
+/**
+ * Process-wide render scale, for DLSS-style upscaling setups.
+ *
+ * An upscaler needs every pass that feeds it -- the estimator, the G-buffer and any guide pass -- to
+ * render at exactly the same resolution. That makes the render scale a property of the GRAPH, but a
+ * Falcor render graph has no graph-level properties: each pass owns its own size, and a UI control on
+ * one pass silently desynchronises it from its siblings. The failure is not diagnosed anywhere -- the
+ * upscaler samples mismatched inputs as though they matched, so it appears as a black band or
+ * misregistered edges.
+ *
+ * This lives in Falcor rather than in a plugin header because the passes involved are separate DLLs;
+ * only core is shared between them.
+ *
+ * Passes opt in by adopting the values whenever `generation` changes, so:
+ *   - a UI control on ANY pass calls setRenderScale() and every pass follows on the next recompile;
+ *   - loading a graph from a script sets each pass's own properties and does NOT bump the
+ *     generation, so scripted configurations are never overridden by a stale UI value.
+ */
+struct RenderScale
+{
+    bool enabled = false;
+    float ratio = 0.58f;
+    /// Bumped by setRenderScale(). Passes adopt the values when this differs from what they last saw.
+    uint32_t generation = 0;
+};
+
+FALCOR_API const RenderScale& getRenderScale();
+
+/// Set the process-wide render scale and bump its generation. Call requestRecompile() afterwards.
+FALCOR_API void setRenderScale(bool enabled, float ratio);
+
 FALCOR_ENUM_REGISTER(RenderPassHelpers::IOSize);
 
 // TODO: Move below out of the global scope, e.g. into RenderPassHelpers struct.

@@ -6,6 +6,7 @@ rem %2 -> Binary output directory
 rem %3 -> Build configuration
 rem %4 -> Slang directory
 rem %5 -> DLSS directory
+rem %6 -> NRD directory (whichever SDK CMake selected; see FALCOR_NRD_DIR)
 
 set ExtDir=%1\external\packman\
 set OutDir=%2
@@ -55,16 +56,33 @@ if exist %NvApiDir% (
     copy /y %NvApiDir%\nvShaderExtnEnums.h %NvApiTargetDir% >nul
 )
 
-rem Copy NRD
-set NrdDir=%ExtDir%\nrd
+rem Copy NRD.
+rem
+rem The directory comes from CMake (%6 = FALCOR_NRD_DIR) rather than being probed here, because two
+rem SDKs can be vendored at once and only CMake knows which one the code was compiled against.
+rem Probing for existence would happily ship v4 shaders next to a v3.1-built NRDPass -- and a
+rem DLL/shader mismatch compiles and then denoises incorrectly instead of failing.
+rem
+rem Layout differs between them: v4 is FLAT (Shaders\*.cs.hlsl beside ml.hlsli), v3.1 nests under
+rem Shaders\Source. Both are copied recursively, so only the Lib layout needs a branch -- v4 ships
+rem Release only.
+set NrdDir=%6
 set NrdTargetDir=%OutDir%\shaders\nrd\Shaders
-if exist %NrdDir% (
-    if not exist %NrdTargetDir% mkdir %NrdTargetDir% >nul
-    robocopy %NrdDir%\Shaders %NrdTargetDir% /s /r:0 >nul
-    if %IsDebug% EQU 0 (
-        robocopy %NrdDir%\Lib\Release %OutDir% *.dll /r:0 >nul
-    ) else (
-        robocopy %NrdDir%\Lib\Debug %OutDir% *.dll /r:0 >nul
+if not "%NrdDir%" == "" (
+    if exist %NrdDir%\Include\NRD.h (
+        if not exist %NrdTargetDir% mkdir %NrdTargetDir% >nul
+        rem /PURGE: a leftover v3.1 Source\ subtree would still satisfy #includes and could win over
+        rem the v4 headers, giving a silently mixed shader set.
+        robocopy %NrdDir%\Shaders %NrdTargetDir% /s /purge /r:0 >nul
+        if exist %NrdDir%\Lib\Debug (
+            if %IsDebug% EQU 0 (
+                robocopy %NrdDir%\Lib\Release %OutDir% *.dll /r:0 >nul
+            ) else (
+                robocopy %NrdDir%\Lib\Debug %OutDir% *.dll /r:0 >nul
+            )
+        ) else (
+            robocopy %NrdDir%\Lib\Release %OutDir% *.dll /r:0 >nul
+        )
     )
 )
 
@@ -124,9 +142,33 @@ if %IsDebug% EQU 0 (
     robocopy %ExtDir%\nvtt\lib\x64-v141\Debug %OutDir% nvtt.dll /r:0 >nul
 )
 
-rem Copy DLSS
+rem Copy DLSS. nvngx_dlssd.dll is Ray Reconstruction and only exists in SDKs from the 310.x line;
+rem robocopy silently skips missing files, so this stays correct against the 3.5.0 packman package.
 if exist %DLSSDir% (
-    robocopy %DLSSDir%\lib\Windows_x86_64\rel %OutDir% nvngx_dlss.dll /r:0 >nul
+    robocopy %DLSSDir%\lib\Windows_x86_64\rel %OutDir% nvngx_dlss.dll nvngx_dlssd.dll /r:0 >nul
+)
+
+rem Copy the legacy (3.7.x) Super Resolution DLL into its own subdirectory. It must NOT sit next to
+rem the current one -- same filename, and whichever NGX finds first wins. DLSSPass selects between
+rem them by passing this directory as the NGX feature search path. There is deliberately no
+rem nvngx_dlssd.dll here: no 3.x SDK ever shipped Ray Reconstruction.
+if exist %ExtDir%\dlss-legacy-37 (
+    robocopy %ExtDir%\dlss-legacy-37\lib\Windows_x86_64\rel %OutDir%\dlss_cnn nvngx_dlss.dll /r:0 >nul
+)
+
+rem Falcor.dll imports libprotoc/protobuf/abseil and z.dll at LOAD time (via the USD build), but the
+rem USD deployment only puts them in plugins\. The loader searches the executable's directory, not
+rem plugins\, so without these the process dies at startup with 0xC0000135 (STATUS_DLL_NOT_FOUND)
+rem before main() -- no log, no window, and Mogwai --help fails too, which makes it look like a
+rem corrupt build rather than a missing file.
+if exist %OutDir%\plugins\libprotoc.dll (
+    robocopy %OutDir%\plugins %OutDir% libprotoc.dll libprotobuf.dll abseil_dll.dll /r:0 >nul
+)
+if not exist %OutDir%\z.dll (
+    if exist %ExtDir%\nv-usd-release\bin\zlib.dll (
+        rem Same library, and the import binds by the name Falcor was linked against.
+        copy /y %ExtDir%\nv-usd-release\bin\zlib.dll %OutDir%\z.dll >nul
+    )
 )
 
 rem robocopy sets the error level to something that is not zero even if the copy operation was successful. Set the error level to zero

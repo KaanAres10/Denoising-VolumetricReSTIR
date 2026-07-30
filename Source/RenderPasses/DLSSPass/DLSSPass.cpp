@@ -26,6 +26,7 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #include "DLSSPass.h"
+#include "DLSSDPass.h"
 
 namespace
 {
@@ -38,6 +39,11 @@ const char kOutput[] = "output";
 const char kEnabled[] = "enabled";
 const char kOutputSize[] = "outputSize";
 const char kProfile[] = "profile";
+const char kPreset[] = "preset";
+const char kSDKVariant[] = "sdkVariant";
+/// Subdirectory of the runtime directory holding the legacy (CNN) feature DLL. Populated by
+/// build_scripts/deploycommon.bat from external/dlss-legacy-37.
+const char kLegacySDKSubdir[] = "dlss_cnn";
 const char kMotionVectorScale[] = "motionVectorScale";
 const char kIsHDR[] = "isHDR";
 const char kSharpness[] = "sharpness";
@@ -52,6 +58,9 @@ static void registerDLSSPass(pybind11::module& m)
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
 {
     registry.registerClass<RenderPass, DLSSPass>();
+    // Ray Reconstruction lives in the same plugin DLL, so it registers here -- a plugin may only
+    // export one registerPlugin().
+    registry.registerClass<RenderPass, DLSSDPass>();
     ScriptBindings::registerBinding(registerDLSSPass);
 }
 
@@ -65,6 +74,10 @@ DLSSPass::DLSSPass(ref<Device> pDevice, const Properties& props) : RenderPass(pD
             mOutputSizeSelection = value;
         else if (key == kProfile)
             mProfile = value;
+        else if (key == kPreset)
+            mPreset = value;
+        else if (key == kSDKVariant)
+            mSDKVariant = value;
         else if (key == kMotionVectorScale)
             mMotionVectorScale = value;
         else if (key == kIsHDR)
@@ -89,6 +102,8 @@ Properties DLSSPass::getProperties() const
     props[kEnabled] = mEnabled;
     props[kOutputSize] = mOutputSizeSelection;
     props[kProfile] = mProfile;
+    props[kPreset] = mPreset;
+    props[kSDKVariant] = mSDKVariant;
     props[kMotionVectorScale] = mMotionVectorScale;
     props[kIsHDR] = mIsHDR;
     props[kSharpness] = mSharpness;
@@ -144,6 +159,24 @@ void DLSSPass::renderUI(Gui::Widgets& widget)
     {
         mRecreate |= widget.dropdown("Profile", mProfile);
 
+        widget.dropdown("SDK variant", mSDKVariant);
+        widget.tooltip(
+            "Which nvngx_dlss.dll NGX loads: Current = 310.7.0 (transformer, presets J/K/L/M), "
+            "LegacyCNN = 3.7.20 (convolutional, presets A..F). Read only when the NGX session is "
+            "first created -- changing it needs a restart, so compare the two as separate runs. "
+            "The log line '[NGX] loaded nvngx_dlss.dll version ...' reports what is really running.",
+            true
+        );
+
+        mRecreate |= widget.dropdown("Render preset", mPreset);
+        widget.tooltip(
+            "Super Resolution network. K is the transformer model and the default for "
+            "DLAA/Balanced/Quality; L and M are the defaults for Ultra Performance and Performance. "
+            "These letters are NOT the same networks as the Ray Reconstruction presets of the same "
+            "name -- the two features have separate enums.",
+            true
+        );
+
         widget.dropdown("Motion vector scale", mMotionVectorScale);
         widget.tooltip(
             "Absolute: Motion vectors are provided in absolute screen space length (pixels)\n"
@@ -168,7 +201,13 @@ void DLSSPass::renderUI(Gui::Widgets& widget)
 void DLSSPass::initializeDLSS(RenderContext* pRenderContext)
 {
     if (!mpNGXWrapper)
-        mpNGXWrapper.reset(new NGXWrapper(mpDevice, getRuntimeDirectory(), getRuntimeDirectory()));
+    {
+        // The feature search path is what selects the DLL, and therefore the network architecture.
+        // kLegacySDKSubdir holds the 3.7.20 nvngx_dlss.dll, deployed beside the executable.
+        const std::filesystem::path searchPath =
+            mSDKVariant == SDKVariant::LegacyCNN ? getRuntimeDirectory() / kLegacySDKSubdir : getRuntimeDirectory();
+        mpNGXWrapper = NGXWrapper::acquire(mpDevice, getRuntimeDirectory(), searchPath);
+    }
 
     Texture* target = nullptr; // Not needed for D3D12 implementation
     bool depthInverted = false;
@@ -184,7 +223,49 @@ void DLSSPass::initializeDLSS(RenderContext* pRenderContext)
     case Profile::MaxQuality:
         perfQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality;
         break;
+    case Profile::UltraPerformance:
+        perfQuality = NVSDK_NGX_PerfQuality_Value_UltraPerformance;
+        break;
+    case Profile::UltraQuality:
+        perfQuality = NVSDK_NGX_PerfQuality_Value_UltraQuality;
+        break;
+    case Profile::DLAA:
+        perfQuality = NVSDK_NGX_PerfQuality_Value_DLAA;
+        break;
     }
+
+    // 0 = no hint, i.e. let NGX pick the default network for this quality level.
+    // A..D are no longer *declared* by the 310.7.0 header (only commented as removed), so the CNN
+    // presets are written as their numeric values. Those values are stable ABI -- the helper passes
+    // them through NVSDK_NGX_Parameter_SetUI as plain integers, never as a versioned struct -- which
+    // is also why the 3.7.20 DLL can be driven from these headers at all. E and F are still declared,
+    // so anchor the numbering on them and let the compiler catch any renumbering.
+    static_assert(NVSDK_NGX_DLSS_Hint_Render_Preset_E == 5 && NVSDK_NGX_DLSS_Hint_Render_Preset_F == 6,
+                  "DLSS Super Resolution render preset values have been renumbered");
+    uint32_t preset = 0u;
+    switch (mPreset)
+    {
+    case RenderPreset::A_CNN: preset = 1u; break;
+    case RenderPreset::B_CNN: preset = 2u; break;
+    case RenderPreset::C_CNN: preset = 3u; break;
+    case RenderPreset::D_CNN: preset = 4u; break;
+    case RenderPreset::E_CNN: preset = NVSDK_NGX_DLSS_Hint_Render_Preset_E; break;
+    case RenderPreset::F_CNN: preset = NVSDK_NGX_DLSS_Hint_Render_Preset_F; break;
+    case RenderPreset::J_TransformerLessGhost: preset = NVSDK_NGX_DLSS_Hint_Render_Preset_J; break;
+    case RenderPreset::K_TransformerBestQuality: preset = NVSDK_NGX_DLSS_Hint_Render_Preset_K; break;
+    case RenderPreset::L_TransformerUltraPerf: preset = NVSDK_NGX_DLSS_Hint_Render_Preset_L; break;
+    case RenderPreset::M_TransformerPerf: preset = NVSDK_NGX_DLSS_Hint_Render_Preset_M; break;
+    case RenderPreset::Default: break;
+    }
+
+    // A mismatched pairing does not fail -- the DLL falls back to its own default and returns a
+    // perfectly plausible image of the wrong network, which would quietly corrupt a comparison.
+    const bool cnnPreset = mPreset >= RenderPreset::A_CNN && mPreset <= RenderPreset::F_CNN;
+    const bool transformerPreset = mPreset >= RenderPreset::J_TransformerLessGhost;
+    if (cnnPreset && mSDKVariant != SDKVariant::LegacyCNN)
+        logWarning("DLSSPass: CNN preset selected with the Current (transformer) SDK; it does not exist there and NGX will use its default instead.");
+    if (transformerPreset && mSDKVariant == SDKVariant::LegacyCNN)
+        logWarning("DLSSPass: transformer preset selected with the LegacyCNN SDK; it does not exist there and NGX will use its default instead.");
 
     auto optimalSettings = mpNGXWrapper->queryOptimalSettings(mInputSize, perfQuality);
 
@@ -200,7 +281,7 @@ void DLSSPass::initializeDLSS(RenderContext* pRenderContext)
     );
 
     mpNGXWrapper->releaseDLSS();
-    mpNGXWrapper->initializeDLSS(pRenderContext, mInputSize, mDLSSOutputSize, target, mIsHDR, depthInverted, perfQuality);
+    mpNGXWrapper->initializeDLSS(pRenderContext, mInputSize, mDLSSOutputSize, target, mIsHDR, depthInverted, perfQuality, preset);
 }
 
 void DLSSPass::executeInternal(RenderContext* pRenderContext, const RenderData& renderData)

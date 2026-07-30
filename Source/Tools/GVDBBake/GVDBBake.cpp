@@ -118,6 +118,19 @@ int main(int argc, char** argv)
             int slotId = mipId; if (typeId == 1) slotId += kNumMaxMips;
             int levs = gvdb.mPool->getNumLevels();
 
+            // Diagnostic: brickres is the per-brick footprint in the atlas and includes the apron,
+            // so (brickres - leafRes) / 2 is the apron width. An apron of 0 means there is no border
+            // to interpolate into and brick seams are inherent to the packing; >= 1 means the apron
+            // exists and only needs filling (VolumeGVDB::UpdateApron).
+            if (mipId == 0 && typeId == 0)
+            {
+                Vector3DI ar = gvdb.mPool->getAtlasRes(0);
+                int brickres = gvdb.mPool->getAtlasBrickres(0);
+                int leafres = gvdb.getRes(0);
+                printf("  [diag] atlasRes=%dx%dx%d brickres=%d leafRes=%d leafDim=%d apron=%d levels=%d\n",
+                    ar.x, ar.y, ar.z, brickres, leafres, gvdb.getLD(0), (brickres - leafres) / 2, levs);
+            }
+
             for (int n = 0; n <= levs - 1; n++)
             {
                 int cnt = (int)gvdb.mPool->getPoolTotalCnt(0, n);
@@ -231,6 +244,29 @@ int main(int argc, char** argv)
                 std::vector<float> clamped(numAtlas);
                 float* atlasCPU = gvdb.mPool->getAtlasCPU(0);
                 for (int i = 0; i < numAtlas; i++) clamped[i] = atlasCPU[i] / gvdb.mGridValMax < 1e-9f ? 0.f : atlasCPU[i];
+                // Diagnostic: compare occupancy of apron voxels (the 1-voxel border of each brickres
+                // cell) against brick interiors. If interiors are populated but aprons are ~empty,
+                // the apron was never filled and trilinear filtering at every brick face reads zero
+                // -- which shows up as a regular grid of seams through the volume.
+                if (slotId == 0)
+                {
+                    const int br = brickRes;
+                    uint64_t apN = 0, apNZ = 0, inN = 0, inNZ = 0;
+                    for (int z = 0; z < atlasDepth; z++)
+                        for (int y = 0; y < atlasH; y++)
+                            for (int x = 0; x < atlasW; x++)
+                            {
+                                const int mx = x % br, my = y % br, mz = z % br;
+                                const bool isApron = (mx == 0 || mx == br - 1 || my == 0 || my == br - 1 || mz == 0 || mz == br - 1);
+                                const float v = clamped[(size_t)z * atlasW * atlasH + (size_t)y * atlasW + x];
+                                if (isApron) { apN++; if (v != 0.f) apNZ++; }
+                                else { inN++; if (v != 0.f) inNZ++; }
+                            }
+                    printf("  [diag] apron voxels %llu, non-zero %llu (%.2f%%) | interior %llu, non-zero %llu (%.2f%%)\n",
+                        (unsigned long long)apN, (unsigned long long)apNZ, 100.0 * apNZ / (apN ? apN : 1),
+                        (unsigned long long)inN, (unsigned long long)inNZ, 100.0 * inNZ / (inN ? inN : 1));
+                }
+
                 slots[slotId].hasAtlas = true;
                 slots[slotId].w = atlasW; slots[slotId].h = atlasH; slots[slotId].d = atlasDepth; slots[slotId].p1 = part1Depth; slots[slotId].p2 = part2Depth;
                 slots[slotId].isVelocity = 0;

@@ -26,7 +26,13 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #define NRD_COMPILER_DXC
+// v4 flattened the shader tree: NRD.hlsli sits beside the .cs.hlsl files rather than under
+// Include/. NRD_V4 is supplied by NRDPass.cpp from FALCOR_HAS_NRD4.
+#ifdef NRD_V4
+#include "nrd/Shaders/NRD.hlsli"
+#else
 #include "nrd/Shaders/Include/NRD.hlsli"
+#endif
 
 import Utils.Color.ColorHelpers;
 
@@ -40,7 +46,13 @@ import Utils.Color.ColorHelpers;
 
 cbuffer PerImageCB
 {
+#ifdef NRD_V4
+    // v4's ReblurHitDistanceParameters is {A,B,C} -- the D term was removed along with the old
+    // lerp(1,C,exp2(D*r^2)) normalization curve.
+    float3 gHitDistParams;
+#else
     float4 gHitDistParams;
+#endif
     float gMaxIntensity;
 
     Texture2D<float> gViewZ;
@@ -79,8 +91,8 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
 
 #if NRD_METHOD == NRD_METHOD_RELAX_DIFFUSE_SPECULAR
 
-    diffuseRadianceHitDist = RELAX_FrontEnd_PackRadianceAndHitDist(diffuseRadianceHitDist.rgb, diffuseRadianceHitDist.a);
-    specularRadianceHitDist = RELAX_FrontEnd_PackRadianceAndHitDist(specularRadianceHitDist.rgb, specularRadianceHitDist.a);
+    diffuseRadianceHitDist = RELAX_FrontEnd_PackRadianceAndHitDist(diffuseRadianceHitDist.rgb, diffuseRadianceHitDist.a, true);
+    specularRadianceHitDist = RELAX_FrontEnd_PackRadianceAndHitDist(specularRadianceHitDist.rgb, specularRadianceHitDist.a, true);
 
 #else // NRD_METHOD == NRD_METHOD_REBLUR_DIFFUSE_SPECULAR
 
@@ -88,10 +100,14 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     float linearRoughness = gNormalRoughness[ipos].z;
 
     diffuseRadianceHitDist.a = REBLUR_FrontEnd_GetNormHitDist(diffuseRadianceHitDist.a, viewZ, gHitDistParams, linearRoughness);
-    REBLUR_FrontEnd_PackRadianceAndHitDist(diffuseRadianceHitDist.rgb, diffuseRadianceHitDist.a);
-
     specularRadianceHitDist.a = REBLUR_FrontEnd_GetNormHitDist(specularRadianceHitDist.a, viewZ, gHitDistParams, linearRoughness);
+#ifdef NRD_V4
+    diffuseRadianceHitDist = REBLUR_FrontEnd_PackRadianceAndNormHitDist(diffuseRadianceHitDist.rgb, diffuseRadianceHitDist.a, true);
+    specularRadianceHitDist = REBLUR_FrontEnd_PackRadianceAndNormHitDist(specularRadianceHitDist.rgb, specularRadianceHitDist.a, true);
+#else
+    REBLUR_FrontEnd_PackRadianceAndHitDist(diffuseRadianceHitDist.rgb, diffuseRadianceHitDist.a);
     REBLUR_FrontEnd_PackRadianceAndHitDist(specularRadianceHitDist.rgb, specularRadianceHitDist.a);
+#endif
 
 #endif
 

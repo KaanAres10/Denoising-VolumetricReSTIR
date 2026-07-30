@@ -52,6 +52,9 @@ cbuffer CB
     int     gMaxBounces;
     bool    gVisualizeTotalTransmittance;
     bool    gNoReuse;
+    // Emit gLightDir. Separate from the other guides: only NRD's SH mode needs it, and it costs an
+    // extra light-sample reconstruction per pixel.
+    bool    gOutputLightDir;
     SamplingOptions gSamplingOptions;
     EnvMapSampler           envMapSampler; 
     EmissiveLightSampler    emissiveSampler; 
@@ -62,6 +65,11 @@ StructuredBuffer<ExtraBounceReservoir> gCurExtraBounceReservoirs;
 StructuredBuffer<ReservoirFeatures> gReservoirFeatureBuffer;
 RWTexture2D<float4> gCurrentColors;
 RWTexture2D<float4> gOutputFrame;
+/// .xyz = world-space direction the reservoir's chosen light arrives FROM at the first scatter
+/// vertex, .w = 1 when that direction is trustworthy and 0 when it is not. Consumed by NRD v4's SH
+/// mode, which packs "direction * luminance(radiance)" -- note this is the direction incoming
+/// RADIANCE comes from, so it is NOT interchangeable with mediumNormal.
+RWTexture2D<float4> gLightDir;
 #ifdef SURFACE_SCENE
 StructuredBuffer<VBufferItem> gVBuffer;
 #endif
@@ -138,6 +146,66 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (any(isnan(curColor) || isinf(curColor))) curColor = 0.f;
 
     gOutputFrame[pixelPos] = curColor;
+
+    if (gOutputLightDir)
+    {
+        // Reconstruct the direction the reservoir's light lies in, mirroring the branch in
+        // evaluate_L_in_volume(). Written AFTER the shading loop and with its own SampleGenerator:
+        // getAnalyticalLightSample() draws from the stream it is handed, so reusing `sg` here would
+        // shift every subsequent random number and silently change the rendered image.
+        float3 wi = 0.f;
+        float valid = 0.f;
+
+        Reservoir res = gCurReservoirs[pixelId];
+
+        // Volume self-emission overloads Reservoir::lightID: encodeEmissivePosition() stores
+        // asint(pos.z) in it, so the value is a float bit pattern rather than a light index and the
+        // branch below cannot tell the two apart. The disambiguating flag (isCurrentVertexEmissive)
+        // exists only inside the path evaluation. Rather than guess, declare the direction invalid
+        // for emissive media and let the consumer decide -- a wrong direction would still produce a
+        // plausible-looking image, which is the failure mode worth avoiding.
+        const bool lightIDIsAmbiguous = gScene.volumeDesc.hasEmission;
+
+        if (res.runningSum > 0.f && !gUseReference && !lightIDIsAmbiguous)
+        {
+            const float3 org = gScene.camera.getPosition();
+            const float3 dir = normalize(computeNonNormalizedRayDirPinholeScaled(gScene.camera, DTid.xy, 1, 0.5f, gResolution));
+            const float3 p = org + dir * res.depth; // first scatter vertex
+
+            if (res.lightID < 0)
+            {
+                wi = gScene.envMap.uvToWorld(res.lightUV, false);
+                valid = 1.f;
+            }
+            else if (res.lightID < (int)gScene.getLightCount())
+            {
+                SampleGenerator sgDir = SampleGenerator(pixelPos, gFrameCount);
+                SceneLightSample ls = getAnalyticalLightSample(res.lightID, p, sgDir);
+                wi = ls.rayDir;
+                valid = 1.f;
+            }
+            // NOTE: no emissive-triangle branch. evaluate_L_in_volume() reaches
+            // sampleTriangleOffset() only for reservoirs it knows hold a triangle sample; doing the
+            // same here from lightID alone indexed the light collection out of bounds and took the
+            // device down (DXGI_ERROR_DEVICE_REMOVED) on plume, which has no emissive triangles at
+            // all. Emissive-lit scenes therefore report valid = 0 rather than a guessed direction.
+            // Lifting this needs the triangle count to bound-check against, or the emissive flag
+            // that only exists inside the path evaluation.
+
+            const float lenSq = dot(wi, wi);
+            if (!(lenSq > 1e-12f) || any(isnan(wi)) || any(isinf(wi)))
+            {
+                wi = 0.f;
+                valid = 0.f;
+            }
+            else
+            {
+                wi *= rsqrt(lenSq);
+            }
+        }
+
+        gLightDir[pixelPos] = float4(wi, valid);
+    }
 }
 
 

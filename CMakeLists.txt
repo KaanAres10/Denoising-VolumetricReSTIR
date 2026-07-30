@@ -214,6 +214,7 @@ message(STATUS "FALCOR_HAS_OPTIX: ${FALCOR_HAS_OPTIX}")
 message(STATUS "FALCOR_HAS_D3D12_AGILITY_SDK: ${FALCOR_HAS_D3D12_AGILITY_SDK}")
 message(STATUS "FALCOR_HAS_NRD: ${FALCOR_HAS_NRD}")
 message(STATUS "FALCOR_HAS_DLSS: ${FALCOR_HAS_DLSS}")
+message(STATUS "FALCOR_HAS_DLSSD: ${FALCOR_HAS_DLSSD} (Ray Reconstruction; needs a 310.x SDK)")
 message(STATUS "FALCOR_HAS_NV_USD: ${FALCOR_HAS_NV_USD}")
 message(STATUS "FALCOR_HAS_MDL_SDK: ${FALCOR_HAS_MDL_SDK}")
 message(STATUS "FALCOR_ENABLE_USD: ${FALCOR_ENABLE_USD}")
@@ -349,7 +350,7 @@ file(TO_NATIVE_PATH ${output_dir} output_dir)
 
 if(FALCOR_WINDOWS)
     add_custom_target(deploy_dependencies ALL
-        COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.bat ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR}
+        COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.bat ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR} ${FALCOR_NRD_DIR}
     )
 elseif(FALCOR_LINUX)
     add_custom_target(deploy_dependencies ALL

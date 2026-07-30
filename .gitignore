@@ -36,6 +36,20 @@
 # multi-GB .vbx / baked .bin assets. Kept locally only, never part of this repository.
 /Denoising-VolumetricReSTIR/
 
+/VolumetricReSTIRData/
+
+# Manually vendored DLSS SDK (github.com/NVIDIA/DLSS v310.7.0) -- the only source of Ray
+# Reconstruction, since packman ships Super Resolution only. ~106 MB of binaries, so not tracked.
+# See Source/RenderPasses/DLSSPass/README.md for the exact fetch command.
+/external/dlss-310/
+# NRD v4, built from source (see Source/RenderPasses/NRDPass/README.md). ~10 MB of binaries.
+/external/nrd-4/
+/external/dlss-legacy-37/
+
 # Local build logs.
 /build_*.log
 /build_*.errors.txt
+
+# Rendered captures, references and sweep output. ~1 GB of EXR/PNG that a single `git add -A`
+# would otherwise commit; the references in particular are regenerable from the reference tasks.
+/shots/

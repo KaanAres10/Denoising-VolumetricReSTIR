@@ -40,12 +40,26 @@
 __exported import ReSTIRHelper;
 #include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
+import Utils.Math.MathHelpers; // calcMotionVector()
 
 cbuffer CB
 {
     uint2   gResolution;
     bool    gUseReference;
     SamplingOptions gInitialSamplingOptions;
+    // Guide-buffer outputs for temporal upscalers (DLSS). Both default off; when off the textures
+    // are not even allocated, so this costs nothing.
+    bool    gOutputDepth;
+    bool    gOutputDeterministicMV;
+    bool    gDepthAsNDC;            // false = linear view Z (GBufferRT.linearZ layout)
+    // Volumetric guides for DLSS Ray Reconstruction. RR's albedo/normal/roughness guides describe a
+    // surface; a participating medium has none, so instead we export how much of the pixel the
+    // medium covers and a stand-in normal, and blend toward medium-like values downstream.
+    bool    gOutputVolumeGuides;
+    // Expected scattering distance along the primary ray, for NRD's hit-distance guide. Separate
+    // flag from gOutputVolumeGuides because the two denoisers want different subsets, but it is
+    // written from the same block, so gOutputVolumeGuides gates whether that block runs at all.
+    bool    gOutputScatterDistance;
 }
 
 // Input data to accumulate and accumulated output.
@@ -53,6 +67,16 @@ RWStructuredBuffer<ReservoirFeatures> gReservoirFeatureBuffer;
 #ifdef SURFACE_SCENE
 RWStructuredBuffer<VBufferItem> gVBuffer;
 #endif
+
+// Guide buffers. gMotionVec here is the DETERMINISTIC writer; the legacy stochastic writer lives in
+// TemporalReuse.cs.slang and the host guarantees only one of them is ever active.
+RWTexture2D<float2> gLinearZ;
+RWTexture2D<float2> gMotionVec;
+// Volumetric guides: medium coverage (1 - transmittance) and a stand-in "normal" for the medium.
+RWTexture2D<float> gMediumAlpha;
+RWTexture2D<float4> gMediumNormal;
+// Raw expected scatter distance along the ray (world units), -1 where the ray met no medium.
+RWTexture2D<float> gScatterDistance;
 
 [numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
@@ -92,11 +116,93 @@ void main(uint3 DTid : SV_DispatchThreadID)
     gVBuffer[pixelId] = vbufferItem;
 #endif
 
-    if (!gUseReference)
+    // The march is also what produces the guide buffers, so it must run when either is requested
+    // even in reference mode. The feature-buffer store stays gated, as before.
+    // Volume guides must be in this list: a DLSS-D graph takes depth and motion vectors from a
+    // GBuffer, so gOutputDepth and gOutputDeterministicMV are both false there, and omitting the
+    // volume flag silently skipped the whole block.
+    const bool needGuides = gOutputDepth || gOutputDeterministicMV || gOutputVolumeGuides;
+    if (!gUseReference || needGuides)
     {
         float accuTransmittance;
-        ReservoirFeatureRayMarchingGeneric(ray, sg, 0, true, gInitialSamplingOptions.visibilityTStepScale, accuTransmittance);
-        ReservoirFeatures features = { int(all(surfaceNormal == 0.f)), accuTransmittance };
-        gReservoirFeatureBuffer[pixelId] = features;
+        float expectedT;
+        ReservoirFeatureRayMarchingGeneric(ray, sg, 0, true, gInitialSamplingOptions.visibilityTStepScale, accuTransmittance, expectedT);
+
+        if (!gUseReference)
+        {
+            ReservoirFeatures features = { int(all(surfaceNormal == 0.f)), accuTransmittance };
+            gReservoirFeatureBuffer[pixelId] = features;
+        }
+
+        if (needGuides)
+        {
+            // NRD's hit-distance guide. Written from the RAW expectedT, before the fallbacks below,
+            // so the -1 "this ray never met the medium" sentinel survives -- NRD's consumer needs to
+            // tell that apart from "medium at the far plane", which the linearZ fallback conflates.
+            if (gOutputScatterDistance)
+            {
+                gScatterDistance[pixelPos] = expectedT;
+            }
+
+            // Pick the representative depth: the expected scattering distance inside the medium,
+            // else the opaque surface hit, else the far plane. All are distances along the ray.
+            float t = expectedT;
+#ifdef SURFACE_SCENE
+            if (t < 0.f && hitInfo.isValidHit()) t = hitInfo.rayT;
+#endif
+            const float3 fwd = normalize(gScene.camera.data.cameraW);
+            const float cosTheta = dot(fwd, cameraRay.dir); // == 1 / invCos in VolumeBase.slang
+            if (t < 0.f) t = gScene.camera.data.farZ / max(1e-6f, cosTheta);
+
+            const float3 p = cameraRay.origin + cameraRay.dir * t;
+
+            if (gOutputDepth)
+            {
+                if (gDepthAsNDC)
+                {
+                    float4 clip = mul(gScene.camera.data.viewProjMatNoJitter, float4(p, 1.f));
+                    gLinearZ[pixelPos] = float2(clip.z / clip.w, 0.f);
+                }
+                else
+                {
+                    // Linear view Z, matching GBufferRT's "linearZ" (RG32Float, .y = slope, unused).
+                    gLinearZ[pixelPos] = float2(t * cosTheta, 0.f);
+                }
+            }
+
+            if (gOutputDeterministicMV)
+            {
+                // Advect the point backwards through the velocity grid so the plume's own motion is
+                // represented, not just the camera's (mirrors TemporalReuse.cs.slang).
+                float3 pPrev = p;
+                if (gScene.volumeDesc.hasVelocity && gScene.volumeDesc.hasAnimation)
+                    pPrev -= VelocityWorld(p) * gScene.volumeDesc.velocityScale;
+
+                // Falcor 8 convention is mul(M, v) -- NOT the mul(v, M) used by TemporalReuse.
+                float4 prevPosH = mul(gScene.camera.data.prevViewProjMatNoJitter, float4(pPrev, 1.f));
+                // calcMotionVector returns current->previous in normalized [0,1] screen space with a
+                // top-left origin, i.e. exactly DLSSPass' motionVectorScale='Relative'. The jitter
+                // term cancels the current frame's subpixel offset (cf. GBufferRT.slang).
+                gMotionVec[pixelPos] = calcMotionVector(float2(pixelPos) + 0.5f, prevPosH, float2(gResolution))
+                    + float2(gScene.camera.data.jitterX, -gScene.camera.data.jitterY);
+            }
+
+            if (gOutputVolumeGuides)
+            {
+                // Medium coverage. accuTransmittance is the total transmittance along the primary
+                // ray, so 1 - it is the fraction of this pixel the medium accounts for -- exactly
+                // the weight for blending surface guides toward medium-like ones. Preferred over
+                // the tracking adapter's weightSum, which saturates because the march terminates
+                // early once transmittance drops below 0.01.
+                gMediumAlpha[pixelPos] = saturate(1.f - accuTransmittance);
+
+                // Stand-in normal for the medium: face the camera. An isotropic scatterer has no
+                // meaningful surface orientation, and -rayDir combined with roughness=1 downstream
+                // reads to RR as "diffuse blob facing the viewer". Costs nothing and cannot fail,
+                // unlike a density-gradient normal (which is noisy in the plume core and risks
+                // brick-aligned artifacts from the 1-voxel GVDB apron).
+                gMediumNormal[pixelPos] = float4(-cameraRay.dir, 0.f);
+            }
+        }
     }
 }

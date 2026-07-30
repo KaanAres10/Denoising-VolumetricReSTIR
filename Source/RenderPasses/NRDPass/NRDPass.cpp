@@ -44,12 +44,36 @@ const char kInputNormalRoughnessMaterialID[] = "normWRoughnessMaterialID";
 const char kInputViewZ[] = "viewZ";
 const char kInputDeltaPrimaryPosW[] = "deltaPrimaryPosW";
 const char kInputDeltaSecondaryPosW[] = "deltaSecondaryPosW";
+#if FALCOR_HAS_NRD4
+// v4 optional inputs. All are declared optional in reflect(): NRD is told they exist only when the
+// graph actually connects them (isHistoryConfidenceAvailable / isDisocclusionThresholdMixAvailable),
+// because claiming an input that is not bound reads as "confidence 0 everywhere" rather than failing.
+const char kInputDiffuseConfidence[] = "diffuseConfidence";
+const char kInputSpecularConfidence[] = "specularConfidence";
+const char kInputDisocclusionThresholdMix[] = "disocclusionThresholdMix";
+// Occlusion / SIGMA / REFERENCE denoiser IO.
+const char kInputDiffuseHitDist[] = "diffuseHitDist";
+const char kInputPenumbra[] = "penumbra";
+const char kInputTranslucency[] = "translucency";
+const char kInputSignal[] = "signal";
+#endif
 
 // Output buffer names.
 const char kOutputFilteredDiffuseRadianceHitDist[] = "filteredDiffuseRadianceHitDist";
 const char kOutputFilteredSpecularRadianceHitDist[] = "filteredSpecularRadianceHitDist";
 const char kOutputReflectionMotionVectors[] = "reflectionMvec";
 const char kOutputDeltaMotionVectors[] = "deltaMvec";
+#if FALCOR_HAS_NRD4
+const char kOutputValidation[] = "validation";
+const char kOutputFilteredDiffuseHitDist[] = "filteredDiffuseHitDist";
+const char kOutputShadowTranslucency[] = "shadowTranslucency";
+const char kOutputSignal[] = "filteredSignal";
+// SH mode emits a PAIR per signal; SH0 carries {c0, chroma.xy, normHitDist} and SH1 {c1.xyz, sharpness}.
+const char kOutputDiffuseSh0[] = "filteredDiffuseSh0";
+const char kOutputDiffuseSh1[] = "filteredDiffuseSh1";
+const char kInputDiffuseSh0[] = "diffuseSh0";
+const char kInputDiffuseSh1[] = "diffuseSh1";
+#endif
 
 // Serialized parameters.
 
@@ -97,6 +121,46 @@ const char kEnableRoughnessEdgeStopping[] = "enableRoughnessEdgeStopping";
 const char kEnableMaterialTestForDiffuse[] = "enableMaterialTestForDiffuse";
 const char kEnableMaterialTestForSpecular[] = "enableMaterialTestForSpecular";
 
+#if FALCOR_HAS_NRD4
+/// The guide layout, as ONE value rather than a number repeated per call site.
+///
+/// Three things have to agree on this and none of them validates the others: the macros NRD's shaders
+/// are compiled with (`NRD_NORMAL_ENCODING` / `NRD_ROUGHNESS_ENCODING`), what `NRDAdapter.cs.slang`
+/// packs, and what the linked NRD binary was built to expect. When they disagree the guides decode to
+/// noise, every edge-stopping weight fails, and the output is a uniformly smeared frame -- there is no
+/// error. That happened once already, because v4 renamed these macros and silently ignored the v3.1
+/// names. `reinit()` now cross-checks these against `GetLibraryDesc()`, which closes the third leg.
+///
+/// Values are shared between `NRD.hlsli`'s `NRD_NORMAL_ENCODING_*` macros and `nrd::NormalEncoding` /
+/// `nrd::RoughnessEncoding` -- the enums are declared in the same order as the macros, which is what
+/// makes comparing them meaningful.
+constexpr uint32_t kNrdNormalEncoding = 2;    // R10_G10_B10_A2_UNORM: normal+roughness co-packed, materialID in A2
+constexpr uint32_t kNrdRoughnessEncoding = 1; // LINEAR
+#endif
+
+#if FALCOR_HAS_NRD4
+/// Shared by the RELAX and REBLUR panels -- both settings structs carry the same enum.
+///
+/// OFF is correct for this renderer and is the SDK default: reconstruction exists for PROBABILISTIC
+/// sampling at the primary hit, where a pixel may carry no hit distance at all. VolumetricReSTIR does
+/// not do that, and NRD's own note warns the modes additionally assume the sampling probability was
+/// clamped and Bayer dithering used. Exposed for completeness and for surface graphs (PathTracerNRD).
+const Gui::DropdownList kHitDistanceReconstructionMode = {
+    {(uint32_t)nrd::HitDistanceReconstructionMode::OFF, "Off"},
+    {(uint32_t)nrd::HitDistanceReconstructionMode::AREA_3X3, "3x3"},
+    {(uint32_t)nrd::HitDistanceReconstructionMode::AREA_5X5, "5x5"},
+};
+
+void renderHitDistReconstructionUI(Gui::Group& group, nrd::HitDistanceReconstructionMode& mode)
+{
+    group.dropdown("Hit distance reconstruction", kHitDistanceReconstructionMode, reinterpret_cast<uint32_t&>(mode));
+    group.tooltip(
+        "For probabilistic sampling at the primary hit only. This renderer does not sample "
+        "probabilistically, so Off is correct here."
+    );
+}
+#endif // FALCOR_HAS_NRD4
+
 // Expose only togglable methods.
 // There is no reason to expose runtime toggle for other methods.
 const Gui::DropdownList kDenoisingMethod = {
@@ -109,18 +173,103 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
 {
     mpDevice->requireD3D12();
 
-    DefineList definesRelax;
-    definesRelax.add("NRD_USE_OCT_NORMAL_ENCODING", "1");
-    definesRelax.add("NRD_USE_MATERIAL_ID", "0");
+    // PackRadiance includes NRD.hlsli, so it needs the SAME encoding macros as the library shaders.
+    // v4 renamed them; see the note in createPipelines(). Passing the v3.1 names to a v4 build is a
+    // silent no-op, which is exactly how a guide-layout mismatch goes unnoticed.
+    DefineList definesEncoding;
+#if FALCOR_HAS_NRD4
+    definesEncoding.add("NRD_V4");
+    definesEncoding.add("NRD_NORMAL_ENCODING", "2");
+    definesEncoding.add("NRD_ROUGHNESS_ENCODING", "1");
+#else
+    definesEncoding.add("NRD_USE_OCT_NORMAL_ENCODING", "1");
+    definesEncoding.add("NRD_USE_MATERIAL_ID", "0");
+#endif
+
+    DefineList definesRelax = definesEncoding;
     definesRelax.add("NRD_METHOD", "0"); // NRD_METHOD_RELAX_DIFFUSE_SPECULAR
     mpPackRadiancePassRelax = ComputePass::create(mpDevice, kShaderPackRadiance, "main", definesRelax);
 
-    DefineList definesReblur;
-    definesReblur.add("NRD_USE_OCT_NORMAL_ENCODING", "1");
-    definesReblur.add("NRD_USE_MATERIAL_ID", "0");
+    DefineList definesReblur = definesEncoding;
     definesReblur.add("NRD_METHOD", "1"); // NRD_METHOD_REBLUR_DIFFUSE_SPECULAR
     mpPackRadiancePassReblur = ComputePass::create(mpDevice, kShaderPackRadiance, "main", definesReblur);
 
+#if FALCOR_HAS_NRD4
+    // Deliberately NOT porting the v3.1 overrides below. Many were tuned against v3.1 semantics that
+    // no longer hold: diffuse/specularLobeAngleFraction merged into one lobeAngleFraction,
+    // disocclusionFixMaxRadius (a float radius) became historyFixBasePixelStride (a uint32 stride),
+    // enableSpecularVirtualHistoryClamping was removed, and several v4 defaults moved on purpose
+    // (roughnessFraction 0.05 -> 0.15, depthThreshold 0.01 -> 0.003). Carrying the old numbers over
+    // would silently reproduce v3.1-era tuning against a different filter. Start from NRD's own v4
+    // defaults; retune later against measurements if wanted.
+    //
+    // Only the few overrides that still mean exactly what they used to are kept.
+    mRelaxSettings.diffuseMaxFastAccumulatedFrameNum = 2;
+    mRelaxSettings.specularMaxFastAccumulatedFrameNum = 2;
+    mRelaxSettings.atrousIterationNum = 6;
+    mRelaxSettings.spatialVarianceEstimationHistoryThreshold = 4;
+
+    // The pre-pass MUST be off for volumetric input. v4 sizes its kernel as
+    //     blurRadius = prepassBlurRadius * saturate(hitDist / frustumSize)     [RELAX_PrePass.cs.hlsl]
+    // which assumes "hitDist" is a short secondary-bounce length, so the factor is normally well
+    // below 1. We feed the expected SCATTER distance through a participating medium, which is the
+    // same order as the frustum itself -- the factor saturates to 1 and the pre-pass degenerates
+    // into a full-radius blur over the entire frame, guides notwithstanding.
+    //
+    // Measured on plume against the converged reference (MSE), everything else at v4 defaults:
+    //     radius 30 (v4 default) 2.009e-02   <- worse than the raw, undenoised input
+    //     radius 16 (v3.1 value) 1.091e-02
+    //     radius  8              5.307e-03
+    //     radius  4              2.325e-03
+    //     radius  1              1.209e-03
+    //     radius  0              1.072e-03
+    // Monotonic, so this is not a tuning optimum -- the pre-pass has no useful regime here.
+    // NVIDIA's own guidance agrees it is optional: "must be used in case of probabilistic sampling",
+    // which this renderer does not do.
+    //
+    // NOTE: this is also the ONLY route by which hit distance reaches RELAX in v4 (confirmed by
+    // ablation: with the pre-pass off, VR_NRD_HITDIST=0 is byte-identical). v3.1 ignored hit
+    // distance in RELAX entirely, so scatterDistance now only earns its keep under REBLUR.
+    mRelaxSettings.diffusePrepassBlurRadius = 0.f;
+    mRelaxSettings.specularPrepassBlurRadius = 0.f;
+
+    // New in v4 for RELAX (v3.1 exposed antifirefly on REBLUR only). Our input is 1-spp volumetric
+    // radiance, which is exactly the firefly-heavy case it exists for. Small but consistent win:
+    // 1.072e-03 -> 1.059e-03 on plume.
+    mRelaxSettings.enableAntiFirefly = true;
+
+    // History reconstruction off, for the same reason as the pre-pass. It exists to invent a signal
+    // for pixels that have NO temporal history yet (post-disocclusion), by blurring across a 5x5
+    // kernel with a 14-pixel stride -- a ~28 pixel footprint. That trade is right when the
+    // alternative is a 1-spp surface estimate with nothing behind it. It is wrong here: when NRD
+    // resets a pixel's history, the underlying VolumetricReSTIR estimate is still a converged
+    // multi-frame average, so the blur replaces good data with a wide average of its neighbours.
+    //
+    // Measured (MSE vs converged reference), historyFixFrameNum 3 (v4 default) -> 0:
+    //     bistro  2.132e-04 -> 7.707e-05   (2.8x better)
+    //     plume   1.059e-03 -> 1.059e-03   (byte-identical; no history resets to fix)
+    // Strictly non-negative: it either helps or costs nothing on the scenes we have.
+    mRelaxSettings.historyFixFrameNum = 0;
+
+    // Debug overrides for the settings above. Not a substitute for Properties -- these exist so the
+    // measurements quoted in this file (and in README.md) can be reproduced without a rebuild, and
+    // so a regression can be bisected against NRD's own defaults. Unset = use the value above.
+    auto envF = [](const char* n, float d)
+    { const char* v = std::getenv(n); return v ? std::strtof(v, nullptr) : d; };
+    auto envU = [](const char* n, uint32_t d)
+    { const char* v = std::getenv(n); return v ? uint32_t(std::strtoul(v, nullptr, 10)) : d; };
+    mRelaxSettings.diffusePrepassBlurRadius = envF("NRD4_PREPASS", mRelaxSettings.diffusePrepassBlurRadius);
+    mRelaxSettings.enableAntiFirefly = envU("NRD4_ANTIFIREFLY", mRelaxSettings.enableAntiFirefly ? 1u : 0u) != 0u;
+    mRelaxSettings.atrousIterationNum = envU("NRD4_ATROUS", mRelaxSettings.atrousIterationNum);
+    mRelaxSettings.diffuseMaxAccumulatedFrameNum = envU("NRD4_MAXACCUM", mRelaxSettings.diffuseMaxAccumulatedFrameNum);
+    mRelaxSettings.diffuseMaxFastAccumulatedFrameNum =
+        envU("NRD4_FASTACCUM", mRelaxSettings.diffuseMaxFastAccumulatedFrameNum);
+    mRelaxSettings.historyFixFrameNum = envU("NRD4_HISTFIX", mRelaxSettings.historyFixFrameNum);
+    mRelaxSettings.diffusePhiLuminance = envF("NRD4_PHILUM", mRelaxSettings.diffusePhiLuminance);
+    mRelaxSettings.spatialVarianceEstimationHistoryThreshold =
+        envU("NRD4_SVAR", mRelaxSettings.spatialVarianceEstimationHistoryThreshold);
+    mDisocclusionThreshold = envF("NRD4_DISOCC", mDisocclusionThreshold);
+#else
     // Override some defaults coming from the NRD SDK.
     mRelaxDiffuseSpecularSettings.diffusePrepassBlurRadius = 16.0f;
     mRelaxDiffuseSpecularSettings.specularPrepassBlurRadius = 16.0f;
@@ -145,6 +294,7 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     mRelaxDiffuseSettings.spatialVarianceEstimationHistoryThreshold = 4;
     mRelaxDiffuseSettings.atrousIterationNum = 6;
     mRelaxDiffuseSettings.depthThreshold = 0.02f;
+#endif
 
     // Deserialize pass from dictionary.
     for (const auto& [key, value] : props)
@@ -167,6 +317,11 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
             mMaxIntensity = value;
 
         // ReLAX diffuse/specular settings.
+#if !FALCOR_HAS_NRD4
+        // RELAX settings are not round-tripped under NRD v4: the three v3.1 structs were merged
+        // into one RelaxSettings whose fields were renamed, retyped and re-defaulted (see
+        // Source/RenderPasses/NRDPass/README.md). Silently accepting v3.1-era property names
+        // would apply v3.1 tuning to a different filter, so they are rejected instead.
         else if (mDenoisingMethod == DenoisingMethod::RelaxDiffuseSpecular || mDenoisingMethod == DenoisingMethod::ReblurDiffuseSpecular)
         {
             if (key == kDiffusePrepassBlurRadius)
@@ -277,6 +432,7 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
                 logWarning("Unknown property '{}' in NRD properties.", key);
             }
         }
+#endif
         else
         {
             logWarning("Unknown property '{}' in NRD properties.", key);
@@ -298,6 +454,7 @@ Properties NRDPass::getProperties() const
 
     // Pack radiance settings.
     props[kMaxIntensity] = mMaxIntensity;
+#if !FALCOR_HAS_NRD4
 
     // ReLAX diffuse/specular settings.
     if (mDenoisingMethod == DenoisingMethod::RelaxDiffuseSpecular || mDenoisingMethod == DenoisingMethod::ReblurDiffuseSpecular)
@@ -354,6 +511,7 @@ Properties NRDPass::getProperties() const
         props[kEnableReprojectionTestSkippingWithoutMotion] = mRelaxDiffuseSettings.enableReprojectionTestSkippingWithoutMotion;
         props[kEnableMaterialTestForDiffuse] = mRelaxDiffuseSettings.enableMaterialTest;
     }
+#endif
 
     return props;
 }
@@ -411,10 +569,98 @@ RenderPassReflection NRDPass::reflect(const CompileData& compileData)
             .format(ResourceFormat::RG16Float)
             .texture2D(sz.x, sz.y);
     }
+#if FALCOR_HAS_NRD4
+    else if (mDenoisingMethod == DenoisingMethod::RelaxSpecular || mDenoisingMethod == DenoisingMethod::ReblurSpecular)
+    {
+        reflector.addInput(kInputSpecularRadianceHitDist, "Specular radiance and hit distance");
+        reflector.addInput(kInputViewZ, "View Z");
+        reflector.addInput(kInputNormalRoughnessMaterialID, "World normal, roughness, and material ID");
+        reflector.addInput(kInputMotionVectors, "Motion vectors");
+        reflector.addOutput(kOutputFilteredSpecularRadianceHitDist, "Filtered specular radiance and hit distance")
+            .format(ResourceFormat::RGBA16Float)
+            .texture2D(sz.x, sz.y);
+    }
+    else if (mDenoisingMethod == DenoisingMethod::ReblurDiffuse)
+    {
+        reflector.addInput(kInputDiffuseRadianceHitDist, "Diffuse radiance and hit distance");
+        reflector.addInput(kInputViewZ, "View Z");
+        reflector.addInput(kInputNormalRoughnessMaterialID, "World normal, roughness, and material ID");
+        reflector.addInput(kInputMotionVectors, "Motion vectors");
+        reflector.addOutput(kOutputFilteredDiffuseRadianceHitDist, "Filtered diffuse radiance and hit distance")
+            .format(ResourceFormat::RGBA16Float)
+            .texture2D(sz.x, sz.y);
+    }
+    else if (mDenoisingMethod == DenoisingMethod::ReblurDiffuseOcclusion)
+    {
+        // Occlusion variants carry NO radiance -- just a normalized hit distance in and out (AO).
+        reflector.addInput(kInputDiffuseHitDist, "Diffuse normalized hit distance");
+        reflector.addInput(kInputViewZ, "View Z");
+        reflector.addInput(kInputNormalRoughnessMaterialID, "World normal, roughness, and material ID");
+        reflector.addInput(kInputMotionVectors, "Motion vectors");
+        reflector.addOutput(kOutputFilteredDiffuseHitDist, "Filtered diffuse normalized hit distance")
+            .format(ResourceFormat::R16Float)
+            .texture2D(sz.x, sz.y);
+    }
+    else if (mDenoisingMethod == DenoisingMethod::SigmaShadow || mDenoisingMethod == DenoisingMethod::SigmaShadowTranslucency)
+    {
+        // SIGMA is a shadow denoiser: its input is penumbra size, not radiance. It ignores IN_MV when
+        // stabilization is off, but the graph still declares it so one wiring serves both cases.
+        reflector.addInput(kInputPenumbra, "Penumbra (SIGMA)");
+        reflector.addInput(kInputViewZ, "View Z");
+        reflector.addInput(kInputNormalRoughnessMaterialID, "World normal, roughness, and material ID");
+        reflector.addInput(kInputMotionVectors, "Motion vectors");
+        if (mDenoisingMethod == DenoisingMethod::SigmaShadowTranslucency)
+            reflector.addInput(kInputTranslucency, "Translucency (SIGMA)");
+        reflector.addOutput(kOutputShadowTranslucency, "Filtered shadow and translucency")
+            .format(ResourceFormat::RGBA8Unorm)
+            .texture2D(sz.x, sz.y);
+    }
+    else if (mDenoisingMethod == DenoisingMethod::Reference)
+    {
+        // REFERENCE just accumulates. Per the Denoiser enum's own note it uses neither IN_MV,
+        // IN_NORMAL_ROUGHNESS nor IN_VIEWZ, so declaring them would be a lie the graph has to satisfy.
+        reflector.addInput(kInputSignal, "Signal to accumulate");
+        reflector.addOutput(kOutputSignal, "Accumulated signal").format(ResourceFormat::RGBA16Float).texture2D(sz.x, sz.y);
+    }
+    else if (mDenoisingMethod == DenoisingMethod::RelaxDiffuseSh || mDenoisingMethod == DenoisingMethod::ReblurDiffuseSh)
+    {
+        // SH mode: a PAIR in and a pair out, instead of packed radiance+hitDist.
+        reflector.addInput(kInputDiffuseSh0, "Diffuse SH0 (c0, chroma.xy, normHitDist)");
+        reflector.addInput(kInputDiffuseSh1, "Diffuse SH1 (c1.xyz, sharpness)");
+        reflector.addInput(kInputViewZ, "View Z");
+        reflector.addInput(kInputNormalRoughnessMaterialID, "World normal, roughness, and material ID");
+        reflector.addInput(kInputMotionVectors, "Motion vectors");
+        reflector.addOutput(kOutputDiffuseSh0, "Filtered diffuse SH0").format(ResourceFormat::RGBA16Float).texture2D(sz.x, sz.y);
+        reflector.addOutput(kOutputDiffuseSh1, "Filtered diffuse SH1").format(ResourceFormat::RGBA16Float).texture2D(sz.x, sz.y);
+    }
+#endif
     else
     {
         FALCOR_UNREACHABLE();
     }
+
+#if FALCOR_HAS_NRD4
+    // Optional inputs, shared by the radiance denoisers. Declared optional so an unconnected graph
+    // still compiles; execute() tells NRD they exist only when they are actually bound, because
+    // claiming an unbound confidence input reads as "confidence 0", not as an error.
+    if (mDenoisingMethod != DenoisingMethod::Reference && mDenoisingMethod != DenoisingMethod::SigmaShadow &&
+        mDenoisingMethod != DenoisingMethod::SigmaShadowTranslucency)
+    {
+        reflector.addInput(kInputDiffuseConfidence, "Diffuse history confidence (optional)").flags(RenderPassReflection::Field::Flags::Optional);
+        reflector.addInput(kInputSpecularConfidence, "Specular history confidence (optional)").flags(RenderPassReflection::Field::Flags::Optional);
+        reflector.addInput(kInputDisocclusionThresholdMix, "Disocclusion threshold mix (optional)")
+            .flags(RenderPassReflection::Field::Flags::Optional);
+    }
+
+    // Only reflected when enabled: an always-present validation target would cost a full-resolution
+    // RGBA8 allocation in every graph that never looks at it.
+    if (mEnableValidation)
+    {
+        reflector.addOutput(kOutputValidation, "NRD validation overlay")
+            .format(ResourceFormat::RGBA8Unorm)
+            .texture2D(sz.x, sz.y);
+    }
+#endif
 
     return reflector;
 }
@@ -491,7 +737,11 @@ void NRDPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
 
 void NRDPass::renderUI(Gui::Widgets& widget)
 {
+#if FALCOR_HAS_NRD4
+    const nrd::LibraryDesc& nrdLibraryDesc = *nrd::GetLibraryDesc();
+#else
     const nrd::LibraryDesc& nrdLibraryDesc = nrd::GetLibraryDesc();
+#endif
     char name[256];
     _snprintf_s(name, 255, "NRD Library v%u.%u.%u", nrdLibraryDesc.versionMajor, nrdLibraryDesc.versionMinor, nrdLibraryDesc.versionBuild);
     widget.text(name);
@@ -503,6 +753,26 @@ void NRDPass::renderUI(Gui::Widgets& widget)
         mRecreateDenoiser = widget.dropdown("Denoising method", kDenoisingMethod, reinterpret_cast<uint32_t&>(mDenoisingMethod));
     }
 
+#if FALCOR_HAS_NRD4
+    // v4 CommonSettings, shown for every method because they are method-independent.
+    if (auto group = widget.group("Common (v4)"))
+    {
+        // clang-format off
+        // Toggling validation changes what reflect() declares, so the graph has to be rebuilt --
+        // without this the output would be requested and never allocated.
+        if (group.checkbox("Validation overlay", mEnableValidation))
+            requestRecompile();
+        group.tooltip("Renders NRD's own debug view (viewZ, normals, motion, history length) to the 'validation' output.");
+        group.slider("Split screen (noisy|denoised)", mSplitScreen, 0.0f, 1.0f, false, "%.2f");
+        group.slider("Disocclusion threshold alt (%)", mDisocclusionThresholdAlternate, 0.0f, 20.0f, false, "%.2f");
+        group.tooltip("Mixed in per-pixel via the optional 'disocclusionThresholdMix' input, or by strandMaterialID.");
+        group.var("Strand thickness", mStrandThickness, 0.0f, 1.0f, 1e-5f, false, "%.5f");
+        group.var("Strand material ID", mStrandMaterialID, 0.0f, 999.0f);
+        group.var("Camera-attached refl. material ID", mCameraAttachedReflectionMaterialID, 0.0f, 999.0f);
+        // clang-format on
+    }
+#endif
+
     if (mDenoisingMethod == DenoisingMethod::RelaxDiffuseSpecular)
     {
         widget.text("Common:");
@@ -512,6 +782,44 @@ void NRDPass::renderUI(Gui::Widgets& widget)
         widget.text("Pack radiance:");
         widget.slider("Max intensity", mMaxIntensity, 0.f, 100000.f, false, "%.0f");
 
+#if FALCOR_HAS_NRD4
+        // ReLAX settings (NRD v4: one RelaxSettings struct shared by all RELAX denoisers).
+        if (auto group = widget.group("ReLAX (v4)"))
+        {
+            // clang-format off
+            group.text("Reprojection:");
+            group.slider("Diffuse max accumulated frames", mRelaxSettings.diffuseMaxAccumulatedFrameNum, 0u, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+            group.slider("Diffuse responsive max accumulated frames", mRelaxSettings.diffuseMaxFastAccumulatedFrameNum, 0u, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+            group.slider("Specular max accumulated frames", mRelaxSettings.specularMaxAccumulatedFrameNum, 0u, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+            group.slider("Specular responsive max accumulated frames", mRelaxSettings.specularMaxFastAccumulatedFrameNum, 0u, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+            group.text("Prepass:");
+            group.slider("Diffuse blur radius", mRelaxSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, false, "%.0f");
+            group.slider("Specular blur radius", mRelaxSettings.specularPrepassBlurRadius, 0.0f, 100.0f, false, "%.0f");
+            group.text("History fix (was 'disocclusion fix' in v3.1):");
+            group.slider("Frames to fix", mRelaxSettings.historyFixFrameNum, 0u, 100u);
+            // NOTE: a PIXEL STRIDE in v4, not the float radius v3.1 called disocclusionFixMaxRadius.
+            group.slider("Base pixel stride", mRelaxSettings.historyFixBasePixelStride, 1u, 64u);
+            group.slider("Edge stopping normal power", mRelaxSettings.historyFixEdgeStoppingNormalPower, 0.0f, 128.0f, false, "%.1f");
+            group.text("Spatial filter:");
+            group.slider("A-trous iterations", mRelaxSettings.atrousIterationNum, 2u, 8u);
+            group.slider("Diffuse phi luminance", mRelaxSettings.diffusePhiLuminance, 0.0f, 10.0f, false, "%.1f");
+            group.slider("Specular phi luminance", mRelaxSettings.specularPhiLuminance, 0.0f, 10.0f, false, "%.1f");
+            group.slider("Lobe angle fraction", mRelaxSettings.lobeAngleFraction, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Roughness fraction", mRelaxSettings.roughnessFraction, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Depth threshold", mRelaxSettings.depthThreshold, 0.0f, 0.05f, false, "%.4f");
+            group.text("New in v4:");
+            // v3.1 exposed antifirefly for REBLUR only. Our input is 1-spp volumetric radiance full
+            // of fireflies, so this is one of the reasons for the upgrade.
+            group.checkbox("Anti-firefly", mRelaxSettings.enableAntiFirefly);
+            group.slider("Min hit distance weight", mRelaxSettings.minHitDistanceWeight, 0.0f, 1.0f, false, "%.2f");
+            renderHitDistReconstructionUI(group, mRelaxSettings.hitDistanceReconstructionMode);
+            group.slider("Confidence: relaxation mult", mRelaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Confidence: luminance relax", mRelaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Confidence: normal relax", mRelaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Antilag acceleration", mRelaxSettings.antilagSettings.accelerationAmount, 0.0f, 1.0f, false, "%.2f");
+            // clang-format on
+        }
+#else
         // ReLAX diffuse/specular settings.
         if (auto group = widget.group("ReLAX Diffuse/Specular"))
         {
@@ -554,6 +862,7 @@ void NRDPass::renderUI(Gui::Widgets& widget)
             group.checkbox("Roughness edge stopping", mRelaxDiffuseSpecularSettings.enableRoughnessEdgeStopping);
             // clang-format on
         }
+#endif
     }
     else if (mDenoisingMethod == DenoisingMethod::RelaxDiffuse)
     {
@@ -564,6 +873,44 @@ void NRDPass::renderUI(Gui::Widgets& widget)
         widget.text("Pack radiance:");
         widget.slider("Max intensity", mMaxIntensity, 0.f, 100000.f, false, "%.0f");
 
+#if FALCOR_HAS_NRD4
+        // ReLAX settings (NRD v4: one RelaxSettings struct shared by all RELAX denoisers).
+        if (auto group = widget.group("ReLAX (v4)"))
+        {
+            // clang-format off
+            group.text("Reprojection:");
+            group.slider("Diffuse max accumulated frames", mRelaxSettings.diffuseMaxAccumulatedFrameNum, 0u, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+            group.slider("Diffuse responsive max accumulated frames", mRelaxSettings.diffuseMaxFastAccumulatedFrameNum, 0u, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+            group.slider("Specular max accumulated frames", mRelaxSettings.specularMaxAccumulatedFrameNum, 0u, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+            group.slider("Specular responsive max accumulated frames", mRelaxSettings.specularMaxFastAccumulatedFrameNum, 0u, nrd::RELAX_MAX_HISTORY_FRAME_NUM);
+            group.text("Prepass:");
+            group.slider("Diffuse blur radius", mRelaxSettings.diffusePrepassBlurRadius, 0.0f, 100.0f, false, "%.0f");
+            group.slider("Specular blur radius", mRelaxSettings.specularPrepassBlurRadius, 0.0f, 100.0f, false, "%.0f");
+            group.text("History fix (was 'disocclusion fix' in v3.1):");
+            group.slider("Frames to fix", mRelaxSettings.historyFixFrameNum, 0u, 100u);
+            // NOTE: a PIXEL STRIDE in v4, not the float radius v3.1 called disocclusionFixMaxRadius.
+            group.slider("Base pixel stride", mRelaxSettings.historyFixBasePixelStride, 1u, 64u);
+            group.slider("Edge stopping normal power", mRelaxSettings.historyFixEdgeStoppingNormalPower, 0.0f, 128.0f, false, "%.1f");
+            group.text("Spatial filter:");
+            group.slider("A-trous iterations", mRelaxSettings.atrousIterationNum, 2u, 8u);
+            group.slider("Diffuse phi luminance", mRelaxSettings.diffusePhiLuminance, 0.0f, 10.0f, false, "%.1f");
+            group.slider("Specular phi luminance", mRelaxSettings.specularPhiLuminance, 0.0f, 10.0f, false, "%.1f");
+            group.slider("Lobe angle fraction", mRelaxSettings.lobeAngleFraction, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Roughness fraction", mRelaxSettings.roughnessFraction, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Depth threshold", mRelaxSettings.depthThreshold, 0.0f, 0.05f, false, "%.4f");
+            group.text("New in v4:");
+            // v3.1 exposed antifirefly for REBLUR only. Our input is 1-spp volumetric radiance full
+            // of fireflies, so this is one of the reasons for the upgrade.
+            group.checkbox("Anti-firefly", mRelaxSettings.enableAntiFirefly);
+            group.slider("Min hit distance weight", mRelaxSettings.minHitDistanceWeight, 0.0f, 1.0f, false, "%.2f");
+            renderHitDistReconstructionUI(group, mRelaxSettings.hitDistanceReconstructionMode);
+            group.slider("Confidence: relaxation mult", mRelaxSettings.confidenceDrivenRelaxationMultiplier, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Confidence: luminance relax", mRelaxSettings.confidenceDrivenLuminanceEdgeStoppingRelaxation, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Confidence: normal relax", mRelaxSettings.confidenceDrivenNormalEdgeStoppingRelaxation, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Antilag acceleration", mRelaxSettings.antilagSettings.accelerationAmount, 0.0f, 1.0f, false, "%.2f");
+            // clang-format on
+        }
+#else
         // ReLAX diffuse settings.
         if (auto group = widget.group("ReLAX Diffuse"))
         {
@@ -593,6 +940,7 @@ void NRDPass::renderUI(Gui::Widgets& widget)
             group.slider("Diffuse lobe angle fraction", mRelaxDiffuseSettings.diffuseLobeAngleFraction, 0.0f, 2.0f, false, "%.1f");
             // clang-format on
         }
+#endif
     }
     else if (mDenoisingMethod == DenoisingMethod::ReblurDiffuseSpecular)
     {
@@ -603,6 +951,56 @@ void NRDPass::renderUI(Gui::Widgets& widget)
         widget.text("Pack radiance:");
         widget.slider("Max intensity", mMaxIntensity, 0.f, 100000.f, false, "%.0f");
 
+#if FALCOR_HAS_NRD4
+        if (auto group = widget.group("ReBLUR Diffuse/Specular (v4)"))
+        {
+            // clang-format off
+            const float kEpsilon = 0.0001f;
+            // v4 dropped SpecularLobeTrimmingParameters entirely, and hitDistanceParameters lost
+            // its D term (the normalization curve changed: lerp(1,C,exp2(D*r^2)) -> lerp(C,1,smc)).
+            if (auto group2 = group.group("Hit distance parameters"))
+            {
+                group2.slider("A", mReblurSettings.hitDistanceParameters.A, kEpsilon, 256.0f, false, "%.2f");
+                group2.slider("B", mReblurSettings.hitDistanceParameters.B, kEpsilon, 256.0f, false, "%.2f");
+                group2.slider("C", mReblurSettings.hitDistanceParameters.C, 1.0f, 256.0f, false, "%.2f");
+            }
+            // The two v3.1 antilag structs collapsed into one, and there is no longer any way to
+            // disable antilag.
+            if (auto group2 = group.group("Antilag"))
+            {
+                group2.slider("Luminance sigma scale", mReblurSettings.antilagSettings.luminanceSigmaScale, kEpsilon, 10.0f, false, "%.1f");
+                group2.slider("Luminance sensitivity", mReblurSettings.antilagSettings.luminanceSensitivity, kEpsilon, 10.0f, false, "%.1f");
+            }
+            group.text("Accumulation:");
+            group.slider("Max accumulated frames", mReblurSettings.maxAccumulatedFrameNum, 0u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+            group.slider("Max fast accumulated frames", mReblurSettings.maxFastAccumulatedFrameNum, 0u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+            // v3.1's stabilizationStrength was a normalized percentage; v4 counts frames instead.
+            group.slider("Max stabilized frames", mReblurSettings.maxStabilizedFrameNum, 0u, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+            group.text("Spatial filter:");
+            group.slider("Min blur radius", mReblurSettings.minBlurRadius, 0.0f, 100.0f, false, "%.1f");
+            group.slider("Max blur radius", mReblurSettings.maxBlurRadius, 0.0f, 100.0f, false, "%.1f");
+            group.slider("Lobe angle fraction", mReblurSettings.lobeAngleFraction, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Roughness fraction", mReblurSettings.roughnessFraction, 0.0f, 1.0f, false, "%.2f");
+            group.slider("Plane distance sensitivity", mReblurSettings.planeDistanceSensitivity, 0.0f, 1.0f, false, "%.3f");
+            group.text("History fix:");
+            group.slider("Frames to fix", mReblurSettings.historyFixFrameNum, 0u, 100u);
+            group.slider("Base pixel stride", mReblurSettings.historyFixBasePixelStride, 1u, 64u);
+            group.text("Other:");
+            group.checkbox("Anti-firefly", mReblurSettings.enableAntiFirefly);
+            renderHitDistReconstructionUI(group, mReblurSettings.hitDistanceReconstructionMode);
+            // New in v4.17. REBLUR drives denoising with f = 1/(1 + k*N); before 4.17 k was implicitly
+            // 1, and 4.17 made it k = s * lerp(b, 1, ...). The defaults therefore CHANGE behaviour
+            // versus every earlier REBLUR result -- s = 1, b = 1 restores it. Exposed rather than
+            // hidden so a REBLUR comparison against older numbers can be made like-for-like.
+            if (auto group2 = group.group("Convergence (v4.17)"))
+            {
+                group2.slider("s (overall scale)", mReblurSettings.convergenceSettings.s, 0.01f, 4.0f, false, "%.2f");
+                group2.slider("b (short history)", mReblurSettings.convergenceSettings.b, 0.0f, 1.0f, false, "%.2f");
+                group2.tooltip("s = 1, b = 1 reproduces pre-4.17 REBLUR behaviour.");
+            }
+            // clang-format on
+        }
+#else
         if (auto group = widget.group("ReBLUR Diffuse/Specular"))
         {
             // clang-format off
@@ -659,6 +1057,7 @@ void NRDPass::renderUI(Gui::Widgets& widget)
             group.checkbox("Material test for specular", mReblurSettings.enableMaterialTestForSpecular);
             // clang-format on
         }
+#endif
     }
     else if (mDenoisingMethod == DenoisingMethod::SpecularReflectionMv)
     {
@@ -675,17 +1074,20 @@ void NRDPass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene)
     mpScene = pScene;
 }
 
-static void* nrdAllocate(void* userArg, size_t size, size_t alignment)
+// NRD_CALL matters: v3.1 defined it as __fastcall, v4 as __stdcall, and v4 decorates the callback
+// pointers with it. An undecorated callback compiles and then corrupts the stack on the first
+// allocation, so the macro must be used rather than relying on the default convention.
+static void* NRD_CALL nrdAllocate(void* userArg, size_t size, size_t alignment)
 {
     return malloc(size);
 }
 
-static void* nrdReallocate(void* userArg, void* memory, size_t size, size_t alignment)
+static void* NRD_CALL nrdReallocate(void* userArg, void* memory, size_t size, size_t alignment)
 {
     return realloc(memory, size);
 }
 
-static void nrdFree(void* userArg, void* memory)
+static void NRD_CALL nrdFree(void* userArg, void* memory)
 {
     free(memory);
 }
@@ -787,6 +1189,52 @@ static ResourceFormat getFalcorFormat(nrd::Format format)
     }
 }
 
+#if FALCOR_HAS_NRD4
+// v4 renamed the enum Method -> Denoiser, reordered the families (so every RELAX/SIGMA/REFERENCE
+// ordinal shifted), and DELETED SpecularReflectionMv / SpecularDeltaMv along with their settings
+// structs and OUT_REFLECTION_MV / OUT_DELTA_MV / IN_DELTA_*_POS resource types. Those two methods
+// therefore cannot exist under v4 -- select them and the pass throws rather than silently denoising
+// something else. Use the v3.1 SDK if you need them (see scripts/PathTracerNRD.py).
+static nrd::Denoiser getNrdMethod(NRDPass::DenoisingMethod denoisingMethod)
+{
+    switch (denoisingMethod)
+    {
+    case NRDPass::DenoisingMethod::RelaxDiffuseSpecular:
+        return nrd::Denoiser::RELAX_DIFFUSE_SPECULAR;
+    case NRDPass::DenoisingMethod::RelaxDiffuse:
+        return nrd::Denoiser::RELAX_DIFFUSE;
+    case NRDPass::DenoisingMethod::ReblurDiffuseSpecular:
+        return nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR;
+    case NRDPass::DenoisingMethod::RelaxSpecular:
+        return nrd::Denoiser::RELAX_SPECULAR;
+    case NRDPass::DenoisingMethod::ReblurDiffuse:
+        return nrd::Denoiser::REBLUR_DIFFUSE;
+    case NRDPass::DenoisingMethod::ReblurSpecular:
+        return nrd::Denoiser::REBLUR_SPECULAR;
+    case NRDPass::DenoisingMethod::ReblurDiffuseOcclusion:
+        return nrd::Denoiser::REBLUR_DIFFUSE_OCCLUSION;
+    case NRDPass::DenoisingMethod::SigmaShadow:
+        return nrd::Denoiser::SIGMA_SHADOW;
+    case NRDPass::DenoisingMethod::SigmaShadowTranslucency:
+        return nrd::Denoiser::SIGMA_SHADOW_TRANSLUCENCY;
+    case NRDPass::DenoisingMethod::Reference:
+        return nrd::Denoiser::REFERENCE;
+    case NRDPass::DenoisingMethod::RelaxDiffuseSh:
+        return nrd::Denoiser::RELAX_DIFFUSE_SH;
+    case NRDPass::DenoisingMethod::ReblurDiffuseSh:
+        return nrd::Denoiser::REBLUR_DIFFUSE_SH;
+    case NRDPass::DenoisingMethod::SpecularReflectionMv:
+    case NRDPass::DenoisingMethod::SpecularDeltaMv:
+        FALCOR_THROW(
+            "NRDPass: SpecularReflectionMv / SpecularDeltaMv were removed in NRD v4 and have no "
+            "replacement. Build with FALCOR_USE_NRD4=OFF to use them."
+        );
+    default:
+        FALCOR_UNREACHABLE();
+        return nrd::Denoiser::RELAX_DIFFUSE_SPECULAR;
+    }
+}
+#else
 static nrd::Method getNrdMethod(NRDPass::DenoisingMethod denoisingMethod)
 {
     switch (denoisingMethod)
@@ -802,10 +1250,16 @@ static nrd::Method getNrdMethod(NRDPass::DenoisingMethod denoisingMethod)
     case NRDPass::DenoisingMethod::SpecularDeltaMv:
         return nrd::Method::SPECULAR_DELTA_MV;
     default:
-        FALCOR_UNREACHABLE();
-        return nrd::Method::RELAX_DIFFUSE_SPECULAR;
+        // The v4-only methods land here. FALCOR_UNREACHABLE alone would fall through to
+        // RELAX_DIFFUSE_SPECULAR in release, i.e. run a DIFFERENT denoiser than the one asked for and
+        // report nothing -- so name the problem instead.
+        FALCOR_THROW(
+            "NRDPass: denoising method {} exists only in NRD v4. Configure with FALCOR_USE_NRD4=ON.",
+            uint32_t(denoisingMethod)
+        );
     }
 }
+#endif
 
 /// Copies into col-major layout, as the NRD library works in column major layout,
 /// while Falcor uses row-major layout
@@ -817,6 +1271,60 @@ static void copyMatrix(float* dstMatrix, const float4x4& srcMatrix)
 
 void NRDPass::reinit()
 {
+#if FALCOR_HAS_NRD4
+    // Destroy before recreating. The v3.1 path below simply nulled the handle, which leaked the
+    // whole denoiser (including its texture pool) on every graph recompile.
+    if (mpInstance)
+    {
+        nrd::DestroyInstance(*mpInstance);
+        mpInstance = nullptr;
+    }
+
+    // The library's normal/roughness encoding is baked in at build time in v4 and cannot be
+    // overridden per instance. If the vendored binary were built for a different encoding than the
+    // one we compile the shaders with and NRDAdapter packs, IN_NORMAL_ROUGHNESS would be silently
+    // misinterpreted rather than rejected -- a uniformly smeared frame and no error. Check rather
+    // than assume; v3.1 accepted either encoding, v4 does not.
+    //
+    // Compared against kNrd*Encoding (not against a literal) so that editing the constants used for
+    // the shader defines cannot drift away from the check that is supposed to police them.
+    const nrd::LibraryDesc* pLibraryDesc = nrd::GetLibraryDesc();
+    FALCOR_CHECK(pLibraryDesc != nullptr, "NRDPass: nrd::GetLibraryDesc() returned null.");
+    FALCOR_CHECK(
+        uint32_t(pLibraryDesc->normalEncoding) == kNrdNormalEncoding,
+        "NRDPass: NRD was built for normal encoding {} but the shaders and NRDAdapter use {} "
+        "(R10_G10_B10_A2_UNORM). Rebuild NRD or change kNrdNormalEncoding and "
+        "NRDAdapter.cs.slang::encodeNormalRoughness together.",
+        uint32_t(pLibraryDesc->normalEncoding),
+        kNrdNormalEncoding
+    );
+    FALCOR_CHECK(
+        uint32_t(pLibraryDesc->roughnessEncoding) == kNrdRoughnessEncoding,
+        "NRDPass: NRD was built for roughness encoding {} but the shaders use {} (LINEAR). A mismatch "
+        "here rescales roughness silently -- it does not error.",
+        uint32_t(pLibraryDesc->roughnessEncoding),
+        kNrdRoughnessEncoding
+    );
+
+    // Resolution is NOT passed at creation in v4 -- it lives in CommonSettings and can change per
+    // frame, which is why this only names the denoiser.
+    const nrd::DenoiserDesc denoisers[] = {{kDenoiserIdentifier, getNrdMethod(mDenoisingMethod)}};
+
+    nrd::InstanceCreationDesc instanceCreationDesc = {};
+    instanceCreationDesc.allocationCallbacks.Allocate = nrdAllocate;
+    instanceCreationDesc.allocationCallbacks.Reallocate = nrdReallocate;
+    instanceCreationDesc.allocationCallbacks.Free = nrdFree;
+    instanceCreationDesc.denoisers = denoisers;
+    instanceCreationDesc.denoisersNum = 1;
+
+    nrd::Result res = nrd::CreateInstance(instanceCreationDesc, mpInstance);
+
+    if (res != nrd::Result::SUCCESS)
+        FALCOR_THROW("NRDPass: Failed to create NRD instance (result {}).", uint32_t(res));
+
+    // Force the pool to be (re)built for the current size on the next createResources().
+    mPoolResourceSize = {};
+#else
     // Create a new denoiser instance.
     mpDenoiser = nullptr;
 
@@ -835,6 +1343,7 @@ void NRDPass::reinit()
 
     if (res != nrd::Result::SUCCESS)
         FALCOR_THROW("NRDPass: Failed to create NRD denoiser");
+#endif
 
     createResources();
     createPipelines();
@@ -848,6 +1357,58 @@ void NRDPass::createPipelines()
     mCBVSRVUAVdescriptorSetLayouts.clear();
     mpRootSignatures.clear();
 
+#if FALCOR_HAS_NRD4
+    const nrd::InstanceDesc& denoiserDesc = *nrd::GetInstanceDesc(*mpInstance);
+
+    // v4 drops StaticSamplerDesc: samplers sit at consecutive registers from samplersBaseRegisterIndex.
+    D3D12DescriptorSetLayout SamplersDescriptorSetLayout;
+    for (uint32_t j = 0; j < denoiserDesc.samplersNum; j++)
+    {
+        SamplersDescriptorSetLayout.addRange(
+            ShaderResourceType::Sampler, denoiserDesc.samplersBaseRegisterIndex + j, 1,
+            denoiserDesc.constantBufferAndSamplersSpaceIndex
+        );
+    }
+    mpSamplersDescriptorSet =
+        D3D12DescriptorSet::create(mpDevice, SamplersDescriptorSetLayout, D3D12DescriptorSetBindingUsage::ExplicitBind);
+
+    for (uint32_t j = 0; j < denoiserDesc.samplersNum; j++)
+    {
+        mpSamplersDescriptorSet->setSampler(0, j, mpSamplers[j].get());
+    }
+
+    for (uint32_t i = 0; i < denoiserDesc.pipelinesNum; i++)
+    {
+        const nrd::PipelineDesc& nrdPipelineDesc = denoiserDesc.pipelines[i];
+
+        D3D12DescriptorSetLayout CBVSRVUAVdescriptorSetLayout;
+        CBVSRVUAVdescriptorSetLayout.addRange(
+            ShaderResourceType::Cbv, denoiserDesc.constantBufferRegisterIndex, 1, denoiserDesc.constantBufferAndSamplersSpaceIndex
+        );
+
+        // v4 removed ResourceRangeDesc::baseRegisterIndex, so registers must be derived. They run
+        // consecutively from resourcesBaseRegisterIndex, but SRVs (t#) and UAVs (u#) are SEPARATE
+        // register classes that each restart at the base -- see any *.resources.hlsli, e.g. RELAX
+        // TemporalAccumulation binds t0..t12 alongside u0..u2. A single shared counter puts the UAV
+        // range at u13, and D3D12 then rejects the pipeline with E_INVALIDARG because the root
+        // signature does not cover the u0..u2 the shader actually declares.
+        uint32_t srvRegisterOffset = 0;
+        uint32_t uavRegisterOffset = 0;
+        for (uint32_t j = 0; j < nrdPipelineDesc.resourceRangesNum; j++)
+        {
+            const nrd::ResourceRangeDesc& nrdDescriptorRange = nrdPipelineDesc.resourceRanges[j];
+
+            const bool isSrv = nrdDescriptorRange.descriptorType == nrd::DescriptorType::TEXTURE;
+            ShaderResourceType descriptorType = isSrv ? ShaderResourceType::TextureSrv : ShaderResourceType::TextureUav;
+            uint32_t& registerOffset = isSrv ? srvRegisterOffset : uavRegisterOffset;
+
+            CBVSRVUAVdescriptorSetLayout.addRange(
+                descriptorType, denoiserDesc.resourcesBaseRegisterIndex + registerOffset, nrdDescriptorRange.descriptorsNum,
+                denoiserDesc.resourcesSpaceIndex
+            );
+            registerOffset += nrdDescriptorRange.descriptorsNum;
+        }
+#else
     // Get denoiser desc for currently initialized denoiser implementation.
     const nrd::DenoiserDesc& denoiserDesc = nrd::GetDenoiserDesc(*mpDenoiser);
 
@@ -871,7 +1432,6 @@ void NRDPass::createPipelines()
     for (uint32_t i = 0; i < denoiserDesc.pipelineNum; i++)
     {
         const nrd::PipelineDesc& nrdPipelineDesc = denoiserDesc.pipelines[i];
-        const nrd::ComputeShader& nrdComputeShader = nrdPipelineDesc.computeShaderDXIL;
 
         // Initialize descriptor set.
         D3D12DescriptorSetLayout CBVSRVUAVdescriptorSetLayout;
@@ -889,6 +1449,7 @@ void NRDPass::createPipelines()
 
             CBVSRVUAVdescriptorSetLayout.addRange(descriptorType, nrdDescriptorRange.baseRegisterIndex, nrdDescriptorRange.descriptorNum);
         }
+#endif
 
         mCBVSRVUAVdescriptorSetLayouts.push_back(CBVSRVUAVdescriptorSetLayout);
 
@@ -905,17 +1466,68 @@ void NRDPass::createPipelines()
 
         // Create Compute PSO for the NRD pass.
         {
+            DefineList defines;
+            defines.add("NRD_COMPILER_DXC");
+#if FALCOR_HAS_NRD4
+            // v4 gates the permutation macros (RADIANCE/SH/OCCLUSION, DIFF/SPEC/BOTH) behind
+            // NRD_INTERNAL, which its own build defines. Without it NRD_SIGNAL expands against
+            // undefined symbols, so NRD_DIFF and NRD_SPEC both evaluate false and the shaders
+            // silently compile with no signal selected.
+            defines.add("NRD_INTERNAL");
+
+            // v4 RENAMED the encoding macros. NRD_USE_OCT_NORMAL_ENCODING / NRD_USE_MATERIAL_ID are
+            // simply ignored by v4's shaders, which read NRD_NORMAL_ENCODING / NRD_ROUGHNESS_ENCODING
+            // from NRDConfig.hlsli instead. Setting them here rather than inheriting that header's
+            // defaults keeps the contract with NRDAdapter's packing explicit and in one place.
+            // Cross-checked against the linked library in reinit(); see kNrdNormalEncoding.
+            defines.add("NRD_NORMAL_ENCODING", std::to_string(kNrdNormalEncoding));
+            defines.add("NRD_ROUGHNESS_ENCODING", std::to_string(kNrdRoughnessEncoding));
+#else
+            defines.add("NRD_USE_OCT_NORMAL_ENCODING", "1");
+            defines.add("NRD_USE_MATERIAL_ID", "0");
+#endif
+
+#if FALCOR_HAS_NRD4
+            // v4 replaces shaderFileName + shaderEntryPointName with a single packed identifier:
+            //   "fileName|macro1=value1|macro2=value2..."
+            // The macros are NOT optional decoration -- v4 compiles each shader once per
+            // permutation of NRD_SIGNAL={DIFF,SPEC,BOTH} x NRD_MODE={RADIANCE,SH,OCCLUSION,DO}
+            // (see Shaders.cfg), and NRD_MODE=SH is precisely how spherical-harmonics mode is
+            // selected. Dropping them yields a pipeline that compiles and runs but denoises the
+            // wrong signal, which no error would reveal.
+            std::string identifier(nrdPipelineDesc.shaderIdentifier);
+            std::string shaderName = identifier;
+            if (size_t firstBar = identifier.find('|'); firstBar != std::string::npos)
+            {
+                shaderName = identifier.substr(0, firstBar);
+                size_t pos = firstBar + 1;
+                while (pos <= identifier.size())
+                {
+                    const size_t nextBar = identifier.find('|', pos);
+                    const std::string token = identifier.substr(pos, nextBar == std::string::npos ? std::string::npos : nextBar - pos);
+                    if (const size_t eq = token.find('='); eq != std::string::npos)
+                        defines.add(token.substr(0, eq), token.substr(eq + 1));
+                    else if (!token.empty())
+                        defines.add(token);
+                    if (nextBar == std::string::npos)
+                        break;
+                    pos = nextBar + 1;
+                }
+            }
+            // v4's tree is flat and the names already carry ".cs.hlsl"; v3.1 nested under Source/
+            // and needed the extension appended.
+            std::string shaderFileName = "nrd/Shaders/" + shaderName;
+            const char* entryPoint = denoiserDesc.shaderEntryPoint;
+#else
             std::string shaderFileName = "nrd/Shaders/Source/" + std::string(nrdPipelineDesc.shaderFileName) + ".hlsl";
+            const char* entryPoint = nrdPipelineDesc.shaderEntryPointName;
+#endif
 
             ProgramDesc programDesc;
-            programDesc.addShaderLibrary(shaderFileName).csEntry(nrdPipelineDesc.shaderEntryPointName);
+            programDesc.addShaderLibrary(shaderFileName).csEntry(entryPoint);
             programDesc.setCompilerFlags(SlangCompilerFlags::MatrixLayoutColumnMajor);
             // Disable warning 30056: non-short-circuiting `?:` operator is deprecated, use 'select' instead.
             programDesc.setCompilerArguments({"-Wno-30056"});
-            DefineList defines;
-            defines.add("NRD_COMPILER_DXC");
-            defines.add("NRD_USE_OCT_NORMAL_ENCODING", "1");
-            defines.add("NRD_USE_MATERIAL_ID", "0");
             ref<ComputePass> pPass = ComputePass::create(mpDevice, programDesc, defines);
 
             ref<Program> pProgram = pPass->getProgram();
@@ -941,6 +1553,59 @@ void NRDPass::createResources()
     mpPermanentTextures.clear();
     mpTransientTextures.clear();
 
+#if FALCOR_HAS_NRD4
+    const nrd::InstanceDesc& denoiserDesc = *nrd::GetInstanceDesc(*mpInstance);
+    const uint32_t poolSize = denoiserDesc.permanentPoolSize + denoiserDesc.transientPoolSize;
+
+    // v4 exposes samplers as a plain Sampler[] and dropped both MIRRORED_REPEAT variants, so every
+    // sampler is clamped and only the filter varies. Note LINEAR_CLAMP moved from value 2 to 1 --
+    // anything that indexed this enum numerically would now bind the wrong sampler.
+    for (uint32_t i = 0; i < denoiserDesc.samplersNum; i++)
+    {
+        const nrd::Sampler nrdSampler = denoiserDesc.samplers[i];
+        Sampler::Desc samplerDesc;
+        samplerDesc.setAddressingMode(TextureAddressingMode::Clamp, TextureAddressingMode::Clamp, TextureAddressingMode::Clamp);
+        if (nrdSampler == nrd::Sampler::NEAREST_CLAMP)
+            samplerDesc.setFilterMode(TextureFilteringMode::Point, TextureFilteringMode::Point, TextureFilteringMode::Point);
+        else
+            samplerDesc.setFilterMode(TextureFilteringMode::Linear, TextureFilteringMode::Linear, TextureFilteringMode::Point);
+
+        mpSamplers.push_back(mpDevice->createSampler(samplerDesc));
+    }
+
+    // v4's TextureDesc carries only {format, downsampleFactor} -- width/height/mipNum are gone, and
+    // the pool is sized from CommonSettings::resourceSize instead. Record the size we built for so
+    // executeInternal() can rebuild when the resolution changes (v3.1 could allocate once, because
+    // resolution was fixed at creation).
+    mPoolResourceSize = mScreenSize;
+
+    for (uint32_t i = 0; i < poolSize; i++)
+    {
+        const bool isPermanent = (i < denoiserDesc.permanentPoolSize);
+        const nrd::TextureDesc& nrdTextureDesc =
+            isPermanent ? denoiserDesc.permanentPool[i] : denoiserDesc.transientPool[i - denoiserDesc.permanentPoolSize];
+
+        const uint32_t downsample = std::max(1u, uint32_t(nrdTextureDesc.downsampleFactor));
+        const uint32_t width = div_round_up(mScreenSize.x, downsample);
+        const uint32_t height = div_round_up(mScreenSize.y, downsample);
+
+        ResourceFormat textureFormat = getFalcorFormat(nrdTextureDesc.format);
+        ref<Texture> pTexture = mpDevice->createTexture2D(
+            width,
+            height,
+            textureFormat,
+            1u,
+            1u, // v4 pool textures are always single-mip; ResourceDesc no longer carries mip info.
+            nullptr,
+            ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+        );
+
+        if (isPermanent)
+            mpPermanentTextures.push_back(pTexture);
+        else
+            mpTransientTextures.push_back(pTexture);
+    }
+#else
     const nrd::DenoiserDesc& denoiserDesc = nrd::GetDenoiserDesc(*mpDenoiser);
     const uint32_t poolSize = denoiserDesc.permanentPoolSize + denoiserDesc.transientPoolSize;
 
@@ -998,6 +1663,7 @@ void NRDPass::createResources()
         else
             mpTransientTextures.push_back(pTexture);
     }
+#endif
 }
 
 void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& renderData)
@@ -1022,7 +1688,11 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
             mpPackRadiancePassRelax->execute(pRenderContext, uint3(mScreenSize.x, mScreenSize.y, 1u));
         }
 
+#if FALCOR_HAS_NRD4
+        nrd::SetDenoiserSettings(*mpInstance, kDenoiserIdentifier, static_cast<void*>(&mRelaxSettings));
+#else
         nrd::SetMethodSettings(*mpDenoiser, nrd::Method::RELAX_DIFFUSE_SPECULAR, static_cast<void*>(&mRelaxDiffuseSpecularSettings));
+#endif
     }
     else if (mDenoisingMethod == DenoisingMethod::RelaxDiffuse)
     {
@@ -1036,7 +1706,11 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
             mpPackRadiancePassRelax->execute(pRenderContext, uint3(mScreenSize.x, mScreenSize.y, 1u));
         }
 
+#if FALCOR_HAS_NRD4
+        nrd::SetDenoiserSettings(*mpInstance, kDenoiserIdentifier, static_cast<void*>(&mRelaxSettings));
+#else
         nrd::SetMethodSettings(*mpDenoiser, nrd::Method::RELAX_DIFFUSE, static_cast<void*>(&mRelaxDiffuseSettings));
+#endif
     }
     else if (mDenoisingMethod == DenoisingMethod::ReblurDiffuseSpecular)
     {
@@ -1054,17 +1728,48 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
             mpPackRadiancePassReblur->execute(pRenderContext, uint3(mScreenSize.x, mScreenSize.y, 1u));
         }
 
+#if FALCOR_HAS_NRD4
+        nrd::SetDenoiserSettings(*mpInstance, kDenoiserIdentifier, static_cast<void*>(&mReblurSettings));
+#else
         nrd::SetMethodSettings(*mpDenoiser, nrd::Method::REBLUR_DIFFUSE_SPECULAR, static_cast<void*>(&mReblurSettings));
+#endif
     }
+#if FALCOR_HAS_NRD4
+    else if (mDenoisingMethod == DenoisingMethod::RelaxSpecular || mDenoisingMethod == DenoisingMethod::RelaxDiffuseSh)
+    {
+        nrd::SetDenoiserSettings(*mpInstance, kDenoiserIdentifier, static_cast<void*>(&mRelaxSettings));
+    }
+    else if (mDenoisingMethod == DenoisingMethod::ReblurDiffuse || mDenoisingMethod == DenoisingMethod::ReblurSpecular ||
+             mDenoisingMethod == DenoisingMethod::ReblurDiffuseOcclusion || mDenoisingMethod == DenoisingMethod::ReblurDiffuseSh)
+    {
+        nrd::SetDenoiserSettings(*mpInstance, kDenoiserIdentifier, static_cast<void*>(&mReblurSettings));
+    }
+    else if (mDenoisingMethod == DenoisingMethod::SigmaShadow || mDenoisingMethod == DenoisingMethod::SigmaShadowTranslucency)
+    {
+        nrd::SetDenoiserSettings(*mpInstance, kDenoiserIdentifier, static_cast<void*>(&mSigmaSettings));
+    }
+    else if (mDenoisingMethod == DenoisingMethod::Reference)
+    {
+        nrd::SetDenoiserSettings(*mpInstance, kDenoiserIdentifier, static_cast<void*>(&mReferenceSettings));
+    }
+#endif
     else if (mDenoisingMethod == DenoisingMethod::SpecularReflectionMv)
     {
+#if FALCOR_HAS_NRD4
+        FALCOR_THROW("NRDPass: SpecularReflectionMv was removed in NRD v4. Build with FALCOR_USE_NRD4=OFF.");
+#else
         nrd::SpecularReflectionMvSettings specularReflectionMvSettings;
         nrd::SetMethodSettings(*mpDenoiser, nrd::Method::SPECULAR_REFLECTION_MV, static_cast<void*>(&specularReflectionMvSettings));
+#endif
     }
     else if (mDenoisingMethod == DenoisingMethod::SpecularDeltaMv)
     {
+#if FALCOR_HAS_NRD4
+        FALCOR_THROW("NRDPass: SpecularDeltaMv was removed in NRD v4. Build with FALCOR_USE_NRD4=OFF.");
+#else
         nrd::SpecularDeltaMvSettings specularDeltaMvSettings;
         nrd::SetMethodSettings(*mpDenoiser, nrd::Method::SPECULAR_DELTA_MV, static_cast<void*>(&specularDeltaMvSettings));
+#endif
     }
     else
     {
@@ -1093,6 +1798,56 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
     mCommonSettings.frameIndex = mFrameIndex;
     mCommonSettings.isMotionVectorInWorldSpace = mWorldSpaceMotion;
 
+#if FALCOR_HAS_NRD4
+    // Resolution moved out of denoiser creation and into CommonSettings. All four of these default
+    // to {0,0}, and nothing else tells NRD how big anything is, so omitting them fails outright.
+    // resourceSize is the allocated texture size; rectSize is the rendered viewport (they differ
+    // only under dynamic resolution, which we do not use).
+    mCommonSettings.resourceSize[0] = uint16_t(mScreenSize.x);
+    mCommonSettings.resourceSize[1] = uint16_t(mScreenSize.y);
+    mCommonSettings.rectSize[0] = uint16_t(mScreenSize.x);
+    mCommonSettings.rectSize[1] = uint16_t(mScreenSize.y);
+
+    // The *Prev values have no v3.1 equivalent and default to zero, which degrades reprojection
+    // silently rather than erroring. On the first frame seed them from the current values.
+    const bool firstFrame = (mFrameIndex == 0) || any(mPrevResourceSize == 0u);
+    mCommonSettings.resourceSizePrev[0] = uint16_t(firstFrame ? mScreenSize.x : mPrevResourceSize.x);
+    mCommonSettings.resourceSizePrev[1] = uint16_t(firstFrame ? mScreenSize.y : mPrevResourceSize.y);
+    mCommonSettings.rectSizePrev[0] = uint16_t(firstFrame ? mScreenSize.x : mPrevRectSize.x);
+    mCommonSettings.rectSizePrev[1] = uint16_t(firstFrame ? mScreenSize.y : mPrevRectSize.y);
+
+    // Likewise new in v4, and likewise zero-defaulted.
+    mCommonSettings.cameraJitterPrev[0] = firstFrame ? mCommonSettings.cameraJitter[0] : mPrevCameraJitter.x;
+    mCommonSettings.cameraJitterPrev[1] = firstFrame ? mCommonSettings.cameraJitter[1] : mPrevCameraJitter.y;
+
+    // motionVectorScale grew from float[2] to float[3] and the new element defaults to 0. We feed
+    // 2D screen-space motion vectors already in normalized UV, so the scale is identity and .z is
+    // deliberately 0. (With world-space motion, leaving .z at 0 would silently zero the Z of the
+    // motion -- wrong reprojection, no error.)
+    mCommonSettings.motionVectorScale[0] = 1.f;
+    mCommonSettings.motionVectorScale[1] = 1.f;
+    mCommonSettings.motionVectorScale[2] = mWorldSpaceMotion ? 1.f : 0.f;
+
+    mCommonSettings.disocclusionThresholdAlternate = mDisocclusionThresholdAlternate * 0.01f;
+    mCommonSettings.strandThickness = mStrandThickness;
+    mCommonSettings.strandMaterialID = mStrandMaterialID;
+    mCommonSettings.cameraAttachedReflectionMaterialID = mCameraAttachedReflectionMaterialID;
+    mCommonSettings.splitScreen = mSplitScreen;
+    mCommonSettings.enableValidation = mEnableValidation && renderData.getTexture(kOutputValidation) != nullptr;
+
+    // Announce optional inputs ONLY when the graph actually bound them. NRD does not check: telling it
+    // a confidence texture exists when nothing is connected makes it read an unbound resource, which
+    // reads as "confidence 0 everywhere" -- it would quietly relax every weight rather than error.
+    mCommonSettings.isHistoryConfidenceAvailable = renderData.getTexture(kInputDiffuseConfidence) != nullptr &&
+                                                   renderData.getTexture(kInputSpecularConfidence) != nullptr;
+    mCommonSettings.isDisocclusionThresholdMixAvailable = renderData.getTexture(kInputDisocclusionThresholdMix) != nullptr;
+
+
+    mPrevResourceSize = mScreenSize;
+    mPrevRectSize = mScreenSize;
+    mPrevCameraJitter = float2(mCommonSettings.cameraJitter[0], mCommonSettings.cameraJitter[1]);
+#endif
+
     mPrevViewMatrix = viewMatrix;
     mPrevProjMatrix = projMatrix;
     mFrameIndex++;
@@ -1100,7 +1855,18 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
     // Run NRD dispatches.
     const nrd::DispatchDesc* dispatchDescs = nullptr;
     uint32_t dispatchDescNum = 0;
+#if FALCOR_HAS_NRD4
+    // v4 splits this in two: settings are pushed first and validated there, then dispatches are
+    // requested for a chosen subset of denoisers. SetCommonSettings returns a Result worth checking
+    // -- it is where a missing resourceSize/rectSize surfaces.
+    nrd::Result settingsResult = nrd::SetCommonSettings(*mpInstance, mCommonSettings);
+    FALCOR_CHECK(settingsResult == nrd::Result::SUCCESS, "NRDPass: SetCommonSettings failed (result {}).", uint32_t(settingsResult));
+
+    const nrd::Identifier identifiers[] = {kDenoiserIdentifier};
+    nrd::Result result = nrd::GetComputeDispatches(*mpInstance, identifiers, 1, dispatchDescs, dispatchDescNum);
+#else
     nrd::Result result = nrd::GetComputeDispatches(*mpDenoiser, mCommonSettings, dispatchDescs, dispatchDescNum);
+#endif
     FALCOR_ASSERT(result == nrd::Result::SUCCESS);
 
     for (uint32_t i = 0; i < dispatchDescNum; i++)
@@ -1116,7 +1882,11 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
 
 void NRDPass::dispatch(RenderContext* pRenderContext, const RenderData& renderData, const nrd::DispatchDesc& dispatchDesc)
 {
+#if FALCOR_HAS_NRD4
+    const nrd::InstanceDesc& denoiserDesc = *nrd::GetInstanceDesc(*mpInstance);
+#else
     const nrd::DenoiserDesc& denoiserDesc = nrd::GetDenoiserDesc(*mpDenoiser);
+#endif
     const nrd::PipelineDesc& pipelineDesc = denoiserDesc.pipelines[dispatchDesc.pipelineIndex];
 
     // Set root signature.
@@ -1133,19 +1903,54 @@ void NRDPass::dispatch(RenderContext* pRenderContext, const RenderData& renderDa
 
     // Set CBV.
     mpCBV = D3D12ConstantBufferView::create(mpDevice, cbAllocation.getGpuAddress(), cbAllocation.size);
+#if FALCOR_HAS_NRD4
+    CBVSRVUAVDescriptorSet->setCbv(0 /* NB: range #0 is CBV range */, denoiserDesc.constantBufferRegisterIndex, mpCBV.get());
+#else
     CBVSRVUAVDescriptorSet->setCbv(0 /* NB: range #0 is CBV range */, denoiserDesc.constantBufferDesc.registerIndex, mpCBV.get());
+#endif
 
     uint32_t resourceIndex = 0;
+#if FALCOR_HAS_NRD4
+    // v4: registers run consecutively from resourcesBaseRegisterIndex, but SRVs and UAVs are
+    // separate register classes that each restart at the base. Must match createPipelines() exactly
+    // -- these registers are what the descriptors are looked up by.
+    uint32_t srvRegisterOffset = 0;
+    uint32_t uavRegisterOffset = 0;
+    for (uint32_t descriptorRangeIndex = 0; descriptorRangeIndex < pipelineDesc.resourceRangesNum; descriptorRangeIndex++)
+#else
     for (uint32_t descriptorRangeIndex = 0; descriptorRangeIndex < pipelineDesc.descriptorRangeNum; descriptorRangeIndex++)
+#endif
     {
+#if FALCOR_HAS_NRD4
+        const nrd::ResourceRangeDesc& nrdDescriptorRange = pipelineDesc.resourceRanges[descriptorRangeIndex];
+        const uint32_t rangeDescriptorNum = nrdDescriptorRange.descriptorsNum;
+        const bool rangeIsSrv = nrdDescriptorRange.descriptorType == nrd::DescriptorType::TEXTURE;
+        uint32_t& registerOffset = rangeIsSrv ? srvRegisterOffset : uavRegisterOffset;
+        const uint32_t rangeBaseRegister = denoiserDesc.resourcesBaseRegisterIndex + registerOffset;
+#else
         const nrd::DescriptorRangeDesc& nrdDescriptorRange = pipelineDesc.descriptorRanges[descriptorRangeIndex];
+        const uint32_t rangeDescriptorNum = nrdDescriptorRange.descriptorNum;
+        const uint32_t rangeBaseRegister = nrdDescriptorRange.baseRegisterIndex;
+#endif
 
-        for (uint32_t descriptorOffset = 0; descriptorOffset < nrdDescriptorRange.descriptorNum; descriptorOffset++)
+        for (uint32_t descriptorOffset = 0; descriptorOffset < rangeDescriptorNum; descriptorOffset++)
         {
+#if FALCOR_HAS_NRD4
+            FALCOR_ASSERT(resourceIndex < dispatchDesc.resourcesNum);
+            const nrd::ResourceDesc& resource = dispatchDesc.resources[resourceIndex];
+            const nrd::DescriptorType resourceDescriptorType = resource.descriptorType;
+            // v4 removed mipOffset/mipNum -- every descriptor is a whole, single-mip texture.
+            const uint16_t resourceMipOffset = 0;
+            const uint16_t resourceMipNum = 1;
+#else
             FALCOR_ASSERT(resourceIndex < dispatchDesc.resourceNum);
             const nrd::Resource& resource = dispatchDesc.resources[resourceIndex];
+            const nrd::DescriptorType resourceDescriptorType = resource.stateNeeded;
+            const uint16_t resourceMipOffset = resource.mipOffset;
+            const uint16_t resourceMipNum = resource.mipNum;
+#endif
 
-            FALCOR_ASSERT(resource.stateNeeded == nrdDescriptorRange.descriptorType);
+            FALCOR_ASSERT(resourceDescriptorType == nrdDescriptorRange.descriptorType);
 
             ref<Texture> texture;
 
@@ -1169,24 +1974,77 @@ void NRDPass::dispatch(RenderContext* pRenderContext, const RenderData& renderDa
             case nrd::ResourceType::IN_SPEC_HITDIST:
                 texture = renderData.getTexture(kInputSpecularHitDist);
                 break;
+#if !FALCOR_HAS_NRD4
+            // Removed in NRD v4 together with the SpecularReflectionMv / SpecularDeltaMv denoisers.
             case nrd::ResourceType::IN_DELTA_PRIMARY_POS:
                 texture = renderData.getTexture(kInputDeltaPrimaryPosW);
                 break;
             case nrd::ResourceType::IN_DELTA_SECONDARY_POS:
                 texture = renderData.getTexture(kInputDeltaSecondaryPosW);
                 break;
+#endif
             case nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST:
                 texture = renderData.getTexture(kOutputFilteredDiffuseRadianceHitDist);
                 break;
             case nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST:
                 texture = renderData.getTexture(kOutputFilteredSpecularRadianceHitDist);
                 break;
+#if FALCOR_HAS_NRD4
+            case nrd::ResourceType::IN_DIFF_CONFIDENCE:
+                texture = renderData.getTexture(kInputDiffuseConfidence);
+                break;
+            case nrd::ResourceType::IN_SPEC_CONFIDENCE:
+                texture = renderData.getTexture(kInputSpecularConfidence);
+                break;
+            case nrd::ResourceType::IN_DISOCCLUSION_THRESHOLD_MIX:
+                texture = renderData.getTexture(kInputDisocclusionThresholdMix);
+                break;
+            case nrd::ResourceType::IN_DIFF_HITDIST:
+                texture = renderData.getTexture(kInputDiffuseHitDist);
+                break;
+            case nrd::ResourceType::IN_PENUMBRA:
+                texture = renderData.getTexture(kInputPenumbra);
+                break;
+            case nrd::ResourceType::IN_TRANSLUCENCY:
+                texture = renderData.getTexture(kInputTranslucency);
+                break;
+            case nrd::ResourceType::IN_SIGNAL:
+                texture = renderData.getTexture(kInputSignal);
+                break;
+            case nrd::ResourceType::IN_DIFF_SH0:
+                texture = renderData.getTexture(kInputDiffuseSh0);
+                break;
+            case nrd::ResourceType::IN_DIFF_SH1:
+                texture = renderData.getTexture(kInputDiffuseSh1);
+                break;
+            case nrd::ResourceType::OUT_DIFF_SH0:
+                texture = renderData.getTexture(kOutputDiffuseSh0);
+                break;
+            case nrd::ResourceType::OUT_DIFF_SH1:
+                texture = renderData.getTexture(kOutputDiffuseSh1);
+                break;
+            case nrd::ResourceType::OUT_DIFF_HITDIST:
+                texture = renderData.getTexture(kOutputFilteredDiffuseHitDist);
+                break;
+            case nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY:
+                texture = renderData.getTexture(kOutputShadowTranslucency);
+                break;
+            case nrd::ResourceType::OUT_SIGNAL:
+                texture = renderData.getTexture(kOutputSignal);
+                break;
+            case nrd::ResourceType::OUT_VALIDATION:
+                texture = renderData.getTexture(kOutputValidation);
+                break;
+#endif
+#if !FALCOR_HAS_NRD4
+            // Removed in NRD v4 together with the SpecularReflectionMv / SpecularDeltaMv denoisers.
             case nrd::ResourceType::OUT_REFLECTION_MV:
                 texture = renderData.getTexture(kOutputReflectionMotionVectors);
                 break;
             case nrd::ResourceType::OUT_DELTA_MV:
                 texture = renderData.getTexture(kOutputDeltaMotionVectors);
                 break;
+#endif
             case nrd::ResourceType::TRANSIENT_POOL:
                 texture = mpTransientTextures[resource.indexInPool];
                 break;
@@ -1202,38 +2060,41 @@ void NRDPass::dispatch(RenderContext* pRenderContext, const RenderData& renderDa
 
             // Set up resource barriers.
             Resource::State newState =
-                resource.stateNeeded == nrd::DescriptorType::TEXTURE ? Resource::State::ShaderResource : Resource::State::UnorderedAccess;
-            for (uint16_t mip = 0; mip < resource.mipNum; mip++)
+                resourceDescriptorType == nrd::DescriptorType::TEXTURE ? Resource::State::ShaderResource : Resource::State::UnorderedAccess;
+            for (uint16_t mip = 0; mip < resourceMipNum; mip++)
             {
-                const ResourceViewInfo viewInfo = ResourceViewInfo(resource.mipOffset + mip, 1, 0, 1);
+                const ResourceViewInfo viewInfo = ResourceViewInfo(resourceMipOffset + mip, 1, 0, 1);
                 pRenderContext->resourceBarrier(texture.get(), newState, &viewInfo);
             }
 
             // Set the SRV and UAV descriptors.
             if (nrdDescriptorRange.descriptorType == nrd::DescriptorType::TEXTURE)
             {
-                ref<ShaderResourceView> pSRV = texture->getSRV(resource.mipOffset, resource.mipNum, 0, 1);
+                ref<ShaderResourceView> pSRV = texture->getSRV(resourceMipOffset, resourceMipNum, 0, 1);
                 CBVSRVUAVDescriptorSet->setSrv(
-                    descriptorRangeIndex + 1 /* NB: range #0 is CBV range */,
-                    nrdDescriptorRange.baseRegisterIndex + descriptorOffset,
-                    pSRV.get()
+                    descriptorRangeIndex + 1 /* NB: range #0 is CBV range */, rangeBaseRegister + descriptorOffset, pSRV.get()
                 );
             }
             else
             {
-                ref<UnorderedAccessView> pUAV = texture->getUAV(resource.mipOffset, 0, 1);
+                ref<UnorderedAccessView> pUAV = texture->getUAV(resourceMipOffset, 0, 1);
                 CBVSRVUAVDescriptorSet->setUav(
-                    descriptorRangeIndex + 1 /* NB: range #0 is CBV range */,
-                    nrdDescriptorRange.baseRegisterIndex + descriptorOffset,
-                    pUAV.get()
+                    descriptorRangeIndex + 1 /* NB: range #0 is CBV range */, rangeBaseRegister + descriptorOffset, pUAV.get()
                 );
             }
 
             resourceIndex++;
         }
+#if FALCOR_HAS_NRD4
+        registerOffset += rangeDescriptorNum;
+#endif
     }
 
+#if FALCOR_HAS_NRD4
+    FALCOR_ASSERT(resourceIndex == dispatchDesc.resourcesNum);
+#else
     FALCOR_ASSERT(resourceIndex == dispatchDesc.resourceNum);
+#endif
 
     // Set descriptor sets.
     mpSamplersDescriptorSet->bindForCompute(pRenderContext, mpRootSignatures[dispatchDesc.pipelineIndex].get(), 0);

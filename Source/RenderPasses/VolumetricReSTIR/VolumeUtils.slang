@@ -368,7 +368,13 @@ float MediumTrRayMarchingGeneric(VolRay rWorld, int mipLevel, bool useLinearSamp
     return adapter.Tr;
 }
 
-void ReservoirFeatureRayMarchingGeneric(VolRay rWorld, inout SampleGenerator sg, int mipLevel, bool useLinearSampler, float tStepScale, inout float accuTransmittance)
+/** Marches the primary ray to gather per-pixel features.
+    \param[out] accuTransmittance Total transmittance along the ray.
+    \param[out] expectedT Transmittance-weighted mean scattering distance (world space), or -1 if the
+                ray never intersected any medium. Deterministic, so it is safe to use as a temporal
+                guide buffer; see the accumulators in ReservoirFeatureRayMarchingAdapterGVDB.
+*/
+void ReservoirFeatureRayMarchingGeneric(VolRay rWorld, inout SampleGenerator sg, int mipLevel, bool useLinearSampler, float tStepScale, inout float accuTransmittance, out float expectedT)
 {
     ReservoirFeatureRayMarchingAdapterGVDB adapter;
     adapter.InitializeValues();
@@ -382,6 +388,9 @@ void ReservoirFeatureRayMarchingGeneric(VolRay rWorld, inout SampleGenerator sg,
     adapter.useLinearSampler = useLinearSampler; 
     VolumeTrackingGVDB(rWorld, mipLevel, sg, adapter, false);
     accuTransmittance = adapter.accuTransmittance;
+    // -1 signals "ray never hit the medium" so the caller can substitute a surface hit or the far
+    // plane; a tiny weightSum means the medium was optically negligible along this ray.
+    expectedT = adapter.weightSum > 1e-6f ? adapter.weightedT / adapter.weightSum : -1.f;
 }
 
 

@@ -11,7 +11,7 @@
 
 from falcor import *
 
-DATA_DIR = r"C:\Users\aresk\Desktop\Falcor\Denoising-VolumetricReSTIR\Bin\x64\Release\Data"
+DATA_DIR = r"C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData"
 
 m.loadScene(DATA_DIR + r"\default.obj")
 m.scene.setEnvMap(DATA_DIR + r"\green_sanctuary_8k.hdr")

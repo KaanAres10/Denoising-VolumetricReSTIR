@@ -530,6 +530,14 @@ struct ReservoirFeatureRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
     bool earlyTerminate = false;
     bool hasInitialized = false;
 
+    // Expected first-scatter distance, accumulated from the per-step scattering weight the march
+    // already computes. E[t] = weightedT / weightSum, where weight = T(t)*(1-exp(-sigma_t*dt)) and
+    // weightSum converges to 1 - T_total. Used as a DLSS depth guide: unlike Reservoir::depth this
+    // is deterministic (consumes no random numbers) and therefore temporally stable.
+    // Purely observational -- no sampling decision reads these.
+    float weightedT = 0.f;
+    float weightSum = 0.f;
+
 
     [mutating] void InitializeValues()
     {
@@ -537,6 +545,8 @@ struct ReservoirFeatureRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
         Tr = 0.f;
         hasInitialized = false;
         earlyTerminate = false;
+        weightedT = 0.f;
+        weightSum = 0.f;
     }
 
     [mutating] void ExecuteStartStep()
@@ -577,6 +587,10 @@ struct ReservoirFeatureRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
 
             float negOpticalLength = -sigma_t * tStep;
             float weight = (1 - exp(negOpticalLength)) * curTransmittance;
+            // Expected-depth accumulation (see weightedT/weightSum above). t is the sample's
+            // world-space distance along the ray at this step, before it is advanced below.
+            weightedT += t * weight;
+            weightSum += weight;
             Tr += negOpticalLength;
             p += wpt;
             t += tStep;

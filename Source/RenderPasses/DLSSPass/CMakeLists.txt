@@ -7,6 +7,8 @@ add_plugin(DLSSPass)
 target_sources(DLSSPass PRIVATE
     DLSSPass.cpp
     DLSSPass.h
+    DLSSDPass.cpp
+    DLSSDPass.h
     NGXWrapper.cpp
     NGXWrapper.h
 )

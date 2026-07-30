@@ -82,7 +82,7 @@ GBufferRT::GBufferRT(ref<Device> pDevice, const Properties& props) : GBuffer(pDe
 RenderPassReflection GBufferRT::reflect(const CompileData& compileData)
 {
     RenderPassReflection reflector;
-    const uint2 sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, compileData.defaultTexDims);
+    const uint2 sz = resolveOutputSize(compileData.defaultTexDims);
 
     // Add all outputs as UAVs. These are all optional.
     addRenderPassOutputs(reflector, kGBufferChannels, ResourceBindFlags::UnorderedAccess, sz);

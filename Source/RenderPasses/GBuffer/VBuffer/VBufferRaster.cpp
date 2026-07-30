@@ -74,7 +74,7 @@ VBufferRaster::VBufferRaster(ref<Device> pDevice, const Properties& props) : GBu
 RenderPassReflection VBufferRaster::reflect(const CompileData& compileData)
 {
     RenderPassReflection reflector;
-    const uint2 sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, compileData.defaultTexDims);
+    const uint2 sz = resolveOutputSize(compileData.defaultTexDims);
 
     // Add the required outputs. These always exist.
     reflector.addOutput(kDepthName, "Depth buffer")

@@ -27,6 +27,9 @@
  **************************************************************************/
 #pragma once
 #include "Falcor.h"
+#include <map>
+#include <memory>
+#include <mutex>
 
 #include <nvsdk_ngx_defs.h>
 
@@ -57,6 +60,19 @@ public:
     NGXWrapper(ref<Device> pDevice, const std::filesystem::path& applicationDataPath, const std::filesystem::path& featureSearchPath);
     ~NGXWrapper();
 
+    /// Get the shared NGX session for a device, creating it on first use.
+    ///
+    /// NGX is initialised and shut down per *device*, not per pass: NVSDK_NGX_D3D12_Init and
+    /// _Shutdown1 both take the device. Two passes each owning their own wrapper (e.g. DLSSPass
+    /// and DLSSDPass side by side in a comparison graph, which is exactly the intended use) would
+    /// init NGX twice and, worse, the first pass destroyed would shut NGX down underneath the
+    /// second. Callers hold a shared_ptr; the session is released when the last one goes away.
+    static std::shared_ptr<NGXWrapper> acquire(
+        ref<Device> pDevice,
+        const std::filesystem::path& applicationDataPath,
+        const std::filesystem::path& featureSearchPath
+    );
+
     /// Query optimal DLSS settings for a given resolution and performance/quality profile.
     OptimalSettings queryOptimalSettings(uint2 displaySize, NVSDK_NGX_PerfQuality_Value perfQuality) const;
 
@@ -68,14 +84,78 @@ public:
         Texture* pTarget,
         bool isContentHDR,
         bool depthInverted,
-        NVSDK_NGX_PerfQuality_Value perfQuality = NVSDK_NGX_PerfQuality_Value_MaxPerf
+        NVSDK_NGX_PerfQuality_Value perfQuality = NVSDK_NGX_PerfQuality_Value_MaxPerf,
+        /// NVSDK_NGX_DLSS_Hint_Render_Preset_*, or 0 to let NGX pick the default for this quality
+        /// level. Note the Super Resolution preset letters are a different enum from the Ray
+        /// Reconstruction ones -- do not pass a value from the wrong header.
+        uint32_t renderPreset = 0
     );
+
+    /// Log which nvngx_dlss*.dll is actually mapped into the process, and its file version. The
+    /// feature search path is only a hint -- NGX falls back to the executable directory -- so this is
+    /// the one reliable way to know which trained network is running.
+    static void logLoadedFeatureDll(const char* moduleName);
 
     /// Release DLSS.
     void releaseDLSS();
 
     /// Checks if DLSS is initialized.
-    bool isDLSSInitialized() const { return mpFeature != nullptr; }
+    bool isDLSSInitialized() const { return mpFeatureSR != nullptr; }
+
+    /// Whether the driver reports each NGX feature as usable. Queried once at init; neither is
+    /// fatal on its own, so a machine with Super Resolution but no Ray Reconstruction (or an SDK
+    /// without the DLSS-D DLL) still runs the SR path normally.
+    bool isSRAvailable() const { return mSRAvailable; }
+    bool isRRAvailable() const { return mRRAvailable; }
+
+#if FALCOR_HAS_DLSSD
+    /// Inputs for one Ray Reconstruction evaluation. A struct rather than more positional
+    /// arguments -- DLSS-D takes four guide buffers on top of what Super Resolution needs, and
+    /// evaluateDLSS()'s ten-argument list is already at the limit of what is readable.
+    struct DLSSDEvalInputs
+    {
+        Texture* color = nullptr;
+        Texture* output = nullptr;
+        Texture* depth = nullptr;          ///< Linear view Z (Depth_Type_Linear).
+        Texture* motionVectors = nullptr;
+        Texture* diffuseAlbedo = nullptr;
+        Texture* specularAlbedo = nullptr;
+        Texture* normals = nullptr;
+        Texture* roughness = nullptr;      ///< Separate texture (Roughness_Mode_Unpacked).
+        Texture* exposure = nullptr;       ///< Optional.
+    };
+
+    /// Initialize DLSS Ray Reconstruction. Throws if unable to initialize.
+    void initializeDLSSD(
+        RenderContext* pRenderContext,
+        uint2 maxRenderSize,
+        uint2 displayOutSize,
+        bool isContentHDR,
+        NVSDK_NGX_PerfQuality_Value perfQuality = NVSDK_NGX_PerfQuality_Value_MaxQuality,
+        uint32_t renderPreset = 0
+    );
+
+    /// Release DLSS Ray Reconstruction.
+    void releaseDLSSD();
+
+    bool isDLSSDInitialized() const { return mpFeatureRR != nullptr; }
+
+    /// Evaluate DLSS Ray Reconstruction.
+    ///
+    /// worldToView/viewToClip are optional but worth supplying: RR uses them for reprojection that
+    /// depth and motion vectors alone cannot express. frameTimeDeltaMs lets it scale how much it
+    /// denoises with the speed implied by the motion-vector magnitudes.
+    bool evaluateDLSSD(
+        RenderContext* pRenderContext,
+        const DLSSDEvalInputs& inputs,
+        bool resetAccumulation = false,
+        float2 jitterOffset = {0.f, 0.f},
+        float2 motionVectorScale = {1.f, 1.f},
+        const float4x4* pWorldToView = nullptr,
+        const float4x4* pViewToClip = nullptr,
+        float frameTimeDeltaMs = 0.f
+    ) const;
+#endif
 
     //// Evaluate DLSS.
     bool evaluateDLSS(
@@ -99,6 +179,14 @@ private:
     bool mInitialized = false;
 
     NVSDK_NGX_Parameter* mpParameters = nullptr;
-    NVSDK_NGX_Handle* mpFeature = nullptr;
+
+    // Separate handles per feature. Sharing one would break silently: shutdownNGX() releases
+    // unconditionally and each evaluate() early-returns on null, so whichever feature was created
+    // last would win and the other would quietly stop running.
+    NVSDK_NGX_Handle* mpFeatureSR = nullptr;
+    NVSDK_NGX_Handle* mpFeatureRR = nullptr;
+
+    bool mSRAvailable = false;
+    bool mRRAvailable = false;
 };
 } // namespace Falcor

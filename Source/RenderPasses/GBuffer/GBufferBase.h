@@ -66,6 +66,11 @@ protected:
     virtual void parseProperties(const Properties& props);
     virtual void setCullMode(RasterizerState::CullMode mode) { mCullMode = mode; }
     void updateFrameDim(const uint2 frameDim);
+
+    /// Output size for this compile: the upscaling ratio if enabled, otherwise the IOSize selection.
+    /// Rounds each axis down to even, matching VolumetricReSTIR::upscaledRenderSize so the two agree
+    /// exactly -- they must, or Ray Reconstruction gets misregistered guides.
+    uint2 resolveOutputSize(const uint2 defaultTexDims) const;
     void updateSamplePattern();
     ref<Texture> getOutput(const RenderData& renderData, const std::string& name) const;
 
@@ -92,6 +97,21 @@ protected:
     RenderPassHelpers::IOSize mOutputSizeSelection = RenderPassHelpers::IOSize::Default;
     /// Output size in pixels when 'Fixed' size is selected.
     uint2 mFixedOutputSize = {512, 512};
+
+    /// Render at a RATIO of the display rather than a fixed size. Overrides mOutputSizeSelection.
+    ///
+    /// A fixed size has to be computed by whoever builds the graph, from a display resolution they
+    /// only *requested* -- and the window manager may hand back something else (fullscreen, or a
+    /// request larger than the monitor). The pass, by contrast, is handed the real size at compile
+    /// time. So for an upscaling setup the ratio is the only formulation that stays correct: every
+    /// pass resolves the same fraction of the same real number, which is what DLSS Ray Reconstruction
+    /// requires of its colour and guide inputs.
+    /// Mutable so resolveOutputSize() (const, called from reflect()) can adopt the graph-wide scale.
+    mutable bool mUpscaling = false;
+    /// 0.5 / 0.58 / 0.667 correspond to DLSS MaxPerf / Balanced / MaxQuality.
+    mutable float mUpscaleRatio = 0.58f;
+    /// Last graph-wide render-scale generation adopted. See Falcor::getRenderScale().
+    mutable uint32_t mRenderScaleGen = 0;
     /// Which camera jitter sample pattern to use.
     SamplePattern mSamplePattern = SamplePattern::Center;
     /// Sample count for camera jitter.

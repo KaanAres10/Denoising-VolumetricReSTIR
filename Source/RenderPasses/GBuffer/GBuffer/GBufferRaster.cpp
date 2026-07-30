@@ -83,7 +83,7 @@ GBufferRaster::GBufferRaster(ref<Device> pDevice, const Properties& props) : GBu
 RenderPassReflection GBufferRaster::reflect(const CompileData& compileData)
 {
     RenderPassReflection reflector;
-    const uint2 sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, compileData.defaultTexDims);
+    const uint2 sz = resolveOutputSize(compileData.defaultTexDims);
 
     // Add the required depth output. This always exists.
     reflector.addOutput(kDepthName, "Depth buffer")

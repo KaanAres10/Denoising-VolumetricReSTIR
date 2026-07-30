@@ -59,6 +59,9 @@ cbuffer CB
     float3  gPrevCameraV;
     float3  gPrevCameraW;
     float3  gPrevCameraPosW;
+    // Jitter the PREVIOUS frame was rendered with. Required to reconstruct the previous frame's rays
+    // exactly; zero when jitter is disabled, which reduces the math to the unjittered form.
+    float2  gPrevJitter;
     SamplingOptions gSamplingOptions;
     EnvMapSampler           envMapSampler;      ///< Environment map sampler.
     EmissiveLightSampler           emissiveSampler;  
@@ -184,16 +187,24 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 scrPosI = int2(scrPos);
             }
 
+            // Publish the reprojection before any early-out below: reprojScreenPos is initialized to
+            // 0 at declaration, so the motion-vector write on the early-return path used to emit
+            // (0 - pixelPos), a vector pointing at the top-left corner, for every background pixel.
+            reprojScreenPos = scrPosI;
+
             {
-                int scrPosI_Id = getPixelID(scrPosI, gResolution);
-
-                ReservoirFeatures tapFeatures = gTemporalReservoirFeatureBuffer[scrPosI_Id];
-
-                bool isTapBackgroundReservoir = tapFeatures.transmittance == 1.f && tapFeatures.noReflectiveSurface;
-                if (isBackgroundReservoir && !isTapBackgroundReservoir)
+                // Range-check before indexing: scrPosI comes from a projection and can land outside
+                // the frame, and getPixelID() does no clamping.
+                if (IsWithinRange(scrPosI, gResolution))
                 {
-                    if (gOutputMotionVec) gMotionVec[pixelPos] = (reprojScreenPos - pixelPos) / float2(gResolution);
-                    return;
+                    ReservoirFeatures tapFeatures = gTemporalReservoirFeatureBuffer[getPixelID(scrPosI, gResolution)];
+
+                    bool isTapBackgroundReservoir = tapFeatures.transmittance == 1.f && tapFeatures.noReflectiveSurface;
+                    if (isBackgroundReservoir && !isTapBackgroundReservoir)
+                    {
+                        if (gOutputMotionVec) gMotionVec[pixelPos] = (reprojScreenPos - pixelPos) / float2(gResolution);
+                        return;
+                    }
                 }
             }
 
@@ -231,7 +242,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             {
                 int2 tapPos = reprojScreenPos;
                 float3 worldPos = computeWorldPositionWithRayTracingFrameScaled(gScene.camera, tapPos, 1,
-                                        0.5f, gResolution, gPrevCameraPosW, gPrevCameraU, gPrevCameraV, gPrevCameraW, taps[1].depth);
+                                        0.5f, gResolution, gPrevCameraPosW, gPrevCameraU, gPrevCameraV, gPrevCameraW, taps[1].depth, gPrevJitter);
 
                 taps[1].depth = length(worldPos - ray.origin);
             }
@@ -314,7 +325,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
                         CameraRay neighborCameraRay;
                         if (j == 0) neighborCameraRay = computeRayPinholeScaled(gScene.camera, tapPos2, 1, 0.5, gResolution);
-                        else neighborCameraRay = computeRayPinholeWithRayTracingFrameScaled(gScene.camera, tapPos2, 1, 0.5, gResolution, gPrevCameraPosW, gPrevCameraU, gPrevCameraV, gPrevCameraW);
+                        else neighborCameraRay = computeRayPinholeWithRayTracingFrameScaled(gScene.camera, tapPos2, 1, 0.5, gResolution, gPrevCameraPosW, gPrevCameraU, gPrevCameraV, gPrevCameraW, gPrevJitter);
             
                         float usedDepth = j == 0 ? taps[i].depth : (i == 0 ? centerPrevFrameDepth : temporalOriginalDepth);
             

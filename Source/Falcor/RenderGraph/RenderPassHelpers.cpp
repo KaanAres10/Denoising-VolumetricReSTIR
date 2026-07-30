@@ -50,4 +50,24 @@ uint2 RenderPassHelpers::calculateIOSize(const IOSize selection, const uint2 fix
     return sz;
 }
 
+namespace
+{
+/// Single instance for the process. Lives in Falcor.dll so the render-pass plugin DLLs share one.
+RenderScale gRenderScale;
+} // namespace
+
+const RenderScale& getRenderScale()
+{
+    return gRenderScale;
+}
+
+void setRenderScale(bool enabled, float ratio)
+{
+    gRenderScale.enabled = enabled;
+    gRenderScale.ratio = std::clamp(ratio, 0.25f, 1.f);
+    // Always bump, even if the values are unchanged: a pass that has since been reconfigured by a
+    // script needs to be pulled back in line with the rest of the graph.
+    ++gRenderScale.generation;
+}
+
 } // namespace Falcor

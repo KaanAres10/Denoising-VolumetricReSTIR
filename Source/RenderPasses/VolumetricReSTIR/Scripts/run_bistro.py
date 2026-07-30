@@ -17,7 +17,7 @@
 
 from falcor import *
 
-DATA_DIR = r"C:\Users\aresk\Desktop\Falcor\Denoising-VolumetricReSTIR\Bin\x64\Release\Data"
+DATA_DIR = r"C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData"
 
 m.loadScene(DATA_DIR + r"\Bistro_5_1\BistroExterior.fbx")
 

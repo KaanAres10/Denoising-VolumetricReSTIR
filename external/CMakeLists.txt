@@ -457,8 +457,43 @@ set_target_properties(dxcompiler PROPERTIES
 )
 
 # nrd
+#
+# Two SDKs can be present, and they are NOT source-compatible:
+#
+#   packman "nrd"        v3.1 -- prebuilt, no SH/SG signal types
+#   external/nrd-4       v4.x -- built from source (see Source/RenderPasses/NRDPass/README.md);
+#                                adds SH mode, which is the configuration NVIDIA benchmarks against
+#                                DLSS Ray Reconstruction, plus antifirefly on RELAX
+#
+# v4 wins when present. FALCOR_HAS_NRD4 is what NRDPass compiles against, so the v3.1 path keeps
+# building for anyone without the vendored v4 tree -- the same fallback shape as the DLSS SDK.
+set(NRD4_DIR ${CMAKE_CURRENT_SOURCE_DIR}/nrd-4)
 set(NRD_DIR ${PACKMAN_DIR}/nrd)
-if(EXISTS ${NRD_DIR}/Include/NRD.h)
+
+# Opt-in until NRDPass is ported: v4 is NOT source-compatible with v3.1 (Instance API, resolution
+# moved from creation into CommonSettings, Relax settings structs merged), so selecting it
+# automatically would break the build for anyone who happens to have the v4 tree vendored.
+option(FALCOR_USE_NRD4 "Use the vendored NRD v4 SDK instead of packman's v3.1" OFF)
+
+if(FALCOR_USE_NRD4 AND EXISTS ${NRD4_DIR}/Include/NRD.h)
+    add_library(nrd SHARED IMPORTED GLOBAL)
+    # v4 ships one configuration; point Debug at the Release import lib rather than leaving it unset.
+    set_target_properties(nrd PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES ${NRD4_DIR}/Include
+        INTERFACE_COMPILE_DEFINITIONS FALCOR_HAS_NRD4=1
+        IMPORTED_IMPLIB_RELEASE ${NRD4_DIR}/Lib/Release/NRD.lib
+        IMPORTED_LOCATION_RELEASE ${NRD4_DIR}/Lib/Release/NRD.dll
+        IMPORTED_IMPLIB_DEBUG ${NRD4_DIR}/Lib/Release/NRD.lib
+        IMPORTED_LOCATION_DEBUG ${NRD4_DIR}/Lib/Release/NRD.dll
+    )
+    set(FALCOR_HAS_NRD ON PARENT_SCOPE)
+    set(FALCOR_HAS_NRD4 ON PARENT_SCOPE)
+    # Export the CHOSEN dir so deploycommon.bat ships the matching shaders. The DLL and the
+    # shader tree must come from the same SDK: a v4 DLL with v3.1 shaders compiles and then
+    # denoises wrongly rather than failing.
+    set(FALCOR_NRD_DIR ${NRD4_DIR} PARENT_SCOPE)
+    message(STATUS "NRD SDK: ${NRD4_DIR} (v4, SH capable)")
+elseif(EXISTS ${NRD_DIR}/Include/NRD.h)
     add_library(nrd SHARED IMPORTED GLOBAL)
     set_target_properties(nrd PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${NRD_DIR}/Include
@@ -468,24 +503,64 @@ if(EXISTS ${NRD_DIR}/Include/NRD.h)
         IMPORTED_LOCATION_DEBUG ${NRD_DIR}/Lib/Debug/NRD.dll
     )
     set(FALCOR_HAS_NRD ON PARENT_SCOPE)
+    set(FALCOR_HAS_NRD4 OFF PARENT_SCOPE)
+    set(FALCOR_NRD_DIR ${NRD_DIR} PARENT_SCOPE)
+    message(STATUS "NRD SDK: ${NRD_DIR} (v3.1, no SH)")
 else()
     set(FALCOR_HAS_NRD OFF PARENT_SCOPE)
+    set(FALCOR_HAS_NRD4 OFF PARENT_SCOPE)
+    set(FALCOR_NRD_DIR "" PARENT_SCOPE)
 endif()
 
 # dlss
-set(DLSS_DIR ${PACKMAN_DIR}/dlss)
+# SDK selection, in priority order:
+#   1. FALCOR_DLSS_SDK_DIR cache variable (manual override)
+#   2. external/dlss-310  -- manually vendored SDK that ships Ray Reconstruction (DLSS-D).
+#      packman has no DLSS newer than 3.5.0, and 3.5.0 is Super-Resolution only, so RR can only
+#      come from a manual fetch of github.com/NVIDIA/DLSS (see Source/RenderPasses/DLSSPass/README.md).
+#   3. the packman package -- note ${PACKMAN_DIR}/dlss is a SYMLINK into a machine-wide cache
+#      (/c/packman-repo/...), so never write into it.
+set(FALCOR_DLSS_SDK_DIR "" CACHE PATH "Path to a DLSS SDK; overrides the vendored and packman ones")
+if(FALCOR_DLSS_SDK_DIR AND EXISTS ${FALCOR_DLSS_SDK_DIR}/include/nvsdk_ngx.h)
+    set(DLSS_DIR ${FALCOR_DLSS_SDK_DIR})
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/external/dlss-310/include/nvsdk_ngx.h)
+    set(DLSS_DIR ${CMAKE_SOURCE_DIR}/external/dlss-310)
+else()
+    set(DLSS_DIR ${PACKMAN_DIR}/dlss)
+endif()
 set(FALCOR_DLSS_DIR ${DLSS_DIR} PARENT_SCOPE)
+
 if(EXISTS ${DLSS_DIR}/include/nvsdk_ngx.h)
+    # The import-library subdirectory was renamed between releases: 3.5.0 uses "x86_64",
+    # the 310.x line uses "x64". Pick whichever exists rather than hardcoding one.
+    if(EXISTS ${DLSS_DIR}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib)
+        set(DLSS_LIB_DIR ${DLSS_DIR}/lib/Windows_x86_64/x64)
+    else()
+        set(DLSS_LIB_DIR ${DLSS_DIR}/lib/Windows_x86_64/x86_64)
+    endif()
+
     add_library(dlss STATIC IMPORTED GLOBAL)
     set_target_properties(dlss PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES ${DLSS_DIR}/include
-        IMPORTED_LOCATION_RELEASE ${DLSS_DIR}/lib/Windows_x86_64/x86_64/nvsdk_ngx_d.lib
-        IMPORTED_LOCATION_DEBUG ${DLSS_DIR}/lib/Windows_x86_64/x86_64/nvsdk_ngx_d_dbg.lib
+        IMPORTED_LOCATION_RELEASE ${DLSS_LIB_DIR}/nvsdk_ngx_d.lib
+        IMPORTED_LOCATION_DEBUG ${DLSS_LIB_DIR}/nvsdk_ngx_d_dbg.lib
         INTERFACE_COMPILE_DEFINITIONS NV_WINDOWS
     )
     set(FALCOR_HAS_DLSS ON PARENT_SCOPE)
+
+    # Ray Reconstruction is only present in SDKs that ship the DLSS-D headers.
+    if(EXISTS ${DLSS_DIR}/include/nvsdk_ngx_helpers_dlssd.h)
+        set(FALCOR_HAS_DLSSD ON PARENT_SCOPE)
+        target_compile_definitions(dlss INTERFACE FALCOR_HAS_DLSSD=1)
+    else()
+        set(FALCOR_HAS_DLSSD OFF PARENT_SCOPE)
+    endif()
+    # Loud, because a fresh clone silently falls back to the packman SDK and the RR pass would
+    # then vanish from the plugin list rather than failing to build.
+    message(STATUS "DLSS SDK: ${DLSS_DIR}")
 else()
     set(FALCOR_HAS_DLSS OFF PARENT_SCOPE)
+    set(FALCOR_HAS_DLSSD OFF PARENT_SCOPE)
 endif()
 
 # optix

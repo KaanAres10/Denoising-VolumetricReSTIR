@@ -53,6 +53,39 @@ namespace Falcor
     static const int kPrevFrameDensityGridOffset = 2 * kNumMaxMips + 3;
     static const int kPrevFrameExtraGridOffset = 11;
 
+    // Diagnostic: dump the GVDBInfo/VolumeDesc values a volume ends up with, so the offline bake can
+    // be validated numerically against the live gvdb.dll path (which is the fork's own code). Set
+    // FALCOR_GVDB_DUMP=1 to enable; the two paths should produce byte-identical output.
+    static void dumpGVDBDiag(const char* tag, const GVDBInfo& gi, const VolumeDesc& vd, int numMips)
+    {
+        static const bool enabled = []{ const char* e = std::getenv("FALCOR_GVDB_DUMP"); return e && e[0] == '1'; }();
+        if (!enabled) return;
+
+        std::printf("[gvdbdiag] ==== %s ====\n", tag);
+        std::printf("[gvdbdiag] desc maxDensity=%.9g invMaxDensity=%.9g tStep=%.9g sigma_t=%.9g\n",
+            vd.maxDensity, vd.invMaxDensity, vd.tStep, vd.sigma_t);
+        std::printf("[gvdbdiag] desc gridRes=%u,%u,%u densScale=%.9g densScaleByScaling=%.9g numMips=%d\n",
+            vd.gridRes.x, vd.gridRes.y, vd.gridRes.z, vd.densityScaleFactor, vd.densityScaleFactorByScaling, vd.numMips);
+        for (int m = 0; m < numMips && m < kNumMaxMips; m++)
+        {
+            std::printf("[gvdbdiag] mip%d top_lev=%d maxValue=%.9g invMaxValue=%.9g volInDim=%d,%d,%d\n",
+                m, gi.top_lev[m], gi.maxValue[m], gi.invMaxValue[m],
+                gi.volInDimensions[m].x, gi.volInDimensions[m].y, gi.volInDimensions[m].z);
+            std::printf("[gvdbdiag] mip%d bmin=%.9g,%.9g,%.9g bmax=%.9g,%.9g,%.9g\n",
+                m, gi.bmin[m].x, gi.bmin[m].y, gi.bmin[m].z, gi.bmax[m].x, gi.bmax[m].y, gi.bmax[m].z);
+            for (int n = 0; n < GVDBInfo::MAX_LEVELS; n++)
+            {
+                const int i = n + GVDBInfo::MAX_LEVELS * m;
+                std::printf("[gvdbdiag] mip%d lev%d dim=%d res=%d cnt=%d nodewid=%d childwid=%d "
+                            "vdel=%.9g,%.9g,%.9g range=%d,%d,%d\n",
+                    m, n, gi.dim[i], gi.res[i], gi.nodecnt[i], gi.nodewid[i], gi.childwid[i],
+                    gi.vdel[i].x, gi.vdel[i].y, gi.vdel[i].z,
+                    gi.noderange[i].x, gi.noderange[i].y, gi.noderange[i].z);
+            }
+        }
+        std::fflush(stdout);
+    }
+
     // Resolve a data-relative path against the active asset search directories (replaces the
     // Falcor 4.x findFileInDataDirectories). Returns true and the absolute path if found.
     static bool resolveDataFile(const std::string& path, std::string& outFull)
@@ -602,6 +635,8 @@ namespace Falcor
         mGVDBInfos.push_back(gvdbInfo);
         mGVDBVolumes.push_back(gvdbParamBlocks);
 
+        dumpGVDBDiag("LIVE (gvdb.dll)", gvdbInfo, volumeDesc, gvdbParamBlocks.numMips);
+
         mpDevice->getRenderContext()->submit(true);
 
         return (uint32_t)mGVDBVolumes.size() - 1;
@@ -767,6 +802,8 @@ namespace Falcor
         gvdbParamBlocks.paramBlock = gvdbBlock;
         mGVDBInfos.push_back(gvdbInfo);
         mGVDBVolumes.push_back(gvdbParamBlocks);
+
+        dumpGVDBDiag("BAKED (.bin)", gvdbInfo, volumeDesc, gvdbParamBlocks.numMips);
 
         mpDevice->getRenderContext()->submit(true);
         logInfo("GVDB: loaded baked volume '{}' (numMips={}, maxDensity={}) worldBB min({},{},{}) max({},{},{})",

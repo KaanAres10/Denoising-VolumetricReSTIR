@@ -124,3 +124,75 @@ GVDB's `Matrix4F` is column-major and the verbatim shaders consume `gvdb.xform` 
 values built with Falcor math helpers are **transposed before binding** (see `SceneGVDB.cpp`) to stay
 consistent with `gvdb.xform` in the shader. This is a no-op for a static volume placed with the
 default transform (identity), which is why `bunny_cloud` worked before the plume exposed it.
+
+## DLSS integration and guide buffers
+
+The pass can feed NVIDIA DLSS (`Source/RenderPasses/DLSSPass/`). DLSS requires `color`, `depth` and
+`mvec` and treats **all three as non-optional** — an unconnected input is a graph compile error, and
+mismatched input sizes throw at runtime. It also needs motion vectors that are sub-pixel accurate and
+*deterministic*, which the original `mvec` output is not (it is integer-pixel quantised and its
+reprojection anchor is drawn stochastically, which is correct for ReSTIR resampling and wrong for a
+temporal upscaler).
+
+New outputs and properties, **all defaulting to today's behaviour**:
+
+| Property | Default | Meaning |
+|---|---|---|
+| `outputSize` / `fixedOutputSize` | `Default` | Render scale. `Default` = swapchain size, identical to before. |
+| `mOutputDepth` | `false` | Write the `linearZ` output. |
+| `mDepthAsNDC` | `false` | `false` = linear view Z (matches `GBufferRT.linearZ`); `true` = NDC depth. |
+| `mMotionVecMode` | `Off` | `Legacy` = the original stochastic writer (what `mOutputMotionVec: True` maps to); `Deterministic` = the sub-pixel writer in `GenerateFeatures`. |
+| `samplePattern` / `sampleCount` | `Center` / 32 | Camera jitter. `Center` installs no generator. |
+
+`linearZ` is the **transmittance-weighted mean scattering distance** `E[t] = Σ t·w / Σ w`, where
+`w = T(t)·(1-exp(-σₜ·dt))` is the per-step scattering weight the feature march already computes. It
+consumes no random numbers, so unlike `Reservoir::depth` it is temporally stable. Falls back to the
+opaque surface hit (`SURFACE_SCENE`) and then the far plane.
+
+### Bias-sensitive configuration
+
+Everything above is **estimator-neutral except camera jitter**:
+
+- `outputSize`, `mOutputDepth`, `mMotionVecMode`, `mDepthAsNDC` — verified byte-identical on the
+  reference-vs-ReSTIR HDR comparison (`Scripts/bias_test_plume.py`): `mse 0.000100567`,
+  `rmse 0.000506544`, `mape 0.747974`, unchanged with the guides enabled.
+- `samplePattern != Center` **is not neutral, and its exact cost is still open.**
+  `computeNonNormalizedRayDirPinholeWithFrame` must reconstruct the previous frame'''s ray with the
+  jitter that frame was rendered with, otherwise `p̂` is evaluated on the wrong domain. Talbot weights
+  renormalise, so the usual cost is variance — but where the wrong ray flips a hit to a miss
+  (silhouettes) `p̂` is exactly zero, the weights stop summing to one, and the result is biased.
+  `mPrevJitter` is snapshotted and threaded through as `gPrevJitter`; `mApplyPrevJitter` (default on)
+  can disable it to reproduce the pre-fix behaviour.
+
+  Measured against a brute-force volumetric path-traced ground truth (`Scripts/bias_test_plume.py`,
+  single analytic light, 4096 accumulated frames, HDR — never a tone-mapped PNG, whose clamping
+  would discard energy in proportion to variance):
+
+  | config | MSE vs ground truth | |
+  |---|---|---|
+  | jitter off (baseline) | 1.006e-4 | — |
+  | jitter on, `mApplyPrevJitter=false` | 1.368e-4 | **36% worse** |
+  | jitter on, `mApplyPrevJitter=true` | **9.205e-5** | **8% better** |
+
+  Jitter **without** the fix is measurably worse than no jitter at all; **with** it, jitter is the most
+  accurate of the three. So the fix is necessary, not cosmetic, and jitter is safe to enable for DLSS
+  as long as `mApplyPrevJitter` stays on (the default).
+
+  Supporting evidence: a single frame with temporal reuse disabled differs by 2.0e-4 between
+  jitter on/off, confirming the forward path really does consume jitter (so the previous frame'''s
+  reservoirs were generated on jittered rays); and on Bistro the fixed and unfixed configurations
+  converge to *different* images (difference asymptotes rather than decaying with sample count),
+  which is the signature of one of them being biased.
+
+### Note on the previous-frame matrices (transpose)
+
+`TemporalReuse.cs.slang` reprojects with the Falcor 4.x row-vector convention `mul(v, M)`. Under
+Falcor 8's row-major Slang layout (`ProgramManager` requests `MatrixLayoutRow`, and `ParameterBlock`
+uploads matrices verbatim) that evaluates `Mᵀ·v`, while Falcor 8's own matrices are built for
+`mul(M, v)`. They are therefore **transposed on upload** (`mTransposePrevMatrices`, default on) —
+the same fix `SceneGVDB.cpp` applies to the GVDB matrices.
+
+Measured on a panning camera with temporal reuse only: **33.6% less per-frame noise** (total
+variation 3.16 → 2.10) and a 13% smaller PNG. A static camera cannot show this, because the
+reprojection is the identity either way. It is a variance fix, not a bias fix — the Talbot MIS
+weights are re-derived from whichever tap is selected, and the HDR bias test is unchanged.
