@@ -281,6 +281,8 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
         envU("NRD4_FASTACCUM", mRelaxSettings.diffuseMaxFastAccumulatedFrameNum);
     mRelaxSettings.historyFixFrameNum = envU("NRD4_HISTFIX", mRelaxSettings.historyFixFrameNum);
     mRelaxSettings.diffusePhiLuminance = envF("NRD4_PHILUM", mRelaxSettings.diffusePhiLuminance);
+    mRelaxSettings.fastHistoryClampingSigmaScale =
+        envF("NRD4_CLAMPSIGMA", mRelaxSettings.fastHistoryClampingSigmaScale);
     mRelaxSettings.spatialVarianceEstimationHistoryThreshold =
         envU("NRD4_SVAR", mRelaxSettings.spatialVarianceEstimationHistoryThreshold);
     mDisocclusionThreshold = envF("NRD4_DISOCC", mDisocclusionThreshold);

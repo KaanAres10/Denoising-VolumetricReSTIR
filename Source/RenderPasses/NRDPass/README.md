@@ -172,6 +172,37 @@ everything below is NRD.
 The shape of the bias is a redistribution, not a gain: **mean 0.892× but p99 23.8 vs 16.5** — energy
 lost overall while the plume core blows out, which is what the image shows.
 
+**The energy sink is RELAX's fast-history clamping.** Disabling fast history
+(`diffuseMaxFastAccumulatedFrameNum >= diffuseMaxAccumulatedFrameNum`) restores the mean almost
+exactly — 0.892× → **1.006×**. Loosening `fastHistoryClampingSigmaScale` to 8 recovers part of it
+(0.959×). Our 2-frame fast history is one of the v3.1-parity overrides, and clamping a 2-frame
+history at 2σ is aggressive against a volume that changes every frame.
+
+**But restoring the energy makes linear MSE worse** (1876 → 2092 unnormalised). On this scene linear
+MSE rewards darkening, because it is dominated by bright regions the denoiser cannot match — the same
+mechanism that made `SH-Cosine` look best. Linear MSE cannot adjudicate here.
+
+### Tonemapped error, which can
+
+Reinhard + gamma, i.e. what a viewer sees:
+
+| run | linear MSE | tonemapped MSE |
+|---|---|---|
+| raw ReSTIR | 106.9 | **0.00830** |
+| OIDN | 103.7 | 0.00850 |
+| NRD base | 1876 | 0.01124 |
+| NRD, fast history off | 2092 | 0.01378 |
+| NRD SH-Cosine | 2115 | **0.01815** |
+
+`SH-Cosine` is **best in linear MSE and worst perceptually** — that inversion is the proof that its
+linear win was the 1/π energy loss and nothing else. Use the tonemapped column for this scene.
+
+The two metrics agree on the substantive point: **NRD as currently configured does net harm on the
+animated plume.** It clearly removes the plume's speckle, but it also smears the background and blows
+out the plume core, and those cost more than the noise they remove. The background smearing is worth
+a look on its own — with `viewZ=restir`, pixels containing no medium receive a sentinel depth, which
+gives NRD a flat depth field to blur across.
+
 **Antifirefly is one contributor and its default is now suspect.** Turning it off improves the
 animated score (3.565e-02 vs 3.757e-02). It is enabled by default because it helped on the *static*
 plume (1.072e-03 → 1.059e-03) — a measurement taken in the regime where NRD was not filtering at all.
