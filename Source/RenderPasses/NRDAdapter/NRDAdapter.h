@@ -28,6 +28,12 @@ public:
 
 private:
     ref<ComputePass> mpPass;
+#if FALCOR_HAS_NRD4
+    ref<ComputePass> mpShPass;
+    ref<ComputePass>& getPass() { return mShMode ? mpShPass : mpPass; }
+#else
+    ref<ComputePass>& getPass() { return mpPass; }
+#endif
 
     /// Floor on the demodulation divisor; mirrors Falcor's kNRDMinReflectance.
     float mMinReflectance = 0.01f;
@@ -37,6 +43,11 @@ private:
     bool mUseScatterDistance = true;
     /// Feed the real surface normal, or a constant (ablation).
     bool mUseNormalGuide = true;
+#if FALCOR_HAS_NRD4
+    /// Emit the SH0/SH1 pair for NRD v4's RELAX_DIFFUSE_SH instead of packed radiance+hitDist.
+    /// Changes what reflect() declares, so toggling it needs a graph recompile.
+    bool mShMode = false;
+#endif
 
     /// Guide resolution. Must match the colour handed to NRD, exactly as for the DLSS guides.
     RenderPassHelpers::IOSize mOutputSizeSelection = RenderPassHelpers::IOSize::Default;

@@ -34,6 +34,10 @@
 namespace
 {
 const char kShaderPackRadiance[] = "RenderPasses/NRDPass/PackRadiance.cs.slang";
+#if FALCOR_HAS_NRD4
+const char kShaderResolveSh[] = "RenderPasses/NRDPass/ResolveSh.cs.slang";
+const char kShResolveMode[] = "shResolveMode";
+#endif
 
 // Input buffer names.
 const char kInputDiffuseRadianceHitDist[] = "diffuseRadianceHitDist";
@@ -195,6 +199,17 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     mpPackRadiancePassReblur = ComputePass::create(mpDevice, kShaderPackRadiance, "main", definesReblur);
 
 #if FALCOR_HAS_NRD4
+    // Both resolve variants are compiled up front so an SH shader error surfaces here, beside the
+    // rest of the setup, rather than on whichever frame the mode is first switched.
+    DefineList definesResolve = definesEncoding;
+    definesResolve.add("NRD_INTERNAL");
+    definesResolve.add("SH_RESOLVE_MODE", "0"); // SH_RESOLVE_DC
+    mpResolveShPassDc = ComputePass::create(mpDevice, kShaderResolveSh, "main", definesResolve);
+    definesResolve.add("SH_RESOLVE_MODE", "1"); // SH_RESOLVE_COSINE
+    mpResolveShPassCosine = ComputePass::create(mpDevice, kShaderResolveSh, "main", definesResolve);
+#endif
+
+#if FALCOR_HAS_NRD4
     // Deliberately NOT porting the v3.1 overrides below. Many were tuned against v3.1 semantics that
     // no longer hold: diffuse/specularLobeAngleFraction merged into one lobeAngleFraction,
     // disocclusionFixMaxRadius (a float radius) became historyFixBasePixelStride (a uint32 stride),
@@ -315,6 +330,10 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
         // Pack radiance settings.
         else if (key == kMaxIntensity)
             mMaxIntensity = value;
+#if FALCOR_HAS_NRD4
+        else if (key == kShResolveMode)
+            mShResolveMode = value;
+#endif
 
         // ReLAX diffuse/specular settings.
 #if !FALCOR_HAS_NRD4
@@ -454,6 +473,9 @@ Properties NRDPass::getProperties() const
 
     // Pack radiance settings.
     props[kMaxIntensity] = mMaxIntensity;
+#if FALCOR_HAS_NRD4
+    props[kShResolveMode] = mShResolveMode;
+#endif
 #if !FALCOR_HAS_NRD4
 
     // ReLAX diffuse/specular settings.
@@ -630,8 +652,21 @@ RenderPassReflection NRDPass::reflect(const CompileData& compileData)
         reflector.addInput(kInputViewZ, "View Z");
         reflector.addInput(kInputNormalRoughnessMaterialID, "World normal, roughness, and material ID");
         reflector.addInput(kInputMotionVectors, "Motion vectors");
-        reflector.addOutput(kOutputDiffuseSh0, "Filtered diffuse SH0").format(ResourceFormat::RGBA16Float).texture2D(sz.x, sz.y);
-        reflector.addOutput(kOutputDiffuseSh1, "Filtered diffuse SH1").format(ResourceFormat::RGBA16Float).texture2D(sz.x, sz.y);
+        // The SH pair is INTERNAL: NRD writes it, the resolve consumes it, and the pass emits ordinary
+        // radiance on the same pin name the radiance path uses. Exposing coefficients as the pass
+        // output would let ModulateIllumination multiply albedo into SH coefficients -- which yields
+        // something that looks like an image and is not one.
+        reflector.addOutput(kOutputDiffuseSh0, "Filtered diffuse SH0 (internal)")
+            .format(ResourceFormat::RGBA16Float)
+            .texture2D(sz.x, sz.y)
+            .flags(RenderPassReflection::Field::Flags::Optional);
+        reflector.addOutput(kOutputDiffuseSh1, "Filtered diffuse SH1 (internal)")
+            .format(ResourceFormat::RGBA16Float)
+            .texture2D(sz.x, sz.y)
+            .flags(RenderPassReflection::Field::Flags::Optional);
+        reflector.addOutput(kOutputFilteredDiffuseRadianceHitDist, "Diffuse radiance resolved from SH")
+            .format(ResourceFormat::RGBA16Float)
+            .texture2D(sz.x, sz.y);
     }
 #endif
     else
@@ -699,6 +734,24 @@ void NRDPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
                 renderData.getTexture(kOutputFilteredSpecularRadianceHitDist)->getRTV()
             );
         }
+#if FALCOR_HAS_NRD4
+        else if (mDenoisingMethod == DenoisingMethod::RelaxDiffuseSh || mDenoisingMethod == DenoisingMethod::ReblurDiffuseSh)
+        {
+            // Bypassing the DENOISER must not bypass the resolve -- the output pin carries radiance
+            // in this mode, so blitting coefficients into it would emit nonsense. Resolve straight
+            // from the INPUT pair instead. That makes "enabled = false" an exact identity test of the
+            // SH pack/resolve round trip, independent of NRD, which is the only way to tell a broken
+            // transform apart from a badly-behaved denoiser.
+            resolveSh(
+                pRenderContext,
+                renderData,
+                renderData.getTexture(kInputDiffuseSh0),
+                renderData.getTexture(kInputDiffuseSh1),
+                renderData.getTexture(kOutputFilteredDiffuseRadianceHitDist),
+                true // the adapter's pair is still linear RGB; NRD never ran to convert it
+            );
+        }
+#endif
         else if (mDenoisingMethod == DenoisingMethod::RelaxDiffuse)
         {
             pRenderContext->blit(
@@ -770,6 +823,20 @@ void NRDPass::renderUI(Gui::Widgets& widget)
         group.var("Strand material ID", mStrandMaterialID, 0.0f, 999.0f);
         group.var("Camera-attached refl. material ID", mCameraAttachedReflectionMaterialID, 0.0f, 999.0f);
         // clang-format on
+    }
+
+    if (mDenoisingMethod == DenoisingMethod::RelaxDiffuseSh || mDenoisingMethod == DenoisingMethod::ReblurDiffuseSh)
+    {
+        if (auto group = widget.group("SH resolve", true))
+        {
+            group.dropdown("Mode", mShResolveMode);
+            group.tooltip(
+                "Dc: DC term only -- correct for an isotropic phase function (g = 0), which is what "
+                "this renderer's media use.\n"
+                "Cosine: NRD_SH_ResolveDiffuse about the guide normal -- NVIDIA's intended usage, but "
+                "a surface-shading model applied to a medium that has no surface."
+            );
+        }
     }
 #endif
 
@@ -1666,6 +1733,31 @@ void NRDPass::createResources()
 #endif
 }
 
+#if FALCOR_HAS_NRD4
+void NRDPass::resolveSh(
+    RenderContext* pRenderContext,
+    const RenderData& renderData,
+    const ref<Texture>& pSh0,
+    const ref<Texture>& pSh1,
+    const ref<Texture>& pOut,
+    bool sh0IsLinearRgb
+)
+{
+    FALCOR_PROFILE(pRenderContext, "ResolveSh");
+    FALCOR_CHECK(pSh0 && pSh1 && pOut, "NRDPass: SH resolve is missing one of its textures.");
+
+    ref<ComputePass> pResolve = (mShResolveMode == ShResolveMode::Cosine) ? mpResolveShPassCosine : mpResolveShPassDc;
+    auto var = pResolve->getRootVar()["PerImageCB"];
+    var["gResolution"] = mScreenSize;
+    var["gSh0IsLinearRgb"] = sh0IsLinearRgb;
+    var["gInSh0"] = pSh0;
+    var["gInSh1"] = pSh1;
+    var["gNormalRoughness"] = renderData.getTexture(kInputNormalRoughnessMaterialID);
+    var["gOutRadianceHitDist"] = pOut;
+    pResolve->execute(pRenderContext, uint3(mScreenSize.x, mScreenSize.y, 1u));
+}
+#endif
+
 void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& renderData)
 {
     FALCOR_ASSERT(mpScene);
@@ -1875,6 +1967,22 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
         FALCOR_PROFILE(pRenderContext, dispatchDesc.name);
         dispatch(pRenderContext, renderData, dispatchDesc);
     }
+
+#if FALCOR_HAS_NRD4
+    // SH mode emits a coefficient pair; turn it back into radiance before anything downstream sees
+    // it. Symmetric with PackRadiance running before the dispatches.
+    if (mDenoisingMethod == DenoisingMethod::RelaxDiffuseSh || mDenoisingMethod == DenoisingMethod::ReblurDiffuseSh)
+    {
+        resolveSh(
+            pRenderContext,
+            renderData,
+            renderData.getTexture(kOutputDiffuseSh0),
+            renderData.getTexture(kOutputDiffuseSh1),
+            renderData.getTexture(kOutputFilteredDiffuseRadianceHitDist),
+            false // NRD's output is YCoCg
+        );
+    }
+#endif
 
     // Submit the existing command list and start a new one.
     pRenderContext->submit();

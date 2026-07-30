@@ -45,8 +45,17 @@ Texture2D<float4> gDiffuseAlbedo;    // demodulation divisor (DLSSDGuides, mediu
 // Outputs.
 // NOTE: NRDPass binds diffuseRadianceHitDist as a UAV and rewrites it in place, so nothing
 // downstream may read this texture expecting the pre-denoise values.
-RWTexture2D<float4> gOutDiffuseRadianceHitDist;
 RWTexture2D<float4> gOutNormalRoughness;
+
+#if SH_MODE
+// NRD v4 spherical-harmonics mode. SH1 carries the DIRECTION incoming radiance arrives from, scaled
+// by luminance -- not a surface normal, so gGuideNormalW is not a substitute for gLightDir.
+Texture2D<float4> gLightDir;        // .xyz = world direction, .w = 1 when trustworthy
+RWTexture2D<float4> gOutDiffuseSh0; // {radiance.rgb, hitDist}
+RWTexture2D<float4> gOutDiffuseSh1; // {direction * luminance(radiance), 0}
+#else
+RWTexture2D<float4> gOutDiffuseRadianceHitDist;
+#endif
 
 /** Packs the normal+roughness guide in the layout the linked NRD expects.
 
@@ -107,7 +116,27 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     const float scatterT = gScatterDistance[pixel];
     const float hitDist = (gUseScatterDistance && scatterT >= 0.f) ? scatterT : gMissHitDistance;
 
+#if SH_MODE
+    // Mirrors RELAX_FrontEnd_PackSh (external/nrd-4/Shaders/NRD.hlsli). Kept in step with it by hand
+    // for the same reason encodeNormalRoughness is: pulling NRD.hlsli into this pass would drag in
+    // its include path and the whole NRD_INTERNAL / encoding-macro setup for two lines of packing.
+    //
+    // NOTE the asymmetry: RELAX packs SH0 as plain RGB here, but its BACK end unpacks SH0 as YCoCg
+    // (c0 + chroma) -- RELAX converts internally. The resolve must therefore go through
+    // RELAX_BackEnd_UnpackSh and must NOT assume NRD's output is in this same space.
+    const float3 lightDir = gLightDir[pixel].xyz;
+    const bool dirValid = gLightDir[pixel].w > 0.5f;
+
+    // Zero direction where the estimator could not supply one, rather than a guessed one: an SH1 of
+    // zero means "no directional information for this pixel", which is exactly what is true.
+    const float3 dir = dirValid ? lightDir : float3(0.f);
+    const float lum = dot(demodulated, float3(0.2126f, 0.7152f, 0.0722f));
+
+    gOutDiffuseSh0[pixel] = float4(demodulated, hitDist);
+    gOutDiffuseSh1[pixel] = float4(dir * lum, 0.f);
+#else
     gOutDiffuseRadianceHitDist[pixel] = float4(demodulated, hitDist);
+#endif
 
     // --- normal + roughness ---
     // Layout must match the SDK NRDPass is compiled against; see encodeNormalRoughness above.

@@ -8,6 +8,7 @@ target_sources(NRDPass PRIVATE
     NRDPass.cpp
     NRDPass.h
     PackRadiance.cs.slang
+    ResolveSh.cs.slang
 )
 
 target_link_libraries(NRDPass PRIVATE nrd)

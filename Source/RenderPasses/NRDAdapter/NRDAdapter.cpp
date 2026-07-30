@@ -19,6 +19,13 @@ const char kNormalRoughnessOutput[] = "normWRoughnessMaterialID";
 
 const char kMinReflectance[] = "minReflectance";
 const char kMissHitDistance[] = "missHitDistance";
+#if FALCOR_HAS_NRD4
+const char kShMode[] = "shMode";
+// Direction the reservoir's light arrives from, .w = 1 when trustworthy (VolumetricReSTIR.lightDir).
+const char kLightDirInput[] = "lightDir";
+const char kDiffuseSh0Output[] = "diffuseSh0";
+const char kDiffuseSh1Output[] = "diffuseSh1";
+#endif
 } // namespace
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -38,6 +45,10 @@ NRDAdapter::NRDAdapter(ref<Device> pDevice, const Properties& props) : RenderPas
             mUseScatterDistance = value;
         else if (key == "useNormalGuide")
             mUseNormalGuide = value;
+#if FALCOR_HAS_NRD4
+        else if (key == kShMode)
+            mShMode = value;
+#endif
         else if (key == "outputSize")
             mOutputSizeSelection = value;
         else if (key == "fixedOutputSize")
@@ -58,7 +69,14 @@ NRDAdapter::NRDAdapter(ref<Device> pDevice, const Properties& props) : RenderPas
 #else
     defines.add("NRD_V4", "0");
 #endif
+    defines.add("SH_MODE", "0");
     mpPass = ComputePass::create(mpDevice, kShaderFile, "main", defines);
+#if FALCOR_HAS_NRD4
+    // Compiled up front rather than on first use so an SH shader error surfaces at graph creation,
+    // next to the rest of the setup, instead of mid-benchmark.
+    defines.add("SH_MODE", "1");
+    mpShPass = ComputePass::create(mpDevice, kShaderFile, "main", defines);
+#endif
 }
 
 Properties NRDAdapter::getProperties() const
@@ -68,6 +86,9 @@ Properties NRDAdapter::getProperties() const
     props[kMissHitDistance] = mMissHitDistance;
     props["useScatterDistance"] = mUseScatterDistance;
     props["useNormalGuide"] = mUseNormalGuide;
+#if FALCOR_HAS_NRD4
+    props[kShMode] = mShMode;
+#endif
     props["outputSize"] = mOutputSizeSelection;
     if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed)
         props["fixedOutputSize"] = mFixedOutputSize;
@@ -85,6 +106,14 @@ RenderPassReflection NRDAdapter::reflect(const CompileData& compileData)
     r.addInput(kGuideNormalInput, "World-space guide normal (GBuffer guideNormalW)");
     r.addInput(kSpecRoughInput, "Specular reflectance and roughness (GBuffer specRough)");
     r.addInput(kDiffuseAlbedoInput, "Demodulation divisor (DLSSDGuides diffuseAlbedo)");
+#if FALCOR_HAS_NRD4
+    // Required in SH mode, and NOT optional: SH1 carries "direction * luminance", so an unbound
+    // lightDir would pack an all-zero SH1 -- a perfectly valid-looking "no directional information"
+    // input that NRD would denoise without complaint. Declaring it mandatory makes the graph fail to
+    // compile instead.
+    if (mShMode)
+        r.addInput(kLightDirInput, "Dominant light direction at the first scatter vertex (w=1 valid)");
+#endif
 
     // Adopt the graph-wide render scale, as DLSSDGuides and GBufferBase do. Guides allocated at the
     // swapchain size while the colour is at render size misregister by the upscale factor, which
@@ -108,14 +137,32 @@ RenderPassReflection NRDAdapter::reflect(const CompileData& compileData)
         sz = RenderPassHelpers::calculateIOSize(mOutputSizeSelection, mFixedOutputSize, compileData.defaultTexDims);
     }
 
+#if FALCOR_HAS_NRD4
+    if (mShMode)
+    {
+        // SH0 = {radiance.rgb, hitDist}, SH1 = {direction * luminance(radiance), 0}. RGBA16Float
+        // matches what NRDPass reflects for IN_DIFF_SH0/SH1 -- the pair must agree or the graph
+        // silently reformats between them.
+        r.addOutput(kDiffuseSh0Output, "Diffuse SH0 (radiance, hitDist)")
+            .format(ResourceFormat::RGBA16Float)
+            .texture2D(sz.x, sz.y)
+            .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
+        r.addOutput(kDiffuseSh1Output, "Diffuse SH1 (direction * luminance, 0)")
+            .format(ResourceFormat::RGBA16Float)
+            .texture2D(sz.x, sz.y)
+            .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
+    }
+    else
+#endif
     // RGBA32Float rather than the RGBA16Float NRD outputs: this carries a world-space hit distance
     // in .a alongside undemodulated-range radiance, and half precision would quantise both.
     r.addOutput(kDiffuseRadianceHitDistOutput, "Demodulated diffuse radiance and hit distance")
         .format(ResourceFormat::RGBA32Float)
         .texture2D(sz.x, sz.y)
         .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
-    // RGB10A2Unorm is required, not preferred: NRD decodes this with NRD_USE_OCT_NORMAL_ENCODING=1,
-    // which assumes exactly this layout.
+    // RGB10A2Unorm is required, not preferred. Under v3.1 NRD decodes it as oct normal + roughness;
+    // under v4 as normal and roughness co-packed into the 30-bit field with materialID in A2. Either
+    // way the format is dictated by the decoder -- see encodeNormalRoughness in the shader.
     r.addOutput(kNormalRoughnessOutput, "Oct-encoded normal, linear roughness, material ID")
         .format(ResourceFormat::RGB10A2Unorm)
         .texture2D(sz.x, sz.y)
@@ -125,7 +172,11 @@ RenderPassReflection NRDAdapter::reflect(const CompileData& compileData)
 
 void NRDAdapter::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
+#if FALCOR_HAS_NRD4
+    auto pOut = mShMode ? renderData.getTexture(kDiffuseSh0Output) : renderData.getTexture(kDiffuseRadianceHitDistOutput);
+#else
     auto pOut = renderData.getTexture(kDiffuseRadianceHitDistOutput);
+#endif
     FALCOR_ASSERT(pOut);
     const uint2 resolution = {pOut->getWidth(), pOut->getHeight()};
 
@@ -156,7 +207,12 @@ void NRDAdapter::execute(RenderContext* pRenderContext, const RenderData& render
         }
     }
 
-    auto var = mpPass->getRootVar();
+    // SH mode is a compile-time define, not a uniform: the two modes declare DIFFERENT outputs, and
+    // Slang requires every declared resource to be bound. A single variant would force dummy
+    // bindings for whichever set is unused -- and a texture bound "just to satisfy the binder" is
+    // indistinguishable from one that is genuinely in use when reading the code later.
+    ref<ComputePass>& pPass = getPass();
+    auto var = pPass->getRootVar();
     var["CB"]["gResolution"] = resolution;
     var["CB"]["gMinReflectance"] = mMinReflectance;
     var["CB"]["gMissHitDistance"] = mMissHitDistance;
@@ -169,10 +225,31 @@ void NRDAdapter::execute(RenderContext* pRenderContext, const RenderData& render
     var["gSpecRough"] = renderData.getTexture(kSpecRoughInput);
     var["gDiffuseAlbedo"] = renderData.getTexture(kDiffuseAlbedoInput);
 
-    var["gOutDiffuseRadianceHitDist"] = pOut;
     var["gOutNormalRoughness"] = renderData.getTexture(kNormalRoughnessOutput);
 
-    mpPass->execute(pRenderContext, uint3(resolution, 1));
+#if FALCOR_HAS_NRD4
+    if (mShMode)
+    {
+        // Fail loudly rather than pack an all-zero SH1, which reads as "no directional information"
+        // and denoises without complaint.
+        ref<Texture> pLightDir = renderData.getTexture(kLightDirInput);
+        FALCOR_CHECK(
+            pLightDir != nullptr,
+            "NRDAdapter: SH mode needs the '{}' input (VolumetricReSTIR.lightDir), but nothing is "
+            "connected to it.",
+            kLightDirInput
+        );
+        var["gLightDir"] = pLightDir;
+        var["gOutDiffuseSh0"] = pOut;
+        var["gOutDiffuseSh1"] = renderData.getTexture(kDiffuseSh1Output);
+    }
+    else
+#endif
+    {
+        var["gOutDiffuseRadianceHitDist"] = pOut;
+    }
+
+    pPass->execute(pRenderContext, uint3(resolution, 1));
 }
 
 void NRDAdapter::renderUI(Gui::Widgets& widget)

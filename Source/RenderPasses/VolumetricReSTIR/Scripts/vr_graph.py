@@ -418,6 +418,8 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         demodulate = env_bool("VR_NRD_DEMOD", True)
         props = {"useScatterDistance": env_bool("VR_NRD_HITDIST", True),
                  "useNormalGuide": env_bool("VR_NRD_NORMALS", True)}
+        if env_bool("VR_NRD_SH", False):
+            props["shMode"] = True
         if not demodulate:
             props["minReflectance"] = 1.0
         if upscaling:
@@ -430,6 +432,12 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         g.addEdge(gbuffer + ".guideNormalW", adapter + ".guideNormalW")
         g.addEdge(gbuffer + ".specRough", adapter + ".specRough")
         g.addEdge(gd + ".diffuseAlbedo", adapter + ".diffuseAlbedo")
+        if env_bool("VR_NRD_SH", False):
+            # SH1 is "direction * luminance", so this is required, not a guide that can be omitted --
+            # an unconnected lightDir would pack an all-zero SH1, which reads as "no directional
+            # information anywhere" and denoises without complaint. NRDAdapter declares the input
+            # mandatory in SH mode so a missing edge fails graph compilation instead.
+            g.addEdge(restir + ".lightDir", adapter + ".lightDir")
 
         # The plugin registers as "NRD", not "NRDPass". worldSpaceMotion must be False: Falcor
         # defaults it True (inverting NRD's own default) and GBufferRaster has no mvecW at all, so we
@@ -438,9 +446,26 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # energy from a demodulated HDR signal, so raise it and record the value.
         # enabled=False makes NRDPass blit input->output unchanged, which turns the whole graph into
         # an identity test of the demodulate/re-modulate round trip -- independent of the denoiser.
-        g.addPass(createPass("NRD", {"method": "RelaxDiffuse", "worldSpaceMotion": False,
-                                     "maxIntensity": 100000.0, "enabled": nrd_enabled}), "NRD")
-        g.addEdge(adapter + ".diffuseRadianceHitDist", "NRD.diffuseRadianceHitDist")
+        # VR_NRD_SH=1 selects NRD v4's spherical-harmonics mode: the adapter emits an SH0/SH1 pair
+        # instead of packed radiance, RELAX_DIFFUSE_SH denoises it, and NRDPass resolves it back to
+        # radiance internally -- so everything downstream is unchanged.
+        #
+        # VR_NRD_SH_RESOLVE picks the resolve semantics, and the choice is not cosmetic. Both scenes
+        # use an ISOTROPIC phase function (g=0), for which outgoing radiance is the uniform spherical
+        # average -- the DC term. NRD's own resolve instead evaluates a cosine lobe about a surface
+        # normal, which a medium does not have. "dc" is the physically defensible one; "cosine" is
+        # NVIDIA's intended usage, kept so the difference can be measured rather than argued.
+        sh = env_bool("VR_NRD_SH", False)
+        nrd_props = {"method": "RelaxDiffuseSh" if sh else "RelaxDiffuse",
+                     "worldSpaceMotion": False, "maxIntensity": 100000.0, "enabled": nrd_enabled}
+        if sh:
+            nrd_props["shResolveMode"] = env("VR_NRD_SH_RESOLVE", "Dc")
+        g.addPass(createPass("NRD", nrd_props), "NRD")
+        if sh:
+            g.addEdge(adapter + ".diffuseSh0", "NRD.diffuseSh0")
+            g.addEdge(adapter + ".diffuseSh1", "NRD.diffuseSh1")
+        else:
+            g.addEdge(adapter + ".diffuseRadianceHitDist", "NRD.diffuseRadianceHitDist")
         g.addEdge(adapter + ".normWRoughnessMaterialID", "NRD.normWRoughnessMaterialID")
         # viewZ must be the GEOMETRIC surface depth, not the estimator's scatter-weighted linearZ.
         # RELAX uses depth for reprojection and edge-stopping, so a depth that moves with smoke

@@ -106,6 +106,20 @@ private:
     void createPipelines();
     void createResources();
     void executeInternal(RenderContext* pRenderContext, const RenderData& renderData);
+#if FALCOR_HAS_NRD4
+    /// Turns an SH coefficient pair into radiance. Shared by the denoised path (NRD's output) and the
+    /// bypassed path (the adapter's input), so that disabling the denoiser is an exact identity test
+    /// of the pack/resolve round trip rather than a different code path.
+    void resolveSh(
+        RenderContext* pRenderContext,
+        const RenderData& renderData,
+        const ref<Texture>& pSh0,
+        const ref<Texture>& pSh1,
+        const ref<Texture>& pOut,
+        /// True when SH0 is still the front end's linear RGB rather than NRD's YCoCg output.
+        bool sh0IsLinearRgb
+    );
+#endif
     void dispatch(RenderContext* pRenderContext, const RenderData& renderData, const nrd::DispatchDesc& dispatchDesc);
 
 #if FALCOR_HAS_NRD4
@@ -183,6 +197,28 @@ private:
     // Additional classic Falcor compute pass and resources for packing radiance and hitT for NRD.
     ref<ComputePass> mpPackRadiancePassRelax;
     ref<ComputePass> mpPackRadiancePassReblur;
+#if FALCOR_HAS_NRD4
+    /// Turns NRD's SH coefficient pair back into radiance. Two variants because the correct resolve
+    /// for an isotropic medium (DC only) is not the one NRD ships (cosine lobe about a surface
+    /// normal); which one wins is a measurement, not an assumption.
+    ref<ComputePass> mpResolveShPassDc;
+    ref<ComputePass> mpResolveShPassCosine;
+
+public:
+    enum class ShResolveMode : uint32_t
+    {
+        Dc,    ///< DC term only -- physically right for an isotropic phase function (g = 0).
+        Cosine ///< NRD_SH_ResolveDiffuse with the guide normal -- NVIDIA's intended usage.
+    };
+
+    FALCOR_ENUM_INFO(ShResolveMode, {{ShResolveMode::Dc, "Dc"}, {ShResolveMode::Cosine, "Cosine"}});
+
+private:
+    ShResolveMode mShResolveMode = ShResolveMode::Dc;
+#endif
 };
 
 FALCOR_ENUM_REGISTER(NRDPass::DenoisingMethod);
+#if FALCOR_HAS_NRD4
+FALCOR_ENUM_REGISTER(NRDPass::ShResolveMode);
+#endif
