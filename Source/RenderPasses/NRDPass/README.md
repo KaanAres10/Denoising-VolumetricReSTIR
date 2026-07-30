@@ -148,10 +148,39 @@ Three things that follow directly:
 * **The motion-vector question is STILL not settled.** Surface vs volume differ by 1.5e-05, which is
   *below* the reference's own noise of 6.1e-05 and therefore not separable. `VR_NRD_VOLMV` stays off.
 
-`SH-Cosine` being the only row under raw is real at this precision (the gap is ~3e-03, far above the
-6.1e-05 reference noise) but should not be over-read: it applies a cosine lobe about a surface normal
-to a medium that has none, so it may be compensating for the brightness bias rather than modelling
-anything. Chasing the bias first would make this row interpretable.
+**`SH-Cosine` is not better — it is 1/π darker.** Mean radiance relative to the reference:
+
+| run | mean | p99 |
+|---|---|---|
+| reference | 1.000× | 16.5 |
+| raw | 1.046× | 14.1 |
+| NRD radiance | 0.892× | **23.8** |
+| NRD SH-Cosine | **0.297×** | 7.6 |
+
+0.297 is 1/π (0.318). That is exactly the `k0 = 1/π` surface factor in `NRD_SH_ResolveDiffuse`,
+which converts an irradiance-like quantity into outgoing radiance off a diffuse surface — a
+conversion a medium should not receive. Its lower MSE is energy loss flattering a squared-error
+metric on a scene with bright outliers, not denoising quality. **Do not report `SH-Cosine` as the
+best row.**
+
+### The bias is NRD's filtering, not the adapter
+
+Isolated by bypassing the denoiser on the same animated frame: the demodulate / re-modulate round
+trip reproduces raw to **2.71e-08**, below the 1.7e-07 noise floor. So the adapter is faithful and
+everything below is NRD.
+
+The shape of the bias is a redistribution, not a gain: **mean 0.892× but p99 23.8 vs 16.5** — energy
+lost overall while the plume core blows out, which is what the image shows.
+
+**Antifirefly is one contributor and its default is now suspect.** Turning it off improves the
+animated score (3.565e-02 vs 3.757e-02). It is enabled by default because it helped on the *static*
+plume (1.072e-03 → 1.059e-03) — a measurement taken in the regime where NRD was not filtering at all.
+
+> **Every volumetric tuning decision in this file was made under the zero-`viewZ` fault.** The
+> pre-pass radius sweep, the history-reconstruction ablation and the antifirefly default were all
+> measured while RELAX's history could not accumulate and its spatial filter was inert. They were
+> honest measurements of a broken configuration. All three need re-deriving on the animated scene
+> before any of them should be trusted.
 
 ### Reference validity, checked rather than assumed
 
