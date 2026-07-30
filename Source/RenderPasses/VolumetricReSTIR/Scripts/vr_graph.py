@@ -155,19 +155,43 @@ def sr_preset(name):
 # ---------------------------------------------------------------------------------------------
 
 def load_plume(frame="0198"):
-    """Static plume on a bare ground plane, lit by the environment only.
+    """Plume on a bare ground plane, lit by the environment only.
 
     The measurement scene: no geometry to speak of, so the medium covers essentially every pixel and
     the volumetric guides are what RR actually sees.
+
+    VR_ANIMATED=1 loads the fire115 SEQUENCE instead of a single frame. That distinction decides
+    whether a temporal denoiser can be measured at all: NRD's RELAX gates its spatial filtering on a
+    TEMPORALLY estimated variance, so on a static scene it concludes the signal is already converged
+    and declines to filter -- `phiLuminance` 2 vs 32 measured 1.6e-14 apart, i.e. numerically
+    identical. Every NRD number taken on the static frame is from the one regime where NRD does
+    nothing. See Source/RenderPasses/NRDPass/README.md.
+
+    Loading a sequence also sets `hasAnimation` (it is DERIVED from the per-frame path, not a
+    parameter), which is what gates the velocity-advected motion vectors and ReSTIR's previous-grid
+    reprojection.
     """
     m.loadScene(DATA_DIR + r"\default.obj")
     m.scene.setEnvMap(DATA_DIR + r"\hansaplatz_8k.hdr")
-    m.scene.addGVDBVolume(
-        sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=0.0,
-        dataFile=DATA_DIR + "\\fire115\\fire115." + frame,
-        numMips=4, densityScale=0.1, hasVelocity=False, hasEmission=False, LeScale=0.01,
-        temperatureCutoff=900.0, temperatureScale=0.0,
-        worldTranslation=float3(0, 1.686, 0), worldRotation=float3(0, 0, 0), worldScaling=0.013)
+    # Shared by both paths so the two cannot drift apart.
+    vol = dict(sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=0.0,
+               numMips=4, densityScale=0.1, hasEmission=False, LeScale=0.01,
+               temperatureCutoff=900.0, temperatureScale=0.0,
+               worldTranslation=float3(0, 1.686, 0), worldRotation=float3(0, 0, 0),
+               worldScaling=0.013)
+    if env_bool("VR_ANIMATED", False):
+        # hasVelocity MUST match how the frames were baked (GVDBBake ... 4 1 0 ...), or the loader
+        # reads velocity grids that are not in the file.
+        # Every frame is loaded eagerly and stays GPU-RESIDENT at ~28 MB, so numFrames is a VRAM
+        # budget, not just a length: 100 frames is ~2.8 GB before any denoiser allocates.
+        m.scene.addGVDBVolumeSequence(
+            dataFilePrefix=DATA_DIR + "\\fire115\\fire115.", numberFixedLength=4,
+            startFrame=env_int("VR_ANIM_START", 100), numFrames=env_int("VR_ANIM_FRAMES", 100),
+            hasVelocity=True, **vol)
+    else:
+        m.scene.addGVDBVolume(
+            dataFile=DATA_DIR + "\\fire115\\fire115." + frame,
+            hasVelocity=False, **vol)
     # Detach the camera from the scene's animation FIRST. Bistro's FBX drives the camera, and an
     # animated camera silently overwrites whatever is assigned below -- the view then wanders on
     # wall-clock time, so the same script gives a different shot on every run, and a shot facing the
@@ -474,7 +498,28 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # depth was worse than no depth. Falcor's own reference graph (scripts/PathTracerNRD.py)
         # feeds GBufferRT.linearZ for the same reason. (Ray Reconstruction is the opposite case: it
         # is volumetric-aware and does want the scatter depth.)
-        g.addEdge(gbuffer + ".linearZ", "NRD.viewZ")
+        # VIEW Z. This is not the free choice it looks like.
+        #
+        # The G-buffer's linearZ is the geometric surface depth, which is the right answer for a
+        # SURFACE renderer -- RELAX uses depth to reproject and to reject neighbours, and a depth that
+        # moves with smoke density makes it reject the wrong ones.
+        #
+        # But plume has essentially no rasterizable geometry: it is lit by an environment map over a
+        # bare plane, so GBufferRaster writes NOTHING and linearZ is measured to be ALL ZEROS. A zero
+        # depth reconstructs every pixel to the camera origin, so NRD's reprojection is degenerate and
+        # its history never accumulates -- which makes every temporal setting inert. Measured on the
+        # animated plume: phiLuminance 2 vs 32, maxAccumulatedFrameNum 30 vs 1, and surface vs volume
+        # motion vectors were ALL byte-identical.
+        #
+        # An earlier note here recorded that the estimator's scatter depth scored worse than "nothing"
+        # (8.54e-4 vs 6.93e-4). That comparison was made on a STATIC scene, i.e. in the regime where
+        # NRD declines to filter at all, so it did not measure depth quality and should not be relied
+        # on. VR_NRD_VIEWZ exists to re-settle it now that the scene moves.
+        viewz = env("VR_NRD_VIEWZ", "gbuffer").lower()
+        if viewz == "restir":
+            g.addEdge(restir + ".linearZ", "NRD.viewZ")
+        else:
+            g.addEdge(gbuffer + ".linearZ", "NRD.viewZ")
 
         # Motion vectors. The G-buffer's are SURFACE motion only, so in principle an animated medium
         # would reproject as if it were static, and the estimator's own mvec is the volume-aware one:
