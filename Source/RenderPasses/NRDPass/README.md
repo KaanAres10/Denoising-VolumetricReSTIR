@@ -74,6 +74,48 @@ jitter fields, `minMaterialForX` inverting `enableMaterialTestForX`, `historyFix
 replacing `disocclusionFixMaxRadius` at the same default of 14) are annotated at their use sites in
 `NRDPass.cpp`.
 
+## SH mode
+
+Complete and round-trip verified. `VR_NRD_SH=1` selects it; `VR_NRD_SH_RESOLVE` picks the resolve.
+
+```
+NRDAdapter (SH_MODE=1)  ->  SH0 = {radiance, hitDist}, SH1 = {dir * luminance, 0}
+NRDPass                 ->  RELAX_DIFFUSE_SH  ->  ResolveSh.cs.slang  ->  radiance
+```
+
+The pair is **internal**: the pass emits ordinary radiance on the same pin the radiance path uses, so
+nothing downstream changes. Exposing coefficients would let `ModulateIllumination` multiply albedo
+into SH coefficients — which produces something that looks like an image and is not one.
+
+Three things that are easy to get wrong, each of which yields a plausible picture rather than an error:
+
+1. **The two ends of the API are in different colour spaces.** `RELAX_FrontEnd_PackSh` writes SH0 as
+   linear **RGB**; `RELAX_BackEnd_UnpackSh` reads it as **YCoCg** (`c0` + `chroma`). RELAX converts
+   internally. The resolve must go through the back-end unpack, and the bypass path — which feeds the
+   front-end pair straight in, with no NRD in between — has to do that conversion itself
+   (`gSh0IsLinearRgb`).
+2. **The DC resolve must not call `NRD_SH_ResolveDiffuse` with `c1 = 0`.** That still applies its
+   `k0 = 1/π` factor, which converts an irradiance-like quantity into outgoing radiance off a diffuse
+   **surface**. A medium has no surface, so the DC path takes `Y = c0` directly.
+3. **SH1 needs a light direction, not a normal.** It is the direction incoming *radiance* arrives
+   from, so `mediumNormal` is not a substitute. `VolumetricReSTIR.lightDir` supplies it, and the input
+   is declared **mandatory** in SH mode — an unbound one would pack an all-zero SH1, which reads as
+   "no directional information anywhere" and denoises without complaint.
+
+**Two resolve semantics, both selectable, because the right one is not obvious.** Both scenes use an
+**isotropic** phase function (`g = 0`), for which outgoing radiance is the uniform spherical average —
+the DC term. NRD's own resolve instead evaluates a cosine lobe about a surface normal. `Dc` is the
+physically defensible choice here; `Cosine` is NVIDIA's intended usage. If the two tie, SH's
+directional term is buying nothing for isotropic media — a result, not a failure.
+
+**Round-trip check.** With the denoiser bypassed, `NRDPass` resolves from the *adapter's input* pair
+rather than blitting, making it an exact identity test of the transform independent of NRD:
+
+| | vs the radiance path |
+|---|---|
+| SH pack → resolve (`Dc`) | **3.02e-11** — four orders below the 1.7e-07 noise floor |
+| SH pack → resolve (`Cosine`) | 1.36e-02 — as expected from its 1/π factor |
+
 ## Guards
 
 Every bug in this port failed *silently* — a smeared frame, an empty texture, a run that writes
@@ -138,7 +180,35 @@ MSE against the converged references, via
 the benchmark rather than of the port; see below. Treat the ranking above as measuring something
 other than denoising quality.
 
-### Why these numbers understate NRD: its variance estimator is temporal
+### The root cause: NRD was fed `viewZ = 0` everywhere
+
+Everything in the next section is still true about how RELAX works, but it was not the whole story,
+and the numbers above were taken while a more basic fault was in play.
+
+**`GBufferRaster` writes nothing on the plume scene.** It is lit by an environment map over a bare
+plane, with essentially no rasterizable geometry in view, so its `linearZ` output is **all zeros** —
+measured, every channel, every pixel. That is what the NRD graph was feeding `IN_VIEWZ`.
+
+A zero depth reconstructs every pixel to the camera origin, so RELAX's reprojection is degenerate and
+its history never accumulates. With history stuck at one frame, `Var = E[L²] − E[L]²` is **exactly**
+zero, the A-trous luminance weight collapses (see below), and every temporal setting becomes inert.
+Measured on the animated plume, all **byte-identical**:
+
+| knob | result |
+|---|---|
+| `phiLuminance` 2 vs 32 | 0 |
+| `diffuseMaxAccumulatedFrameNum` 30 vs 1 | 0 |
+| surface vs volume motion vectors | 0 |
+
+`VR_NRD_VIEWZ=restir` feeds the estimator's depth instead. `phiLuminance` 2 vs 32 then differs by
+**3.51e-03** — RELAX filtering for the first time — and the motion-vector choice starts to matter too
+(1.86e-05, where it had been byte-identical).
+
+**This invalidates an earlier note** that lived in `vr_graph`: that the estimator's scatter depth
+scored *worse* than feeding nothing (8.54e-4 vs 6.93e-4). That was measured on a static scene, in the
+regime where NRD declines to filter at all, so it compared noise rather than depth quality.
+
+### Why the variance estimator amplified the problem
 
 RELAX decides how hard to filter from a **temporally** estimated variance. `RELAX_TemporalAccumulation`
 stores `luminance(L)²` per frame and `RELAX_AtrousSmem` recovers `Var = E[L²] − E[L]²`; the A-trous
@@ -313,10 +383,21 @@ exists.
 
 ## Not yet done
 
-* **SH mode**, the reason for the upgrade — NVIDIA's "comparable with DLSS-RR" claim refers to it.
-  Not started. The `shaderIdentifier` parser already reaches the `NRD_MODE=SH` permutation, so the
-  pipeline side is in place; the data side is not, and it needs a new estimator output. Contract, read
-  out of `external/nrd-4/Shaders/NRD.hlsli` so the next attempt does not have to rediscover it:
+* **Bistro cannot be animated.** Its medium (`smoke-plume-2`) is a single time step with no velocity
+  grids, so the only way to move that scene is a camera path. There is no Python keyframe API; the
+  pass has a built-in orbit mode (`mCameraAnimationMode = 2` — the only continuous one, modes 0/1
+  deliberately freeze the volume) whose three tuning parameters are UI-only and would need exposing in
+  `parseProperties`/`getProperties`.
+* **`lightDir` on emissive scenes is untested end to end.** The bounded emissive-triangle branch works
+  (Bistro reports 18.09% valid), but no SH run has been scored on an emissive-lit scene.
+* **The per-frame reference is not converged enough to rank close rows.** 400 vs 1200 samples differ by
+  6.27e-05. Differences larger than that are safe; anything closer is not separable without far more
+  samples (error falls as 1/sqrt(N), so a 10× tighter reference costs 100× the samples).
+
+### Background, kept for the reasoning rather than the status
+
+* ~~**SH mode**~~ — **DONE**, see [SH mode](#sh-mode). The notes that follow record why each piece is
+  shaped the way it is:
 
   1. **`RELAX_DIFFUSE_SH` consumes a per-pixel dominant light direction**, which we do not currently
      produce. `RELAX_FrontEnd_PackSh` writes

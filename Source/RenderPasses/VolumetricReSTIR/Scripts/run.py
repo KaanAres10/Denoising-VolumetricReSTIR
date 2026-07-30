@@ -171,7 +171,10 @@ HOLD_AT = vr.env_int("VR_HOLD_AT", 0)
 if HOLD_AT > 0:
     if REFERENCE:
         HOLD_SAMPLES = vr.env_int("VR_HOLD_SAMPLES", 3000)
-        vr.advance_and_hold(HOLD_AT)
+        # An animated sequence must be pinned too -- it is driven by the rendered-frame count, not
+        # the clock, so the clock hold alone would leave it advancing under the accumulation.
+        vr.advance_and_hold(HOLD_AT,
+                            volume_frames=vr.env_int("VR_ANIM_FRAMES", 100) if vr.env_bool("VR_ANIMATED", False) else None)
         CAPTURE = HOLD_AT + HOLD_SAMPLES
         print("[run] holding scene at frame %d (fps=%s), accumulating %d samples, capture at %d"
               % (HOLD_AT, FPS, HOLD_SAMPLES, CAPTURE))

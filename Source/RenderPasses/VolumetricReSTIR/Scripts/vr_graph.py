@@ -603,7 +603,24 @@ def pin_clock(framerate=None):
     return fps
 
 
-def advance_and_hold(frame, accum="Accum", graph=None):
+def hold_volume_frame(index, restir="VolumetricReSTIR", graph=None):
+    """Pin an animated GVDB sequence to one frame.
+
+    REQUIRED alongside the clock hold, not instead of it. The sequence is advanced by
+    `Scene::update` once per RENDERED frame and wraps modulo numFrames -- it never consults the
+    clock, so `timeScale = 0` stops scene time and leaves the volume marching on. A per-frame
+    reference built without this would accumulate over a different volume state every sample and
+    never converge, while looking perfectly healthy.
+
+    `mVolumeAnimationSelectedFrameId` is 0-based into the LOADED sequence (not the on-disk frame
+    number); -1 means "play". Returns the index pinned.
+    """
+    g = graph or m.activeGraph
+    g.get_pass(restir).set_properties({"mVolumeAnimationSelectedFrameId": int(index)})
+    return int(index)
+
+
+def advance_and_hold(frame, accum="Accum", graph=None, volume_frames=None, restir="VolumetricReSTIR"):
     """Run the animation forward to `frame`, then hold that exact scene state.
 
     This is what makes a PER-FRAME reference possible, and a per-frame reference is what any fair
@@ -644,6 +661,12 @@ def advance_and_hold(frame, accum="Accum", graph=None):
         m.renderFrame()
     m.clock.timeScale = 0.0
     m.clock.framerate = 0
+
+    # An animated VDB sequence ignores the clock entirely -- see hold_volume_frame. Pin it to
+    # whichever frame the run actually reached: the sequence advances once per rendered frame and
+    # wraps, so that is `frame % volume_frames`.
+    if volume_frames:
+        hold_volume_frame(max(0, frame) % int(volume_frames), restir=restir, graph=graph)
 
     # Guard the failure this function was rewritten to avoid: if the hold ever stops the frame
     # counter again, FrameCapture never fires and the run writes NOTHING while reporting success.
