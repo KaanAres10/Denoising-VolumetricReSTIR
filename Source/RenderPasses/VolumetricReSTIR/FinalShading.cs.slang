@@ -158,39 +158,61 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         Reservoir res = gCurReservoirs[pixelId];
 
-        // Volume self-emission overloads Reservoir::lightID: encodeEmissivePosition() stores
-        // asint(pos.z) in it, so the value is a float bit pattern rather than a light index and the
-        // branch below cannot tell the two apart. The disambiguating flag (isCurrentVertexEmissive)
-        // exists only inside the path evaluation. Rather than guess, declare the direction invalid
-        // for emissive media and let the consumer decide -- a wrong direction would still produce a
-        // plausible-looking image, which is the failure mode worth avoiding.
-        const bool lightIDIsAmbiguous = gScene.volumeDesc.hasEmission;
+        // Volume self-emission overloads Reservoir::lightID -- encodeEmissivePosition() stores
+        // asint(pos.z) there, a float bit pattern rather than a light index. The disambiguator is in
+        // a DIFFERENT field: encodeEmissivePosition is always paired with encodePathTag(..., 1)
+        // (ComputeInitialSample.slang), and that tag lives in bits 16-19 of sampledPixel. So the two
+        // encodings can be told apart exactly, and emissive media do not have to be rejected
+        // wholesale.
+        const bool emissivePath = decodePathTag(res.sampledPixel) == 1;
+        // kSelfEmissionLightID is -3, i.e. NEGATIVE -- a bounce-0 self-emission reservoir is neither
+        // rewritten nor tagged, so without this it would fall into the "< 0" env-map branch below and
+        // return a direction decoded from lightUV that means nothing.
+        const bool selfEmission = res.lightID == kSelfEmissionLightID;
 
-        if (res.runningSum > 0.f && !gUseReference && !lightIDIsAmbiguous)
+        if (res.runningSum > 0.f && !gUseReference && !emissivePath && !selfEmission)
         {
             const float3 org = gScene.camera.getPosition();
             const float3 dir = normalize(computeNonNormalizedRayDirPinholeScaled(gScene.camera, DTid.xy, 1, 0.5f, gResolution));
             const float3 p = org + dir * res.depth; // first scatter vertex
+            const int lightCount = (int)gScene.getLightCount();
 
             if (res.lightID < 0)
             {
                 wi = gScene.envMap.uvToWorld(res.lightUV, false);
                 valid = 1.f;
             }
-            else if (res.lightID < (int)gScene.getLightCount())
+            else if (res.lightID < lightCount)
             {
                 SampleGenerator sgDir = SampleGenerator(pixelPos, gFrameCount);
                 SceneLightSample ls = getAnalyticalLightSample(res.lightID, p, sgDir);
                 wi = ls.rayDir;
                 valid = 1.f;
             }
-            // NOTE: no emissive-triangle branch. evaluate_L_in_volume() reaches
-            // sampleTriangleOffset() only for reservoirs it knows hold a triangle sample; doing the
-            // same here from lightID alone indexed the light collection out of bounds and took the
-            // device down (DXGI_ERROR_DEVICE_REMOVED) on plume, which has no emissive triangles at
-            // all. Emissive-lit scenes therefore report valid = 0 rather than a guessed direction.
-            // Lifting this needs the triangle count to bound-check against, or the emissive flag
-            // that only exists inside the path evaluation.
+            else
+            {
+                // Emissive triangle. This branch previously took the DEVICE DOWN
+                // (DXGI_ERROR_DEVICE_REMOVED) on plume, and the reason matters: the triangle buffer
+                // behind sampleTriangleOffset is [root]-tagged, so it bypasses descriptor bounds
+                // checking, AND it is not bound at all when the scene has no emissive triangles.
+                // Any index is then a raw page fault -- not merely an out-of-range read.
+                //
+                // getTriangleCount() is safe to call regardless: it is a uniform in the scene
+                // constant block, not a buffer load, and defaults to 0 when no light collection
+                // exists. It is also the right bound -- the reservoir stores a RAW triangle index
+                // (VolumeUtils.slang: triangleIndex + getLightCount()), which getActiveTriangleCount()
+                // would not bound correctly.
+                const uint triIdx = (uint)(res.lightID - lightCount);
+                if (gSamplingOptions.useEmissiveLights && triIdx < gScene.lightCollection.getTriangleCount())
+                {
+                    TriangleLightSample ls;
+                    if (sampleTriangleOffset(p, triIdx, res.lightUV, ls))
+                    {
+                        wi = ls.dir;
+                        valid = 1.f;
+                    }
+                }
+            }
 
             const float lenSq = dot(wi, wi);
             if (!(lenSq > 1e-12f) || any(isnan(wi)) || any(isinf(wi)))
