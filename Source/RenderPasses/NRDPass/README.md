@@ -242,6 +242,44 @@ It is not — two hypotheses were tested and both refuted:
 The high absolute values are the scene: with the volume changing every frame, ReSTIR's temporal reuse
 is repeatedly invalidated, so its per-frame estimate is far noisier than on a static scene.
 
+## Why the medium loses its internal detail
+
+The most visible complaint about NRD's output is that the smoke goes flat — density structure that is
+present (under noise) in the raw estimate becomes a smooth veil. Measured on bistro, high-frequency
+detail inside the smoke crop, Laplacian variance:
+
+| | detail |
+|---|---|
+| raw ReSTIR | 4198 |
+| NRD, `viewZ=gbuffer` | 131 |
+| NRD, `viewZ=restir` | 136 |
+
+The depth guide is **not** the lever — swapping it moves 131 → 136.
+
+The cause is structural. **Every guide NRD edge-stops on is a surface property, and none of them
+describes the medium's interior.** Smoke is not geometry, so the G-buffer hands those pixels the depth
+and normal of whatever is *behind* the smoke. Coefficient of variation within a region:
+
+| region | depth | normal | radiance |
+|---|---|---|---|
+| inside the smoke | 0.26 | 4.65 | **18.59** |
+| plain street/wall | 0.12 | 2.79 | 1.69 |
+
+Inside the smoke the signal varies ~73× more than the depth guide; on a surface the same ratio is
+~14×. NRD is therefore doing exactly what it should — averaging a region its guides say is uniform.
+For a surface renderer this is safe, because geometric detail lives in the guides and only the
+*lighting* is denoised. For a medium the detail **is** the signal, and nothing protects it.
+
+**The promising direction is modulation, not more guides.** The standard trick is to move the
+structure out of the denoised term: divide it out before the filter and multiply it back after, so
+the denoiser only ever sees a smooth signal. That machinery already exists here — the adapter
+demodulates by albedo and `ModulateIllumination` restores it — and the estimator already computes a
+quantity that carries the medium's structure (`mediumAlpha`, i.e. 1 − transmittance). It is not
+currently fed to NRD.
+
+Note `mediumAlpha` came back **all zeros** when captured during this investigation, so its wiring
+needs checking before it can be used.
+
 ## Guards
 
 Every bug in this port failed *silently* — a smeared frame, an empty texture, a run that writes
