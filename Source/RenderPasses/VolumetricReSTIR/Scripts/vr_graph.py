@@ -494,7 +494,15 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
                      "worldSpaceMotion": False, "maxIntensity": 100000.0, "enabled": nrd_enabled}
         if sh:
             nrd_props["shResolveMode"] = env("VR_NRD_SH_RESOLVE", "Dc")
+        # VR_NRD_VALIDATION=1 renders NRD's own debug overlay (viewZ, normals, motion vectors,
+        # history length) to a 'validation' output. It is the instrument for questions like "is the
+        # depth guide sane" -- which took a capture-and-analyse cycle to answer without it.
+        validation = env_bool("VR_NRD_VALIDATION", False)
+        if validation:
+            nrd_props["enableValidation"] = True
         g.addPass(createPass("NRD", nrd_props), "NRD")
+        if validation:
+            g.markOutput("NRD.validation")
         if sh:
             g.addEdge(adapter + ".diffuseSh0", "NRD.diffuseSh0")
             g.addEdge(adapter + ".diffuseSh1", "NRD.diffuseSh1")

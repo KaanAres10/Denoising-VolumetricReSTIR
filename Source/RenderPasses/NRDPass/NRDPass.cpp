@@ -37,6 +37,7 @@ const char kShaderPackRadiance[] = "RenderPasses/NRDPass/PackRadiance.cs.slang";
 #if FALCOR_HAS_NRD4
 const char kShaderResolveSh[] = "RenderPasses/NRDPass/ResolveSh.cs.slang";
 const char kShResolveMode[] = "shResolveMode";
+const char kEnableValidation[] = "enableValidation";
 #endif
 
 // Input buffer names.
@@ -335,6 +336,8 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
 #if FALCOR_HAS_NRD4
         else if (key == kShResolveMode)
             mShResolveMode = value;
+        else if (key == kEnableValidation)
+            mEnableValidation = value;
 #endif
 
         // ReLAX diffuse/specular settings.
@@ -477,6 +480,7 @@ Properties NRDPass::getProperties() const
     props[kMaxIntensity] = mMaxIntensity;
 #if FALCOR_HAS_NRD4
     props[kShResolveMode] = mShResolveMode;
+    props[kEnableValidation] = mEnableValidation;
 #endif
 #if !FALCOR_HAS_NRD4
 
