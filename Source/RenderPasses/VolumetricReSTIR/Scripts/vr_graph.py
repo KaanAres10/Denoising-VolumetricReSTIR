@@ -490,7 +490,12 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # normal, which a medium does not have. "dc" is the physically defensible one; "cosine" is
         # NVIDIA's intended usage, kept so the difference can be measured rather than argued.
         sh = env_bool("VR_NRD_SH", False)
-        nrd_props = {"method": "RelaxDiffuseSh" if sh else "RelaxDiffuse",
+        # VR_NRD_METHOD overrides the denoiser outright, for the v4 additions that take the same IO
+        # as RelaxDiffuse (ReblurDiffuse, and the SH variants). Denoisers with different inputs --
+        # SIGMA wants penumbra, Reference wants a raw signal, the occlusion variants want a hit
+        # distance -- are reachable from NRDPass but are NOT wired into this graph.
+        method = env("VR_NRD_METHOD", "RelaxDiffuseSh" if sh else "RelaxDiffuse")
+        nrd_props = {"method": method,
                      "worldSpaceMotion": False, "maxIntensity": 100000.0, "enabled": nrd_enabled}
         if sh:
             nrd_props["shResolveMode"] = env("VR_NRD_SH_RESOLVE", "Dc")
