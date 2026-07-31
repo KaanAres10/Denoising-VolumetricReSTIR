@@ -305,6 +305,18 @@ private:
     /// DLSS Ray Reconstruction. Off by default; unconnected outputs are never allocated.
     bool mOutputVolumeGuides = false;
 
+    /// What to write into the medium's guide normal. `Camera` is the original stand-in (-rayDir), which
+    /// is a pure function of pixel coordinate and therefore carries NO volume information -- anything
+    /// edge-stopping on it sees a perfectly smooth field across the medium. `Gradient` writes the
+    /// density gradient, the medium's own structure.
+    ///
+    /// A switch rather than a replacement, and defaulting to the existing behaviour, because the
+    /// gradient was deliberately rejected once on the grounds that it is noisy in the plume core and
+    /// risks brick-aligned artifacts from the 1-voxel GVDB apron. That objection is on record and may
+    /// well be right, so it gets measured rather than assumed.
+    enum class VolumeNormalMode { Camera = 0, Gradient = 1 };
+    VolumeNormalMode mVolumeNormalMode = VolumeNormalMode::Camera;
+
     // Render scale. 'Default' reproduces the previous behaviour exactly (outputs sized to the
     // swapchain), so existing scripts are unaffected. Setting this below display resolution is what
     // makes a temporal upscaler actually save time: ReSTIR runs on fewer pixels and DLSS restores

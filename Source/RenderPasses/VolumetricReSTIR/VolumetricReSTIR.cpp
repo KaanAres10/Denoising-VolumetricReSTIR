@@ -48,6 +48,9 @@ namespace
     const std::string kMediumNormal = "mediumNormal";
     const std::string kScatterDistance = "scatterDistance";
     const std::string kLightDir = "lightDir";
+    const std::string kOpticalThickness = "opticalThickness";
+    const std::string kVolumeVelocity = "volumeVelocity";
+    const std::string kScatterDensity = "scatterDensity";
 
     const Falcor::ChannelList kOutputChannels =
     {
@@ -74,7 +77,22 @@ namespace
         // only exists after reuse. .w = 0 marks a direction that must not be trusted (no sample, or a
         // volume with emission, where Reservoir::lightID is overloaded -- see FinalShading.cs.slang).
         // Required by NRD v4's SH mode.
-        { kLightDir,      "gLightDir",     "dominant light direction at the first scatter vertex (w=1 valid)", true /* optional */, ResourceFormat::RGBA16Float }
+        { kLightDir,      "gLightDir",     "dominant light direction at the first scatter vertex (w=1 valid)", true /* optional */, ResourceFormat::RGBA16Float },
+        // Optical thickness tau = -log(transmittance) along the primary ray. One of the volumetric
+        // features Zhang et al. select over; free here because the march already accumulates the
+        // exponent. R32Float, not R16: it is unbounded in principle, though the march's
+        // transmittance early-out clamps it near 4.6 in practice.
+        { kOpticalThickness, "gOpticalThickness", "optical thickness along the primary ray", true /* optional */, ResourceFormat::R32Float },
+        // Velocity of the medium at the scatter point: xyz = unit direction, w = magnitude in world
+        // units per frame. Zhang et al. list direction and magnitude as two separate features, and
+        // keeping them apart matters here -- magnitude is what a temporal denoiser needs to decide
+        // where reprojection should be distrusted. RGBA16Float, not a packed unsigned format: the
+        // direction is signed.
+        { kVolumeVelocity, "gVolumeVelocity", "medium velocity at the scatter point (xyz = direction, w = magnitude)", true /* optional */, ResourceFormat::RGBA16Float },
+        // Density at the scatter point. The one LOCAL volumetric quantity here -- transmittance,
+        // optical thickness and scatter distance are all integrals along the ray, which average away
+        // exactly the interior structure the denoiser is destroying.
+        { kScatterDensity, "gScatterDensity", "medium density at the expected scatter point", true /* optional */, ResourceFormat::R32Float }
     };
 
     const Gui::DropdownList kEmissiveSamplerList =
@@ -201,6 +219,15 @@ void VolumetricReSTIR::parseProperties(const Properties& props)
     props.getTo("mOutputDepth", mOutputDepth);
     props.getTo("mOutputVolumeGuides", mOutputVolumeGuides);
     props.getTo("mDepthAsNDC", mDepthAsNDC);
+    {
+        std::string mode;
+        if (props.getTo("mVolumeNormalMode", mode))
+        {
+            if (mode == "Camera") mVolumeNormalMode = VolumeNormalMode::Camera;
+            else if (mode == "Gradient") mVolumeNormalMode = VolumeNormalMode::Gradient;
+            else logWarning("VolumetricReSTIR: unknown mVolumeNormalMode '{}' (expected Camera|Gradient)", mode);
+        }
+    }
 
     props.getTo("outputSize", mOutputSizeSelection);
     props.getTo("fixedOutputSize", mFixedOutputSize);
@@ -250,6 +277,7 @@ Properties VolumetricReSTIR::getProperties() const
     props.set("mOutputDepth", mOutputDepth);
     props.set("mOutputVolumeGuides", mOutputVolumeGuides);
     props.set("mDepthAsNDC", mDepthAsNDC);
+    props.set("mVolumeNormalMode", mVolumeNormalMode == VolumeNormalMode::Gradient ? "Gradient" : "Camera");
     props.set("outputSize", mOutputSizeSelection);
     if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed) props.set("fixedOutputSize", mFixedOutputSize);
     props.set("upscale", mUpscaling);
@@ -737,20 +765,42 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         vars["CB"]["gOutputDeterministicMV"] = writeDetMV;
         vars["CB"]["gDepthAsNDC"] = mDepthAsNDC;
 
+        // Each guide is gated on ITS OWN texture. These used to share one condition requiring both to
+        // be allocated, so a graph that asked for only mediumAlpha got a silently zeroed buffer --
+        // indistinguishable from the renderer computing zero. gOutputVolumeGuides now means only
+        // "run the march", and is true if any of these is wanted.
         ref<Texture> pMediumAlpha = renderData.getTexture(kMediumAlpha);
         ref<Texture> pMediumNormal = renderData.getTexture(kMediumNormal);
-        const bool writeVolGuides = mOutputVolumeGuides && pMediumAlpha != nullptr && pMediumNormal != nullptr;
+        ref<Texture> pOpticalThickness = renderData.getTexture(kOpticalThickness);
+        const bool writeAlpha = mOutputVolumeGuides && pMediumAlpha != nullptr;
+        const bool writeNormal = mOutputVolumeGuides && pMediumNormal != nullptr;
+        const bool writeTau = mOutputVolumeGuides && pOpticalThickness != nullptr;
         if (pMediumAlpha) vars["gMediumAlpha"] = pMediumAlpha;
         if (pMediumNormal) vars["gMediumNormal"] = pMediumNormal;
-        vars["CB"]["gOutputVolumeGuides"] = writeVolGuides;
-
-        // Scatter distance (NRD's hit-distance guide). Gated separately from the DLSS volume guides
-        // because an NRD graph wants this without necessarily wanting mediumAlpha/mediumNormal, and
-        // vice versa -- but it rides the same march, so gOutputVolumeGuides still has to be on for
-        // the block to execute. See the needGuides note in GenerateFeatures.cs.slang.
+        if (pOpticalThickness) vars["gOpticalThickness"] = pOpticalThickness;
+        // Scatter distance (NRD's hit-distance guide) rides the same march, so it has to be part of
+        // the decision to run it -- a graph wanting only this and no other volume guide would
+        // otherwise skip the block and get nothing.
         ref<Texture> pScatterDistance = renderData.getTexture(kScatterDistance);
+        const bool writeScatter = mOutputVolumeGuides && pScatterDistance != nullptr;
         if (pScatterDistance) vars["gScatterDistance"] = pScatterDistance;
-        vars["CB"]["gOutputScatterDistance"] = mOutputVolumeGuides && pScatterDistance != nullptr;
+
+        ref<Texture> pVolumeVelocity = renderData.getTexture(kVolumeVelocity);
+        ref<Texture> pScatterDensity = renderData.getTexture(kScatterDensity);
+        const bool writeVelocity = mOutputVolumeGuides && pVolumeVelocity != nullptr;
+        const bool writeDensity = mOutputVolumeGuides && pScatterDensity != nullptr;
+        if (pVolumeVelocity) vars["gVolumeVelocity"] = pVolumeVelocity;
+        if (pScatterDensity) vars["gScatterDensity"] = pScatterDensity;
+
+        vars["CB"]["gOutputMediumAlpha"] = writeAlpha;
+        vars["CB"]["gOutputMediumNormal"] = writeNormal;
+        vars["CB"]["gOutputOpticalThickness"] = writeTau;
+        vars["CB"]["gOutputScatterDistance"] = writeScatter;
+        vars["CB"]["gOutputVolumeVelocity"] = writeVelocity;
+        vars["CB"]["gOutputScatterDensity"] = writeDensity;
+        vars["CB"]["gVolumeNormalMode"] = (uint32_t)mVolumeNormalMode;
+        vars["CB"]["gOutputVolumeGuides"] =
+            writeAlpha || writeNormal || writeTau || writeScatter || writeVelocity || writeDensity;
 
         if (mParams.mUseSurfaceScene)
         {

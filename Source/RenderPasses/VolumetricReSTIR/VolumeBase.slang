@@ -306,6 +306,33 @@ float DensityWorldSpace(float3 p, int mipLevel)
     return Density(p_Medium, mipLevel);
 }
 
+/** Gradient of the density field, returned in WORLD space.
+
+    Central differences are taken in MEDIUM space, where voxels are unit-sized, so `step` is measured in
+    voxels and needs no guess about the volume's world scale.
+
+    The transform back is the matrix itself, NOT its inverse-transpose. That is the opposite of the rule
+    for surface normals, and the difference is real: a surface normal is a covector defined by the plane
+    it is perpendicular to, while this is the gradient of a scalar field. With the row-vector convention
+    used here, p_m = p_w A, so f(p_w) = g(p_w A) gives d f / d p_w,i = sum_j A_ij dg/dp_m,j -- i.e.
+    grad_w = A grad_m, a column-vector multiply.
+
+    `Density` returns 0 outside the grid bounds, so at the medium's boundary the gradient points inward,
+    which is the behaviour wanted from a stand-in normal there.
+*/
+float3 DensityGradientWorldSpace(float3 pW, int mipLevel, float step = 1.f)
+{
+    float4x4 WorldToMediumMatrix = mul(gScene.volumeExternalWorldToModelMatrix, gvdb.invxform[mipLevel]);
+    float3 p_Medium = mul(float4(pW, 1), WorldToMediumMatrix).xyz;
+
+    float3 g;
+    g.x = Density(p_Medium + float3(step, 0, 0), mipLevel) - Density(p_Medium - float3(step, 0, 0), mipLevel);
+    g.y = Density(p_Medium + float3(0, step, 0), mipLevel) - Density(p_Medium - float3(0, step, 0), mipLevel);
+    g.z = Density(p_Medium + float3(0, 0, step), mipLevel) - Density(p_Medium - float3(0, 0, step), mipLevel);
+
+    return mul(WorldToMediumMatrix, float4(g, 0)).xyz * (0.5f / max(step, 1e-6f));
+}
+
 void FetchEightVoxelsInAtlas(float3 p_atlas, int mipLevel, inout float4 densities[2]) {
     float3 anchor = floor(p_atlas - 0.5) + 0.5f;
     [unroll]

@@ -55,7 +55,24 @@ cbuffer CB
     // Volumetric guides for DLSS Ray Reconstruction. RR's albedo/normal/roughness guides describe a
     // surface; a participating medium has none, so instead we export how much of the pixel the
     // medium covers and a stand-in normal, and blend toward medium-like values downstream.
+    // This now gates only whether the MARCH runs; each guide below has its own flag, because one
+    // shared flag meant requesting a single guide silently produced a zeroed buffer.
     bool    gOutputVolumeGuides;
+    bool    gOutputMediumAlpha;
+    bool    gOutputMediumNormal;
+    // Optical thickness tau = -log(transmittance), free from the march's accumulated exponent.
+    bool    gOutputOpticalThickness;
+    // Velocity of the medium at the scatter point, split into direction and magnitude the way Zhang et
+    // al. list them as two separate features. Free: VelocityWorld is already sampled here for the
+    // motion vector.
+    bool    gOutputVolumeVelocity;
+    // Density at the scatter point. Unlike optical thickness (an integral along the whole ray) this is
+    // a LOCAL quantity, which is the reason to expect it to carry structure the integrals average away.
+    bool    gOutputScatterDensity;
+    // 0 = camera-facing stand-in, 1 = density gradient. A switch rather than a replacement: the
+    // existing comment rejects the gradient as noisy in the plume core and prone to GVDB apron
+    // artifacts, and that objection deserves a measurement rather than an assumption.
+    uint    gVolumeNormalMode;
     // Expected scattering distance along the primary ray, for NRD's hit-distance guide. Separate
     // flag from gOutputVolumeGuides because the two denoisers want different subsets, but it is
     // written from the same block, so gOutputVolumeGuides gates whether that block runs at all.
@@ -75,6 +92,12 @@ RWTexture2D<float2> gMotionVec;
 // Volumetric guides: medium coverage (1 - transmittance) and a stand-in "normal" for the medium.
 RWTexture2D<float> gMediumAlpha;
 RWTexture2D<float4> gMediumNormal;
+// Optical thickness along the primary ray. Saturates near 4.6 (the march's transmittance early-out).
+RWTexture2D<float> gOpticalThickness;
+// xyz = unit velocity direction (0 where the medium is still), w = magnitude in world units per frame.
+RWTexture2D<float4> gVolumeVelocity;
+// Density at the scatter point; 0 where the ray met no medium.
+RWTexture2D<float> gScatterDensity;
 // Raw expected scatter distance along the ray (world units), -1 where the ray met no medium.
 RWTexture2D<float> gScatterDistance;
 
@@ -187,7 +210,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
                     + float2(gScene.camera.data.jitterX, -gScene.camera.data.jitterY);
             }
 
-            if (gOutputVolumeGuides)
+            // Gated INDIVIDUALLY. These used to share one flag that the host only set when BOTH
+            // textures were allocated, so asking for just one silently produced a zeroed buffer --
+            // no warning, and it looks like the renderer computing zero rather than never writing.
+            if (gOutputMediumAlpha)
             {
                 // Medium coverage. accuTransmittance is the total transmittance along the primary
                 // ray, so 1 - it is the fraction of this pixel the medium accounts for -- exactly
@@ -195,13 +221,65 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 // the tracking adapter's weightSum, which saturates because the march terminates
                 // early once transmittance drops below 0.01.
                 gMediumAlpha[pixelPos] = saturate(1.f - accuTransmittance);
+            }
 
-                // Stand-in normal for the medium: face the camera. An isotropic scatterer has no
-                // meaningful surface orientation, and -rayDir combined with roughness=1 downstream
-                // reads to RR as "diffuse blob facing the viewer". Costs nothing and cannot fail,
-                // unlike a density-gradient normal (which is noisy in the plume core and risks
-                // brick-aligned artifacts from the 1-voxel GVDB apron).
-                gMediumNormal[pixelPos] = float4(-cameraRay.dir, 0.f);
+            // Did this ray actually meet the medium? `t` above falls back to the surface hit and then
+            // to the far plane, so `p` is a valid point either way -- but the volume-local guides below
+            // are only meaningful where there was something to scatter off.
+            const bool hasMedium = expectedT >= 0.f;
+
+            if (gOutputMediumNormal)
+            {
+                if (gVolumeNormalMode == 1 && hasMedium)
+                {
+                    // Density gradient: the medium's own structure, pointing from dense to thin. This
+                    // is the only candidate normal that carries volume information at all.
+                    float3 grad = DensityGradientWorldSpace(p, 0);
+                    float len = length(grad);
+                    // Fall back to the camera-facing stand-in where the field is locally flat. Without
+                    // this the plume core -- smooth by construction -- would get a normalize() of
+                    // near-zero, i.e. direction noise amplified to full scale, which is precisely the
+                    // failure the original comment predicted.
+                    gMediumNormal[pixelPos] = len > 1e-6f ? float4(-grad / len, 0.f)
+                                                          : float4(-cameraRay.dir, 0.f);
+                }
+                else
+                {
+                    // Stand-in normal for the medium: face the camera. An isotropic scatterer has no
+                    // meaningful surface orientation, and -rayDir combined with roughness=1 downstream
+                    // reads to RR as "diffuse blob facing the viewer". Costs nothing and cannot fail.
+                    //
+                    // NOTE this carries NO volume information -- it is a pure function of pixel
+                    // coordinate. Anything edge-stopping on it (NRD's RELAX does) sees a perfectly
+                    // smooth field across the medium.
+                    gMediumNormal[pixelPos] = float4(-cameraRay.dir, 0.f);
+                }
+            }
+
+            if (gOutputVolumeVelocity)
+            {
+                // Direction and magnitude kept apart on purpose: they are two features in Zhang et
+                // al.'s pool, and magnitude alone is what predicts where reprojection should be
+                // distrusted. Free -- the same sample already feeds the motion vector above.
+                float3 v = 0.f;
+                if (hasMedium && gScene.volumeDesc.hasVelocity && gScene.volumeDesc.hasAnimation)
+                    v = VelocityWorld(p) * gScene.volumeDesc.velocityScale;
+                float speed = length(v);
+                gVolumeVelocity[pixelPos] = float4(speed > 1e-8f ? v / speed : 0.f.xxx, speed);
+            }
+
+            if (gOutputScatterDensity)
+            {
+                gScatterDensity[pixelPos] = hasMedium ? max(0.f, DensityWorldSpace(p, 0)) : 0.f;
+            }
+
+            // Optical thickness tau = -log(Tr), the exponent the march already accumulated. Free:
+            // accuTransmittance is exp(-tau). Saturates near 4.6 because the march early-outs once
+            // transmittance drops below 0.01, so treat it as "thickness up to opaque", not a
+            // physical integral to infinity.
+            if (gOutputOpticalThickness)
+            {
+                gOpticalThickness[pixelPos] = -log(max(accuTransmittance, 1e-6f));
             }
         }
     }

@@ -297,6 +297,11 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
         "samplePattern": "Halton" if jitter else "Center",
         "sampleCount": 32,
         "mOutputVolumeGuides": bool(guides),
+        # What goes into the medium's guide normal. The default reproduces the previous behaviour
+        # (-rayDir), which carries no volume information at all; "gradient" writes the density
+        # gradient. Left as a switch because the gradient was rejected once on stated grounds and
+        # that objection deserves a measurement.
+        "mVolumeNormalMode": "Gradient" if env("VR_VOL_NORMAL", "camera").lower() == "gradient" else "Camera",
         "mParams": dict(scene.get("params", {})),
     }
     # The reference is brute-force path tracing: no reuse, accumulated over thousands of frames.
