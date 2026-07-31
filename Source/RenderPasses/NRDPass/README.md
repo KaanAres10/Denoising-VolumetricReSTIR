@@ -203,15 +203,30 @@ out the plume core, and those cost more than the noise they remove. The backgrou
 a look on its own — with `viewZ=restir`, pixels containing no medium receive a sentinel depth, which
 gives NRD a flat depth field to blur across.
 
-**Antifirefly is one contributor and its default is now suspect.** Turning it off improves the
-animated score (3.565e-02 vs 3.757e-02). It is enabled by default because it helped on the *static*
-plume (1.072e-03 → 1.059e-03) — a measurement taken in the regime where NRD was not filtering at all.
+### The tuning, re-derived on the animated scene
 
-> **Every volumetric tuning decision in this file was made under the zero-`viewZ` fault.** The
-> pre-pass radius sweep, the history-reconstruction ablation and the antifirefly default were all
-> measured while RELAX's history could not accumulate and its spatial filter was inert. They were
-> honest measurements of a broken configuration. All three need re-deriving on the animated scene
-> before any of them should be trusted.
+Every volumetric tuning decision here was originally made under the zero-`viewZ` fault, with RELAX's
+history unable to accumulate and its spatial filter inert — honest measurements of a broken
+configuration. All three were re-derived on the animated plume with a working depth guide, scored
+perceptually. Raw ReSTIR is **0.00830**.
+
+| decision | result | verdict |
+|---|---|---|
+| pre-pass radius | 0 → **0.00965**, 4 → 0.01132, 16 → 0.01837, 30 → 0.02551 | **confirmed**, still monotonic |
+| history reconstruction | `historyFixFrameNum` 0 and 3 are **identical** | inert here; the default is justified by bistro (2.8×), not by this scene |
+| antifirefly | on → **0.00965**, off → 0.01016 | **confirmed on** |
+
+All three defaults survive. That is luck rather than method — they were derived in a regime that could
+not have tested them — but they are now grounded in a measurement that can.
+
+The pre-pass rows also corroborate the hit-distance story from the other direction: at radius 16 and
+30 the mean rises to 1.25× and 1.66× with p99 near 49, i.e. the pre-pass is *adding* energy, which is
+what a full-frame blur of a saturating hit-distance factor would do.
+
+**Correction.** An earlier revision of this file recorded that antifirefly *hurt* on the animated
+scene (3.565e-02 vs 3.757e-02) and called the default suspect. That was measured with linear MSE and
+the `restir` depth. With the corrected depth range and the perceptual metric the ordering reverses,
+and the default is right.
 
 ### Reference validity, checked rather than assumed
 
