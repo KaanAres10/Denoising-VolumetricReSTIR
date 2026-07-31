@@ -291,7 +291,35 @@ MSE against the converged references, via
 the benchmark rather than of the port; see below. Treat the ranking above as measuring something
 other than denoising quality.
 
-### The root cause: NRD was fed `viewZ = 0` everywhere
+### Underneath both depth problems: a camera far plane of 0.354
+
+`Scene::resetCamera` derives the depth range as `farZ = sceneBB.radius * 50`, and **the GVDB volume is
+not part of the mesh bounding box**. On plume only `default.obj` contributes, giving a radius of
+~0.007 and a far plane of **0.354** — while the medium sits 2.2 to 3.4 units from the camera. Two
+consequences, both of which present as denoiser faults rather than camera faults:
+
+* `GBufferRaster` clips essentially everything, so its `linearZ` is all zeros. That is the depth NRD
+  was handed.
+* The estimator's "no medium" fallback writes `farZ`, putting the **background nearer than the
+  smoke** — a flat, close surface for NRD to blur across.
+
+`load_plume` now sets `nearPlane`/`farPlane` explicitly. The rendered image is **byte-identical**
+either way (the far plane affects only the depth outputs and the projection matrix, not primary ray
+generation), so existing references remain valid.
+
+With that fixed, `viewZ=gbuffer` becomes a real option for the first time:
+
+| run | mean/ref | p99 | tonemapped MSE |
+|---|---|---|---|
+| raw | 1.046× | 14.1 | **0.00830** |
+| NRD `viewZ=gbuffer` (far plane fixed) | 0.751× | 30.6 | 0.00965 |
+| NRD `viewZ=restir` | 0.892× | 23.8 | 0.01124 |
+
+Note `viewZ=restir` is **byte-identical before and after** the far-plane fix. The background depth
+moved 0.354 → 1000 and NRD's output did not change at all, so background depth is not driving the
+smearing the way the flat-depth theory predicted. That theory is not yet confirmed.
+
+### The first depth problem: NRD was fed `viewZ = 0` everywhere
 
 Everything in the next section is still true about how RELAX works, but it was not the whole story,
 and the numbers above were taken while a more basic fault was in play.

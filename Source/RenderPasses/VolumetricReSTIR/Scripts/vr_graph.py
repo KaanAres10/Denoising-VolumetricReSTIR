@@ -200,6 +200,16 @@ def load_plume(frame="0198"):
     m.scene.camera.position = float3(1.977354, 2.411630, 2.242076)
     m.scene.camera.target = float3(1.366226, 2.220231, 1.474033)
     m.scene.camera.up = float3(0.0, 1.0, 0.0)
+    # The depth range MUST be set explicitly. Scene::resetCamera derives it as farZ = sceneBB.radius
+    # * 50, and the GVDB volume is not part of the mesh bounding box -- only default.obj is, a plane
+    # small enough that the derived far plane comes out at 0.354 while the medium sits 0.35..3.4 units
+    # away. Two consequences, both of which read as denoiser problems rather than camera problems:
+    #   * GBufferRaster clips essentially everything, so its linearZ output is ALL ZEROS. That is the
+    #     depth NRD was being handed, and a zero depth makes RELAX's reprojection degenerate.
+    #   * The estimator's "no medium" fallback writes farZ, putting the background NEARER than the
+    #     smoke -- a flat, close surface for NRD to blur across, which is the background smearing.
+    m.scene.camera.nearPlane = 0.1
+    m.scene.camera.farPlane = 1000.0
     return {
         # sigma_s / sigma_t = 14 / (14 + 6): the single-scatter albedo, RR's diffuse guide for the
         # medium. A uniform, not a texture -- only density varies spatially in this renderer.
