@@ -455,8 +455,14 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # (albedo is always <= 1), and the graph then skips ModulateIllumination so the albedo is not
         # multiplied back in. Both halves must move together or the round trip is broken.
         demodulate = env_bool("VR_NRD_DEMOD", True)
+        # Volumetric demodulation: divide the medium's large-scale structure out of the radiance
+        # before NRD filters it, and let ModulateIllumination put it back. Requires the guides.
+        voldemod = env_bool("VR_NRD_VOLDEMOD", False) and guides
         props = {"useScatterDistance": env_bool("VR_NRD_HITDIST", True),
-                 "useNormalGuide": env_bool("VR_NRD_NORMALS", True)}
+                 "useNormalGuide": env_bool("VR_NRD_NORMALS", True),
+                 "demodulateVolume": voldemod,
+                 "volumeStructureBlur": env_int("VR_NRD_VOLBLUR", 5),
+                 "volumeStructureFloor": env_float("VR_NRD_VOLFLOOR", 0.05)}
         if env_bool("VR_NRD_SH", False):
             props["shMode"] = True
         if not demodulate:
@@ -468,6 +474,9 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         g.addPass(createPass("NRDAdapter", props), adapter)
         g.addEdge(color, adapter + ".color")
         g.addEdge(restir + ".scatterDistance", adapter + ".scatterDistance")
+        if voldemod:
+            g.addEdge(restir + ".scatterDensity", adapter + ".scatterDensity")
+            g.addEdge(restir + ".mediumAlpha", adapter + ".mediumAlpha")
         g.addEdge(gbuffer + ".guideNormalW", adapter + ".guideNormalW")
         g.addEdge(gbuffer + ".specRough", adapter + ".specRough")
         g.addEdge(gd + ".diffuseAlbedo", adapter + ".diffuseAlbedo")
@@ -594,7 +603,13 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # Re-modulation is the caller's job; Falcor already ships the pass for it.
         g.addPass(createPass("ModulateIllumination"), "ModulateIllumination")
         g.addEdge("NRD.filteredDiffuseRadianceHitDist", "ModulateIllumination.diffuseRadiance")
-        g.addEdge(gd + ".diffuseAlbedo", "ModulateIllumination.diffuseReflectance")
+        # With demodulation on the multiplier MUST be the adapter's own divisor, or the round trip
+        # is only as good as two sites agreeing on a formula by hand. With it off, keep the original
+        # edge so a disabled feature means an unchanged graph.
+        if voldemod:
+            g.addEdge(adapter + ".demodDivisor", "ModulateIllumination.diffuseReflectance")
+        else:
+            g.addEdge(gd + ".diffuseAlbedo", "ModulateIllumination.diffuseReflectance")
         return "ModulateIllumination.output"
 
     raise ValueError("unknown denoiser '%s' (have: %s)" % (mode, ", ".join(DENOISERS)))

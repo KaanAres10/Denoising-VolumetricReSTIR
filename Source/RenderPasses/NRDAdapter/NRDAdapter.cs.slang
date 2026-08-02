@@ -33,6 +33,26 @@ cbuffer CB
     // Ablation switch for the normal guide: false feeds the miss sentinel everywhere,
     // i.e. a constant orientation carrying no geometric information.
     bool gUseNormalGuide;
+
+    // --- volumetric demodulation ---
+    // NRD's input slots are fixed (viewZ, normal+roughness, motion, radiance+hitDist, confidence), so
+    // there is nowhere to hand it a volumetric feature. Dividing the medium's own structure out of the
+    // radiance before the filter, and letting ModulateIllumination put it back after, is the only way
+    // to keep that structure out of the filter's reach.
+    //
+    // The divisor is a BLURRED density and the blur is not incidental. Measured on the plume as
+    // scale-free gradient energy of the CONVERGED image inside the smoke (lower = flatter):
+    //   raw scatterDensity  +117%  <- WORSE; per-pixel density is the value at a stochastically
+    //                                 chosen scatter point, so its high frequencies are sampling
+    //                                 noise and dividing by noise injects noise
+    //   blur 5   -48%   blur 11  -56% (best)   blur 21  -49%   blur 81  -14%
+    // A self-normalising local-contrast divisor (blur_small/blur_large) was also tried: -22% at best.
+    bool  gDemodulateVolume;
+    // False when nothing consumes gOutDemodDivisor. An unconnected output is not allocated, and
+    // writing to the resulting null UAV is an access violation -- the failure the SH outputs hit.
+    bool  gWriteDemodDivisor;
+    int   gVolumeStructureBlur;   // box half-width in pixels
+    float gVolumeStructureFloor;  // divisor floor, same role as gMinReflectance
 }
 
 // Inputs.
@@ -41,11 +61,16 @@ Texture2D<float> gScatterDistance;   // expected scatter distance along the ray,
 Texture2D<float4> gGuideNormalW;     // world-space guide normal (GBufferRaster)
 Texture2D<float4> gSpecRough;        // .a = perceptual roughness (GBufferRaster)
 Texture2D<float4> gDiffuseAlbedo;    // demodulation divisor (DLSSDGuides, medium-blended)
+Texture2D<float> gScatterDensity;    // medium density at the scatter point; 0 where no medium
+Texture2D<float> gMediumAlpha;       // medium coverage (1 - transmittance), the blend weight
 
 // Outputs.
 // NOTE: NRDPass binds diffuseRadianceHitDist as a UAV and rewrites it in place, so nothing
 // downstream may read this texture expecting the pre-denoise values.
 RWTexture2D<float4> gOutNormalRoughness;
+/// EXACTLY what the radiance was divided by, so ModulateIllumination can multiply back the same
+/// value rather than two sites agreeing on a formula by hand.
+RWTexture2D<float4> gOutDemodDivisor;
 
 #if SH_MODE
 // NRD v4 spherical-harmonics mode. SH1 carries the DIRECTION incoming radiance arrives from, scaled
@@ -105,7 +130,34 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     // --- radiance: demodulate ---
     const float3 radiance = gColor[pixel].rgb;
     const float3 albedo = max(gDiffuseAlbedo[pixel].rgb, gMinReflectance);
-    const float3 demodulated = radiance / albedo;
+
+    // Blended in by coverage, so a pixel the medium does not cover keeps exactly the old
+    // albedo-only divisor and the surface path cannot regress.
+    float structure = 1.f;
+    if (gDemodulateVolume)
+    {
+        const int r = gVolumeStructureBlur;
+        float sum = 0.f;
+        float wsum = 0.f;
+        for (int dy = -r; dy <= r; dy++)
+        {
+            for (int dx = -r; dx <= r; dx++)
+            {
+                const int2 q = clamp(int2(pixel) + int2(dx, dy), int2(0), int2(gResolution) - 1);
+                // Coverage-weighted: an unweighted average would drag the divisor toward zero at the
+                // plume's silhouette, exactly where a small divisor turns a dim pixel into a firefly.
+                const float w = gMediumAlpha[q];
+                sum += gScatterDensity[q] * w;
+                wsum += w;
+            }
+        }
+        const float blurred = wsum > 0.f ? sum / wsum : 0.f;
+        structure = lerp(1.f, max(blurred, gVolumeStructureFloor), saturate(gMediumAlpha[pixel]));
+    }
+
+    const float3 divisor = albedo * structure;
+    const float3 demodulated = radiance / divisor;
+    if (gWriteDemodDivisor) gOutDemodDivisor[pixel] = float4(divisor, 1.f);
 
     // --- hit distance ---
     // -1 means the ray passed through empty space. Feed a finite stand-in rather than the sentinel:

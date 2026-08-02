@@ -43,6 +43,15 @@ private:
     bool mUseScatterDistance = true;
     /// Feed the real surface normal, or a constant (ablation).
     bool mUseNormalGuide = true;
+
+    /// Divide the medium's large-scale structure out of the radiance before NRD sees it. Off by
+    /// default: it changes what the denoiser is fed. See NRDAdapter.cs.slang for the blur measurements.
+    bool mDemodulateVolume = false;
+    /// Box half-width for the divisor's blur. 5 (an 11x11 kernel) measured best on the plume; the RAW
+    /// density is worse than no demodulation at all.
+    int mVolumeStructureBlur = 5;
+    /// Floor on the medium term, same role as mMinReflectance.
+    float mVolumeStructureFloor = 0.05f;
 #if FALCOR_HAS_NRD4
     /// Emit the SH0/SH1 pair for NRD v4's RELAX_DIFFUSE_SH instead of packed radiance+hitDist.
     /// Changes what reflect() declares, so toggling it needs a graph recompile.

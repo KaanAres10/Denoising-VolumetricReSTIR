@@ -12,13 +12,19 @@ const char kScatterDistanceInput[] = "scatterDistance";
 const char kGuideNormalInput[] = "guideNormalW";
 const char kSpecRoughInput[] = "specRough";
 const char kDiffuseAlbedoInput[] = "diffuseAlbedo";
+const char kScatterDensityInput[] = "scatterDensity";
+const char kMediumAlphaInput[] = "mediumAlpha";
 
 // Names match NRDPass's input pins so the graph wiring reads directly.
 const char kDiffuseRadianceHitDistOutput[] = "diffuseRadianceHitDist";
 const char kNormalRoughnessOutput[] = "normWRoughnessMaterialID";
+const char kDemodDivisorOutput[] = "demodDivisor";
 
 const char kMinReflectance[] = "minReflectance";
 const char kMissHitDistance[] = "missHitDistance";
+const char kDemodulateVolume[] = "demodulateVolume";
+const char kVolumeStructureBlur[] = "volumeStructureBlur";
+const char kVolumeStructureFloor[] = "volumeStructureFloor";
 #if FALCOR_HAS_NRD4
 const char kShMode[] = "shMode";
 // Direction the reservoir's light arrives from, .w = 1 when trustworthy (VolumetricReSTIR.lightDir).
@@ -45,6 +51,12 @@ NRDAdapter::NRDAdapter(ref<Device> pDevice, const Properties& props) : RenderPas
             mUseScatterDistance = value;
         else if (key == "useNormalGuide")
             mUseNormalGuide = value;
+        else if (key == kDemodulateVolume)
+            mDemodulateVolume = value;
+        else if (key == kVolumeStructureBlur)
+            mVolumeStructureBlur = value;
+        else if (key == kVolumeStructureFloor)
+            mVolumeStructureFloor = value;
 #if FALCOR_HAS_NRD4
         else if (key == kShMode)
             mShMode = value;
@@ -86,6 +98,9 @@ Properties NRDAdapter::getProperties() const
     props[kMissHitDistance] = mMissHitDistance;
     props["useScatterDistance"] = mUseScatterDistance;
     props["useNormalGuide"] = mUseNormalGuide;
+    props[kDemodulateVolume] = mDemodulateVolume;
+    props[kVolumeStructureBlur] = mVolumeStructureBlur;
+    props[kVolumeStructureFloor] = mVolumeStructureFloor;
 #if FALCOR_HAS_NRD4
     props[kShMode] = mShMode;
 #endif
@@ -106,6 +121,11 @@ RenderPassReflection NRDAdapter::reflect(const CompileData& compileData)
     r.addInput(kGuideNormalInput, "World-space guide normal (GBuffer guideNormalW)");
     r.addInput(kSpecRoughInput, "Specular reflectance and roughness (GBuffer specRough)");
     r.addInput(kDiffuseAlbedoInput, "Demodulation divisor (DLSSDGuides diffuseAlbedo)");
+    // Optional: unwired, the pass behaves exactly as before.
+    r.addInput(kScatterDensityInput, "Medium density at the scatter point (volumetric demodulation)")
+        .flags(RenderPassReflection::Field::Flags::Optional);
+    r.addInput(kMediumAlphaInput, "Medium coverage, the blend weight for volumetric demodulation")
+        .flags(RenderPassReflection::Field::Flags::Optional);
 #if FALCOR_HAS_NRD4
     // Required in SH mode, and NOT optional: SH1 carries "direction * luminance", so an unbound
     // lightDir would pack an all-zero SH1 -- a perfectly valid-looking "no directional information"
@@ -163,6 +183,12 @@ RenderPassReflection NRDAdapter::reflect(const CompileData& compileData)
     // RGB10A2Unorm is required, not preferred. Under v3.1 NRD decodes it as oct normal + roughness;
     // under v4 as normal and roughness co-packed into the 30-bit field with materialID in A2. Either
     // way the format is dictated by the decoder -- see encodeNormalRoughness in the shader.
+    // RGBA32Float to match the radiance it divides: the round trip is only exact if the multiplier
+    // downstream is bit-identical to the divisor used here.
+    r.addOutput(kDemodDivisorOutput, "Exactly what the radiance was divided by")
+        .format(ResourceFormat::RGBA32Float)
+        .texture2D(sz.x, sz.y)
+        .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
     r.addOutput(kNormalRoughnessOutput, "Oct-encoded normal, linear roughness, material ID")
         .format(ResourceFormat::RGB10A2Unorm)
         .texture2D(sz.x, sz.y)
@@ -213,17 +239,38 @@ void NRDAdapter::execute(RenderContext* pRenderContext, const RenderData& render
     // indistinguishable from one that is genuinely in use when reading the code later.
     ref<ComputePass>& pPass = getPass();
     auto var = pPass->getRootVar();
+
+    // Resolved before the constant buffer, because gDemodulateVolume depends on it. Both halves are
+    // required: the blur is coverage-weighted, so without mediumAlpha the divisor would dip toward
+    // zero at the plume's silhouette.
+    const auto pScatterDensity = renderData.getTexture(kScatterDensityInput);
+    const auto pMediumAlpha = renderData.getTexture(kMediumAlphaInput);
+    const auto pDivisor = renderData.getTexture(kDemodDivisorOutput);
+    const bool demod = mDemodulateVolume && pScatterDensity != nullptr && pMediumAlpha != nullptr;
+    if (mDemodulateVolume && !demod)
+    {
+        logWarning("NRDAdapter: '{}' is on but '{}'/'{}' are not connected; volumetric demodulation is disabled.",
+                   kDemodulateVolume, kScatterDensityInput, kMediumAlphaInput);
+    }
     var["CB"]["gResolution"] = resolution;
     var["CB"]["gMinReflectance"] = mMinReflectance;
     var["CB"]["gMissHitDistance"] = mMissHitDistance;
     var["CB"]["gUseScatterDistance"] = mUseScatterDistance;
     var["CB"]["gUseNormalGuide"] = mUseNormalGuide;
+    var["CB"]["gDemodulateVolume"] = demod;
+    var["CB"]["gWriteDemodDivisor"] = pDivisor != nullptr;
+    var["CB"]["gVolumeStructureBlur"] = mVolumeStructureBlur;
+    var["CB"]["gVolumeStructureFloor"] = mVolumeStructureFloor;
 
     var["gColor"] = renderData.getTexture(kColorInput);
     var["gScatterDistance"] = renderData.getTexture(kScatterDistanceInput);
     var["gGuideNormalW"] = renderData.getTexture(kGuideNormalInput);
     var["gSpecRough"] = renderData.getTexture(kSpecRoughInput);
     var["gDiffuseAlbedo"] = renderData.getTexture(kDiffuseAlbedoInput);
+    // Slang requires every declared resource to be bound even when the branch using it is off.
+    var["gScatterDensity"] = pScatterDensity ? pScatterDensity : renderData.getTexture(kScatterDistanceInput);
+    var["gMediumAlpha"] = pMediumAlpha ? pMediumAlpha : renderData.getTexture(kScatterDistanceInput);
+    var["gOutDemodDivisor"] = pDivisor ? pDivisor : renderData.getTexture(kDiffuseRadianceHitDistOutput);
 
     var["gOutNormalRoughness"] = renderData.getTexture(kNormalRoughnessOutput);
 
