@@ -452,7 +452,11 @@ add_dependencies(Falcor copy_data_folder copy_scripts_folder)
 # builds it, and if the DLL is missing from the output directory the next run dies at 0xC0000135
 # before main() with no log -- which reads as a corrupt build. See build_scripts/protoc_shim/.
 if(TARGET protoc_shim)
-    add_dependencies(Falcor protoc_shim)
+    # restore_runtime_dlls, not protoc_shim: the shim only relinks when its output is missing, whereas
+    # the restore target is always out of date and so re-copies BOTH DLLs on every build. Falcor
+    # depends on it so that `cmake --build --target <a render pass>` restores them too -- that is the
+    # exact case where they went missing and the next run died at 0xC0000135 with no log.
+    add_dependencies(Falcor restore_runtime_dlls)
 endif()
 
 # Make Falcor core library depend on deploying all dependencies.
