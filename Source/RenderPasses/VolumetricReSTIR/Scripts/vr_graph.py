@@ -368,6 +368,109 @@ _SIMPLE = {
 DENOISERS = ["none", "oidn", "oidncpu", "optix", "sr", "rr", "nrd"]
 
 
+def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True):
+    """Denoise the medium and the surfaces SEPARATELY, then add them back together.
+
+    The problem this exists to fix, measured on bistro frame 40: NRD reduces Laplacian variance 6.5x
+    on a wall and 62x inside the medium, in the same frame at the same settings -- because every
+    guide it edge-stops on describes a surface, and inside smoke those guides describe whatever is
+    BEHIND the smoke. The visible symptom is not the smoothness; it is that pavement seams and
+    building edges are drawn THROUGH the plume, structure the denoiser is inventing from the wall's
+    depth and normal.
+
+    Splitting fixes the cause rather than the symptom: the volume half is denoised against the
+    medium's own depth and normal, so there are no wall edges in its guides to stamp into the smoke.
+
+    The composite is exact. VolumetricReSTIR's volumeColor + surfaceColor reconstruct
+    accumulated_color bit-for-bit (verified: 0.000e+00 over 100% of pixels), and
+    ModulateIllumination sums `diffuseReflectance * diffuseRadiance + residualRadiance`. The surface
+    half rides the modulated path as before; the volume half goes through residualRadiance, which is
+    a plain additive term -- correct, because in-scattered radiance has no surface albedo to divide
+    out and multiply back.
+
+    Requires from the estimator: volumeColor, surfaceColor, mediumNormal, linearZ (mOutputDepth) and
+    a deterministic mvec (mMotionVecMode="Deterministic").
+    """
+    sh = env_bool("VR_NRD_SH", False)
+    method = env("VR_NRD_METHOD", "RelaxDiffuseSh" if sh else "RelaxDiffuse")
+
+    def adapter(name, src, normal_src, demodulate):
+        # minReflectance 1.0 makes the divisor exactly 1, because albedo is always <= 1. That is how
+        # the volume half opts out of albedo demodulation -- a surface albedo is not a property the
+        # in-scattered radiance was ever multiplied by, so dividing by it would be inventing a
+        # divisor and the re-modulation would then have to invent the same one back.
+        props = {"useScatterDistance": env_bool("VR_NRD_HITDIST", True),
+                 "useNormalGuide": env_bool("VR_NRD_NORMALS", True)}
+        if not demodulate:
+            props["minReflectance"] = 1.0
+        if sh:
+            props["shMode"] = True
+        if render is not None:
+            props.update({"outputSize": "Fixed", "fixedOutputSize": render})
+        g.addPass(createPass("NRDAdapter", props), name)
+        g.addEdge(src, name + ".color")
+        g.addEdge(restir + ".scatterDistance", name + ".scatterDistance")
+        g.addEdge(normal_src, name + ".guideNormalW")
+        g.addEdge(gbuffer + ".specRough", name + ".specRough")
+        g.addEdge(gd + ".diffuseAlbedo", name + ".diffuseAlbedo")
+        if sh:
+            g.addEdge(restir + ".lightDir", name + ".lightDir")
+        return name
+
+    def denoiser(name, adapter_name, viewz_src, mvec_src, accum, phi):
+        # Each half gets its OWN tuning. They are not the same problem: the converged medium is 4.3x
+        # smoother than the surfaces around it (scale-free gradient energy 56.9 vs 247.2 inside and
+        # outside the plume), so the volume half can be filtered harder without destroying anything
+        # that is actually there, while the surface half must stay conservative.
+        props = {"method": method, "worldSpaceMotion": False, "maxIntensity": 100000.0,
+                 "enabled": nrd_enabled,
+                 "diffuseMaxAccumulatedFrameNum": accum,
+                 "diffusePhiLuminance": phi}
+        if sh:
+            props["shResolveMode"] = env("VR_NRD_SH_RESOLVE", "Dc")
+        g.addPass(createPass("NRD", props), name)
+        if sh:
+            g.addEdge(adapter_name + ".diffuseSh0", name + ".diffuseSh0")
+            g.addEdge(adapter_name + ".diffuseSh1", name + ".diffuseSh1")
+        else:
+            g.addEdge(adapter_name + ".diffuseRadianceHitDist", name + ".diffuseRadianceHitDist")
+        g.addEdge(adapter_name + ".normWRoughnessMaterialID", name + ".normWRoughnessMaterialID")
+        g.addEdge(viewz_src, name + ".viewZ")
+        g.addEdge(mvec_src, name + ".mvec")
+        return name
+
+    # --- surface half: exactly the guides RELAX was designed for ---
+    a_s = adapter("NRDAdapterSurface", restir + ".surfaceColor",
+                  gbuffer + ".guideNormalW", demodulate=env_bool("VR_NRD_DEMOD", True))
+    n_s = denoiser("NRDSurface", a_s, gbuffer + ".linearZ", gbuffer + ".mvec",
+                   env_int("VR_NRD_SURF_ACCUM", 30), env_float("VR_NRD_SURF_PHI", 2.0))
+
+    # --- volume half: the medium's own geometry ---
+    #
+    # viewZ is the estimator's linearZ, i.e. the view Z of the expected SCATTER point, not the wall
+    # behind it. Deliberately not scatterDistance itself: that is a ray distance carrying a -1 "no
+    # medium" sentinel, and NRD wants a view-space Z with a valid value everywhere.
+    #
+    # The normal is mediumNormal. Worth being blunt about what that is: in the default Camera mode it
+    # is -rayDir, a pure function of pixel coordinate that carries NO volume information, so the
+    # volume denoiser then has a normal guide that cannot reject anything. Set VR_VOL_NORMAL=gradient
+    # to get the density gradient instead. Either way it beats the wall's normal, which actively
+    # asserts edges that are not in the medium.
+    a_v = adapter("NRDAdapterVolume", restir + ".volumeColor",
+                  restir + ".mediumNormal", demodulate=False)
+    n_v = denoiser("NRDVolume", a_v, restir + ".linearZ", restir + ".mvec",
+                   env_int("VR_NRD_VOL_ACCUM", 30), env_float("VR_NRD_VOL_PHI", 2.0))
+
+    # --- composite ---
+    # residualRadiance is a plain `outputColor.rgb += ...` term in ModulateIllumination, which is
+    # what the volume half needs: no reflectance to multiply back.
+    g.addPass(createPass("ModulateIllumination"), "ModulateIllumination")
+    g.addEdge(n_s + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.diffuseRadiance")
+    g.addEdge(gd + ".diffuseAlbedo", "ModulateIllumination.diffuseReflectance")
+    g.addEdge(n_v + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.residualRadiance")
+    return "ModulateIllumination.output"
+
+
 def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", preset="E",
                  upscale_ratio=None,
                  restir="VolumetricReSTIR", gbuffer=None, guides=True,
@@ -446,6 +549,11 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # description, not two.
         gd = add_rr_guides(g, scene, gbuffer, restir if guides else None, render=render,
                            upscale=upscaling, ratio=upscale_ratio)
+
+        # VR_NRD_SPLIT=1 denoises the medium and the surfaces separately -- see add_nrd_split for
+        # why, and for what it needs from the estimator.
+        if env_bool("VR_NRD_SPLIT", False) and guides:
+            return add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=nrd_enabled)
 
         adapter = "NRDAdapter"
         # VR_NRD_HITDIST=0 ablates the hit-distance guide (constant everywhere). Every guide fed to
