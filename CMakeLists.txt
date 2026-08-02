@@ -432,6 +432,11 @@ endif()
 # Project sources
 # -----------------------------------------------------------------------------
 
+# Supplies the one protobuf symbol Falcor.dll imports but no packman package ships. Must come
+# before Falcor so the DLL exists next to the executable by the time anything is run; see
+# build_scripts/protoc_shim/protoc_shim.cpp for the full explanation and the removal condition.
+add_subdirectory(build_scripts/protoc_shim)
+
 add_subdirectory(Source/Falcor)
 add_subdirectory(Source/Modules)
 add_subdirectory(Source/Mogwai)
@@ -441,6 +446,14 @@ add_subdirectory(Source/Samples)
 add_subdirectory(Source/Tools)
 
 add_dependencies(Falcor copy_data_folder copy_scripts_folder)
+
+# Anything that loads Falcor.dll needs libprotoc.dll present, so tie the shim to Falcor rather than
+# leaving it as a standalone target. Without this, `cmake --build --target <a render pass>` never
+# builds it, and if the DLL is missing from the output directory the next run dies at 0xC0000135
+# before main() with no log -- which reads as a corrupt build. See build_scripts/protoc_shim/.
+if(TARGET protoc_shim)
+    add_dependencies(Falcor protoc_shim)
+endif()
 
 # Make Falcor core library depend on deploying all dependencies.
 add_dependencies(Falcor deploy_dependencies)
