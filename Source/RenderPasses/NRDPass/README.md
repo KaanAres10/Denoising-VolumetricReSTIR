@@ -297,6 +297,37 @@ The encoding constants exist so the value is written once rather than repeated p
 runtime check compares against *them* rather than a literal — so editing the constant cannot drift
 away from the check meant to police it.
 
+### Never pipe a Mogwai run through `Select-Object -First N`
+
+This is a harness pitfall, not a renderer bug, and it cost a whole debugging session by imitating one
+perfectly.
+
+```powershell
+# WRONG — kills the render
+& Mogwai.exe --script run.py --headless | Select-String "capturing" | Select-Object -First 1
+```
+
+`Select-Object -First N` closes the pipeline the moment N objects have passed. The scripts print
+`[...] capturing frame N` *before* rendering starts, so `-First 1` tears the pipeline down
+immediately, PowerShell terminates Mogwai mid-run, and the process reports exit `-1` (255). Nothing
+is written, because captures fire at the target frame plus a 60-frame flush margin.
+
+What makes it vicious is that the same command shape sometimes works: with `-First 4` and a pattern
+that never matches four lines, the pipeline stays open and the run completes. So identical-looking
+invocations succeed or fail depending on how many lines happen to match, which reads as
+non-determinism in the renderer. It was diagnosed as a DLL problem, then as a render-pass
+regression, and a working feature branch was reverted on the strength of it — before the run was
+finally invoked without the filter and exited 0 on the first try.
+
+```powershell
+# RIGHT — let it finish, then read the log
+& Mogwai.exe --script run.py --headless *> run.log
+Select-String -Path run.log -Pattern "capturing|Error"
+```
+
+Corollary for judging any failed run: **check whether the output files exist** before believing an
+exit code. A killed run and a crashed run look identical from the exit status alone.
+
 ## Settings that differ for volumetric input
 
 NRD is built for surface path tracing. Two of its passes assume things that do not hold for a
