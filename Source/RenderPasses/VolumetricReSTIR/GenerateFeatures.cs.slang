@@ -94,7 +94,8 @@ RWTexture2D<float> gMediumAlpha;
 RWTexture2D<float4> gMediumNormal;
 // Optical thickness along the primary ray. Saturates near 4.6 (the march's transmittance early-out).
 RWTexture2D<float> gOpticalThickness;
-// xyz = unit velocity direction (0 where the medium is still), w = magnitude in world units per frame.
+// xyz = velocity vector in world units per frame, w = its magnitude (redundant, but free, and .w does
+// not survive an EXR capture -- see the write site).
 RWTexture2D<float4> gVolumeVelocity;
 // Density at the scatter point; 0 where the ray met no medium.
 RWTexture2D<float> gScatterDensity;
@@ -264,8 +265,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 float3 v = 0.f;
                 if (hasMedium && gScene.volumeDesc.hasVelocity && gScene.volumeDesc.hasAnimation)
                     v = VelocityWorld(p) * gScene.volumeDesc.velocityScale;
-                float speed = length(v);
-                gVolumeVelocity[pixelPos] = float4(speed > 1e-8f ? v / speed : 0.f.xxx, speed);
+                // MEASURED ZERO on every baked asset, with all three flags above true. The cause is
+                // not here: GVDBBake hardcodes `isVelocity = 0` and exports only channel 0 of the
+                // atlas, while still setting hdr.hasVelocity = 1 whenever the *_velocity_*.vbx files
+                // merely exist -- and the baked loader then uploads that slot as a scalar R32Float
+                // into volIn[17], discarding the isVel flag it just read, so `velocityIn` (what
+                // getVelocityAtPoint samples) is never populated. See SceneGVDB.cpp:737-753 against
+                // the non-baked path at :544. Until the bake tool and that loader are fixed and the
+                // sequence re-baked, this guide is identically zero and so are the velocity-advected
+                // motion vectors -- which is exactly why VR_NRD_VOLMV measured 1.86e-05, i.e. nothing.
+                // xyz holds the RAW vector, not a normalized direction, so both features survive a
+                // capture: Falcor writes RGBA16Float to a 3-channel EXR and drops .w, which silently
+                // took the magnitude with it when the direction lived in xyz. Consumers reading the
+                // texture directly still get the magnitude from .w without recomputing it.
+                gVolumeVelocity[pixelPos] = float4(v, length(v));
             }
 
             if (gOutputScatterDensity)

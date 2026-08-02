@@ -51,6 +51,8 @@ namespace
     const std::string kOpticalThickness = "opticalThickness";
     const std::string kVolumeVelocity = "volumeVelocity";
     const std::string kScatterDensity = "scatterDensity";
+    const std::string kVolumeColor = "volumeColor";
+    const std::string kSurfaceColor = "surfaceColor";
 
     const Falcor::ChannelList kOutputChannels =
     {
@@ -83,16 +85,23 @@ namespace
         // exponent. R32Float, not R16: it is unbounded in principle, though the march's
         // transmittance early-out clamps it near 4.6 in practice.
         { kOpticalThickness, "gOpticalThickness", "optical thickness along the primary ray", true /* optional */, ResourceFormat::R32Float },
-        // Velocity of the medium at the scatter point: xyz = unit direction, w = magnitude in world
-        // units per frame. Zhang et al. list direction and magnitude as two separate features, and
-        // keeping them apart matters here -- magnitude is what a temporal denoiser needs to decide
-        // where reprojection should be distrusted. RGBA16Float, not a packed unsigned format: the
-        // direction is signed.
-        { kVolumeVelocity, "gVolumeVelocity", "medium velocity at the scatter point (xyz = direction, w = magnitude)", true /* optional */, ResourceFormat::RGBA16Float },
+        // Velocity of the medium at the scatter point: xyz = the vector, w = its magnitude. Zhang et
+        // al. list direction and magnitude as two separate features; both are recoverable from xyz,
+        // and keeping the raw vector there means a capture (3-channel EXR, .w dropped) does not lose
+        // one of them. RGBA16Float, not a packed unsigned format: velocity is signed.
+        { kVolumeVelocity, "gVolumeVelocity", "medium velocity at the scatter point (xyz = vector, w = magnitude)", true /* optional */, ResourceFormat::RGBA16Float },
         // Density at the scatter point. The one LOCAL volumetric quantity here -- transmittance,
         // optical thickness and scatter distance are all integrals along the ray, which average away
         // exactly the interior structure the denoiser is destroying.
-        { kScatterDensity, "gScatterDensity", "medium density at the expected scatter point", true /* optional */, ResourceFormat::R32Float }
+        { kScatterDensity, "gScatterDensity", "medium density at the expected scatter point", true /* optional */, ResourceFormat::R32Float },
+        // The radiance split. volumeColor + surfaceColor == accumulated_color exactly, so RGBA32Float
+        // to match it -- at RGBA16 the sum would not round-trip and the check that guards this would
+        // have to be loosened into uselessness.
+        //
+        // Stochastic, not a radiance decomposition: one reservoir per pixel means a pixel's whole
+        // contribution goes to one bucket. See FinalShading.cs.slang.
+        { kVolumeColor,   "gVolumeColor",  "radiance whose primary ray scattered in the medium", true /* optional */, ResourceFormat::RGBA32Float },
+        { kSurfaceColor,  "gSurfaceColor", "radiance from a surface or the background, through the medium", true /* optional */, ResourceFormat::RGBA32Float }
     };
 
     const Gui::DropdownList kEmissiveSamplerList =
@@ -1023,6 +1032,16 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (pLightDir)
             vars["gLightDir"] = pLightDir;
         vars["CB"]["gOutputLightDir"] = pLightDir != nullptr;
+
+        // The radiance split, gated per texture rather than as a pair -- the same lesson as the volume
+        // guides above, where one shared condition meant asking for a single output produced a
+        // silently zeroed buffer.
+        ref<Texture> pVolumeColor = renderData.getTexture(kVolumeColor);
+        ref<Texture> pSurfaceColor = renderData.getTexture(kSurfaceColor);
+        if (pVolumeColor) vars["gVolumeColor"] = pVolumeColor;
+        if (pSurfaceColor) vars["gSurfaceColor"] = pSurfaceColor;
+        vars["CB"]["gOutputVolumeColor"] = pVolumeColor != nullptr;
+        vars["CB"]["gOutputSurfaceColor"] = pSurfaceColor != nullptr;
 
         if (mParams.mUseSurfaceScene)
             vars["gVBuffer"] = mVBuffer;

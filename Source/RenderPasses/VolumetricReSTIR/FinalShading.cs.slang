@@ -55,6 +55,12 @@ cbuffer CB
     // Emit gLightDir. Separate from the other guides: only NRD's SH mode needs it, and it costs an
     // extra light-sample reconstruction per pixel.
     bool    gOutputLightDir;
+    // Split the radiance into the part that scattered in the medium and the part that came from a
+    // surface or the background through it. Zhang et al.'s core mechanism: denoise each with the
+    // features that suit it, instead of handing one composited image to surface-only guides.
+    // Gated per output, not as a pair -- see the volume guides for why one shared flag is a trap.
+    bool    gOutputVolumeColor;
+    bool    gOutputSurfaceColor;
     SamplingOptions gSamplingOptions;
     EnvMapSampler           envMapSampler; 
     EmissiveLightSampler    emissiveSampler; 
@@ -70,6 +76,17 @@ RWTexture2D<float4> gOutputFrame;
 /// mode, which packs "direction * luminance(radiance)" -- note this is the direction incoming
 /// RADIANCE comes from, so it is NOT interchangeable with mediumNormal.
 RWTexture2D<float4> gLightDir;
+/// The radiance split. gVolumeColor + gSurfaceColor == gOutputFrame exactly, by construction.
+///
+/// This is a STOCHASTIC decomposition, not a radiance decomposition. ReSTIR keeps ONE reservoir per
+/// pixel, so a pixel's entire contribution lands in whichever bucket its selected sample belongs to --
+/// each buffer is zero wherever the other one fired. The partition is not random, though: it is
+/// governed by whether the primary ray scattered in the medium, whose expectation is exactly the
+/// mediumAlpha guide. That is what makes demodulating by mediumAlpha before denoising necessary rather
+/// than merely helpful -- filtering a buffer that is zero on a random half of its pixels biases the
+/// result toward zero unless the coverage is divided out first.
+RWTexture2D<float4> gVolumeColor;
+RWTexture2D<float4> gSurfaceColor;
 #ifdef SURFACE_SCENE
 StructuredBuffer<VBufferItem> gVBuffer;
 #endif
@@ -146,6 +163,23 @@ void main(uint3 DTid : SV_DispatchThreadID)
     if (any(isnan(curColor) || isinf(curColor))) curColor = 0.f;
 
     gOutputFrame[pixelPos] = curColor;
+
+    if (gOutputVolumeColor || gOutputSurfaceColor)
+    {
+        // `depth == kRayTMax` is the same test evaluate_F itself uses to decide whether the sample
+        // scattered in the medium, so this classification costs nothing and cannot drift from the
+        // shading: no second evaluation, no duplicated branch inside evaluate_F.
+        //
+        // Reference mode has no reservoir -- gCurrentColors is a brute-force path trace -- so there is
+        // nothing to classify. Everything goes to the surface bucket rather than being silently
+        // dropped, which keeps the sum equal to the output in every mode.
+        // Zero in ALL four channels for the bucket that did not fire, alpha included, so that
+        // volume + surface == output exactly rather than only in rgb. A round-trip check that has to
+        // special-case a channel is a check that will eventually be relaxed and stop catching things.
+        const bool scatteredInMedium = !gUseReference && gCurReservoirs[pixelId].depth != kRayTMax;
+        if (gOutputVolumeColor) gVolumeColor[pixelPos] = scatteredInMedium ? curColor : float4(0.f);
+        if (gOutputSurfaceColor) gSurfaceColor[pixelPos] = scatteredInMedium ? float4(0.f) : curColor;
+    }
 
     if (gOutputLightDir)
     {
