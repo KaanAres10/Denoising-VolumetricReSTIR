@@ -61,6 +61,16 @@ cbuffer CB
     // Gated per output, not as a pair -- see the volume guides for why one shared flag is a trap.
     bool    gOutputVolumeColor;
     bool    gOutputSurfaceColor;
+    // Directly-visible emitters, split off so they can bypass the denoiser entirely. NRD demodulates
+    // radiance by diffuse albedo, and an emissive bulb has huge radiance with near-zero DIFFUSE
+    // albedo -- so it takes the full 1/minReflectance amplification (100x at the 0.01 floor), the
+    // a-trous filter smears that spike across its footprint, and re-modulation multiplies back each
+    // pixel's OWN albedo, which cannot retrieve energy already leaked into its neighbours. Measured
+    // on bistro: a ring 2 px around emitter cores comes out 14.7x brighter than raw, and the whole
+    // frame gains 10% energy. ModulateIllumination.emission is an additive input that exists exactly
+    // so emission can skip the filter.
+    bool    gOutputEmissiveColor;
+    bool    gOutputNonEmissiveColor;
     SamplingOptions gSamplingOptions;
     EnvMapSampler           envMapSampler; 
     EmissiveLightSampler    emissiveSampler; 
@@ -87,6 +97,10 @@ RWTexture2D<float4> gLightDir;
 /// result toward zero unless the coverage is divided out first.
 RWTexture2D<float4> gVolumeColor;
 RWTexture2D<float4> gSurfaceColor;
+/// gEmissiveColor + gNonEmissiveColor == gOutputFrame exactly, by construction -- the same
+/// complementary-pair shape as the volume/surface split, and verifiable the same way.
+RWTexture2D<float4> gEmissiveColor;
+RWTexture2D<float4> gNonEmissiveColor;
 #ifdef SURFACE_SCENE
 StructuredBuffer<VBufferItem> gVBuffer;
 #endif
@@ -179,6 +193,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
         const bool scatteredInMedium = !gUseReference && gCurReservoirs[pixelId].depth != kRayTMax;
         if (gOutputVolumeColor) gVolumeColor[pixelPos] = scatteredInMedium ? curColor : float4(0.f);
         if (gOutputSurfaceColor) gSurfaceColor[pixelPos] = scatteredInMedium ? float4(0.f) : curColor;
+    }
+
+    if (gOutputEmissiveColor || gOutputNonEmissiveColor)
+    {
+        // Same test the lightDir path already uses to recognise a self-emission reservoir.
+        // kSelfEmissionLightID is -3, i.e. NEGATIVE, so it must be compared explicitly rather than
+        // folded into a "< 0" check meant for the env map.
+        const bool isEmissive = !gUseReference && gCurReservoirs[pixelId].lightID == kSelfEmissionLightID;
+        if (gOutputEmissiveColor) gEmissiveColor[pixelPos] = isEmissive ? curColor : float4(0.f);
+        if (gOutputNonEmissiveColor) gNonEmissiveColor[pixelPos] = isEmissive ? float4(0.f) : curColor;
     }
 
     if (gOutputLightDir)

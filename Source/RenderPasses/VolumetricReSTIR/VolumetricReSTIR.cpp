@@ -53,6 +53,8 @@ namespace
     const std::string kScatterDensity = "scatterDensity";
     const std::string kVolumeColor = "volumeColor";
     const std::string kSurfaceColor = "surfaceColor";
+    const std::string kEmissiveColor = "emissiveColor";
+    const std::string kNonEmissiveColor = "nonEmissiveColor";
 
     const Falcor::ChannelList kOutputChannels =
     {
@@ -101,7 +103,11 @@ namespace
         // Stochastic, not a radiance decomposition: one reservoir per pixel means a pixel's whole
         // contribution goes to one bucket. See FinalShading.cs.slang.
         { kVolumeColor,   "gVolumeColor",  "radiance whose primary ray scattered in the medium", true /* optional */, ResourceFormat::RGBA32Float },
-        { kSurfaceColor,  "gSurfaceColor", "radiance from a surface or the background, through the medium", true /* optional */, ResourceFormat::RGBA32Float }
+        { kSurfaceColor,  "gSurfaceColor", "radiance from a surface or the background, through the medium", true /* optional */, ResourceFormat::RGBA32Float },
+        // Directly-visible emitters and everything else. RGBA32Float so the pair sums back to
+        // accumulated_color exactly; at RGBA16 the round trip would not close.
+        { kEmissiveColor, "gEmissiveColor", "radiance from directly-visible emitters", true /* optional */, ResourceFormat::RGBA32Float },
+        { kNonEmissiveColor, "gNonEmissiveColor", "radiance excluding directly-visible emitters", true /* optional */, ResourceFormat::RGBA32Float }
     };
 
     const Gui::DropdownList kEmissiveSamplerList =
@@ -1042,6 +1048,12 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (pSurfaceColor) vars["gSurfaceColor"] = pSurfaceColor;
         vars["CB"]["gOutputVolumeColor"] = pVolumeColor != nullptr;
         vars["CB"]["gOutputSurfaceColor"] = pSurfaceColor != nullptr;
+        ref<Texture> pEmissive = renderData.getTexture(kEmissiveColor);
+        ref<Texture> pNonEmissive = renderData.getTexture(kNonEmissiveColor);
+        if (pEmissive) vars["gEmissiveColor"] = pEmissive;
+        if (pNonEmissive) vars["gNonEmissiveColor"] = pNonEmissive;
+        vars["CB"]["gOutputEmissiveColor"] = pEmissive != nullptr;
+        vars["CB"]["gOutputNonEmissiveColor"] = pNonEmissive != nullptr;
 
         if (mParams.mUseSurfaceScene)
             vars["gVBuffer"] = mVBuffer;

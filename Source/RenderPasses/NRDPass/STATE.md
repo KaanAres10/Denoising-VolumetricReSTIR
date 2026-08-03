@@ -46,7 +46,7 @@ easier to resolve.
 Harness: `Scripts/flicker.py` (fixed camera dolly, consecutive captures, `VR_DENOISER`, `VR_TIME`)
 and `Scripts/flick_measure.py`.
 
-## Open: emissive surfaces bloom
+## FIXED: emissive surfaces bloomed
 
 Reported visually -- light bulbs read far too bright and too large. Three facts line up into a
 mechanism, not yet confirmed by measurement:
@@ -81,7 +81,30 @@ leak reaches 8 px instead of 4 and the frame doubles. The existing 100000 was th
 "restore NRD's default" would have been the wrong move here despite being right for
 historyFixFrameNum. Exposed as `VR_NRD_MAXINT` so this stays reproducible.
 
-That leaves the real fix: route emission AROUND the denoiser. Emission has no business being
+FIXED by routing emission around the denoiser (`VR_NRD_EMISSION=1`). FinalShading emits
+`emissiveColor` / `nonEmissiveColor` as a complementary pair, the adapter denoises only the
+non-emissive half, and `ModulateIllumination.emission` adds the emitters back untouched. Round trip
+with the denoiser bypassed closes at 1.22e-04, inside the fp16 floor and better than the albedo-only
+path because emission no longer passes through NRD's fp16 output texture.
+
+| config | r=2 | r=4 | r=8 | frame |
+|---|---|---|---|---|
+| raw ReSTIR | 1.00 | 1.00 | 1.00 | 1.00 |
+| emission denoised (before) | 6.89 | 3.50 | 2.29 | 1.48 |
+| emission bypassed (fix) | 1.44 | 1.57 | 1.53 | 1.44 |
+
+The distance-dependent falloff (6.89 -> 3.50 -> 2.29) is replaced by a flat ~1.5x, i.e. ordinary
+denoiser gain rather than energy leaking outward from emitters.
+
+Two measurement traps hit while confirming this, both from comparing across runs: the first
+"before" numbers used a capture taken before the tonemapper was switched to Linear, and a second
+attempt still mixed tonemappers. Only a pair captured from the SAME build with byte-identical raw
+(verified max|d| = 0) is meaningful.
+
+Still open: the residual flat 1.44x. That is not bloom, and it may simply be what demodulation plus
+filtering does to this scene -- but it has not been explained.
+
+Superseded note on the original diagnosis: Emission has no business being
 divided by a diffuse albedo it was never multiplied by, and `ModulateIllumination.emission` is an
 additive input that exists precisely so it can bypass the filter. It needs the estimator to emit
 directly-visible emissive radiance as its own buffer -- the same shape of change as the volume /

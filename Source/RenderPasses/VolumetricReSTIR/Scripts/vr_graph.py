@@ -600,8 +600,17 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
             props.update({"upscale": True, "upscaleRatio": upscale_ratio if upscale_ratio is not None else 0.58})
         elif render is not None:
             props.update({"outputSize": "Fixed", "fixedOutputSize": render})
+        # VR_NRD_EMISSION=1 routes directly-visible emitters AROUND the denoiser. NRD demodulates by
+        # diffuse albedo, and an emissive bulb has huge radiance with near-zero DIFFUSE albedo, so it
+        # takes the full 1/minReflectance amplification -- 100x at the 0.01 floor. The filter then
+        # smears that spike across its footprint and re-modulation cannot pull it back, because it
+        # multiplies each pixel by its OWN albedo rather than the emitter's. Measured on bistro: a
+        # ring 2 px around emitter cores is 14.7x brighter than raw, and the frame gains 10% energy.
+        # maxIntensity is NOT the lever -- lowering it to NRD's default made the bloom worse.
+        emission = env_bool("VR_NRD_EMISSION", False)
+        denoised_in = restir + ".nonEmissiveColor" if emission else color
         g.addPass(createPass("NRDAdapter", props), adapter)
-        g.addEdge(color, adapter + ".color")
+        g.addEdge(denoised_in, adapter + ".color")
         g.addEdge(restir + ".scatterDistance", adapter + ".scatterDistance")
         if voldemod:
             g.addEdge(restir + ".scatterDensity", adapter + ".scatterDensity")
@@ -739,6 +748,9 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
             g.addEdge(adapter + ".demodDivisor", "ModulateIllumination.diffuseReflectance")
         else:
             g.addEdge(gd + ".diffuseAlbedo", "ModulateIllumination.diffuseReflectance")
+        # Additive, and never filtered. emissive + denoised(non-emissive) reconstructs the original.
+        if emission:
+            g.addEdge(restir + ".emissiveColor", "ModulateIllumination.emission")
 
         # VR_NRD_TAA=1 appends temporal anti-aliasing. This is not a denoiser setting -- it addresses
         # a DIFFERENT artifact that no amount of denoising can remove.
