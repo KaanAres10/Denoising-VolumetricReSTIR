@@ -44,6 +44,10 @@ private:
     /// Feed the real surface normal, or a constant (ablation).
     bool mUseNormalGuide = true;
 
+    /// Pack SH0/SH1 in REBLUR's YCoCg convention instead of RELAX's linear RGB. The two front ends
+    /// disagree and neither validates its input; see NRDAdapter.cs.slang.
+    bool mShYCoCg = false;
+
     /// Divide the medium's large-scale structure out of the radiance before NRD sees it. Off by
     /// default: it changes what the denoiser is fed. See NRDAdapter.cs.slang for the blur measurements.
     /// Divide by the local rate at which this half won the reservoir, undoing the bias the stochastic

@@ -787,7 +787,10 @@ void NRDPass::execute(RenderContext* pRenderContext, const RenderData& renderDat
                 renderData.getTexture(kInputDiffuseSh0),
                 renderData.getTexture(kInputDiffuseSh1),
                 renderData.getTexture(kOutputFilteredDiffuseRadianceHitDist),
-                true // the adapter's pair is still linear RGB; NRD never ran to convert it
+                // Linear RGB only under RELAX. Under REBLUR the adapter already packed YCoCg, so
+                // asserting linear here would double-convert -- and this bypass IS the identity
+                // test, so getting it wrong hides the very bug it exists to catch.
+                mDenoisingMethod == DenoisingMethod::RelaxDiffuseSh
             );
         }
 #endif

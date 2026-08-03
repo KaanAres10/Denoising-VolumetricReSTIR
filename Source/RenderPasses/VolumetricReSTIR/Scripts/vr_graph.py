@@ -424,6 +424,7 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
             props["minReflectance"] = 1.0
         if sh:
             props["shMode"] = True
+            props["shYCoCg"] = method.lower().startswith("reblur")
         if render is not None:
             props.update({"outputSize": "Fixed", "fixedOutputSize": render})
         g.addPass(createPass("NRDAdapter", props), name)
@@ -592,6 +593,7 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
                  "volumeStructureFloor": env_float("VR_NRD_VOLFLOOR", 0.05)}
         if env_bool("VR_NRD_SH", False):
             props["shMode"] = True
+            props["shYCoCg"] = env("VR_NRD_METHOD", "").lower().startswith("reblur")
         if not demodulate:
             props["minReflectance"] = 1.0
         if upscaling:

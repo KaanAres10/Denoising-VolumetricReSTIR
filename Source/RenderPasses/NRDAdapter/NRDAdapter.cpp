@@ -30,6 +30,7 @@ const char kVolumeStructureBlur[] = "volumeStructureBlur";
 const char kVolumeStructureFloor[] = "volumeStructureFloor";
 #if FALCOR_HAS_NRD4
 const char kShMode[] = "shMode";
+const char kShYCoCg[] = "shYCoCg";
 // Direction the reservoir's light arrives from, .w = 1 when trustworthy (VolumetricReSTIR.lightDir).
 const char kLightDirInput[] = "lightDir";
 const char kDiffuseSh0Output[] = "diffuseSh0";
@@ -69,6 +70,8 @@ NRDAdapter::NRDAdapter(ref<Device> pDevice, const Properties& props) : RenderPas
 #if FALCOR_HAS_NRD4
         else if (key == kShMode)
             mShMode = value;
+        else if (key == kShYCoCg)
+            mShYCoCg = value;
 #endif
         else if (key == "outputSize")
             mOutputSizeSelection = value;
@@ -269,6 +272,7 @@ void NRDAdapter::execute(RenderContext* pRenderContext, const RenderData& render
     var["CB"]["gMissHitDistance"] = mMissHitDistance;
     var["CB"]["gUseScatterDistance"] = mUseScatterDistance;
     var["CB"]["gUseNormalGuide"] = mUseNormalGuide;
+    var["CB"]["gShYCoCg"] = mShYCoCg;
     var["CB"]["gNormalizeBySelection"] = mNormalizeBySelection;
     var["CB"]["gSelectionBlur"] = mSelectionBlur;
     var["CB"]["gSelectionFloor"] = mSelectionFloor;

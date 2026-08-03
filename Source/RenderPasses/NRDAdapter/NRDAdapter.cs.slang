@@ -33,6 +33,14 @@ cbuffer CB
     // Ablation switch for the normal guide: false feeds the miss sentinel everywhere,
     // i.e. a constant orientation carrying no geometric information.
     bool gUseNormalGuide;
+    // REBLUR and RELAX pack SH0/SH1 DIFFERENTLY, and neither validates what it is given.
+    //   RELAX_FrontEnd_PackSh:  out0 = float4(radiance, hitDist)          -- linear RGB
+    //   REBLUR_FrontEnd_PackSh: out0 = float4(sg.c0, sg.chroma, hitDist)  -- YCoCg via _NRD_SG_Create
+    // SH1 differs too: RELAX scales the direction by Rec.709 luminance, REBLUR by the YCoCg luma.
+    // Packing RELAX's layout and handing it to REBLUR does not convert anything -- it reinterprets
+    // RGB as (luma, chroma), which comes out green-cast and ~30% off in mean energy. That is exactly
+    // what the first REBLUR-SH capture looked like.
+    bool gShYCoCg;
 
     // --- volumetric demodulation ---
     // NRD's input slots are fixed (viewZ, normal+roughness, motion, radiance+hitDist, confidence), so
@@ -234,10 +242,21 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     // Zero direction where the estimator could not supply one, rather than a guessed one: an SH1 of
     // zero means "no directional information for this pixel", which is exactly what is true.
     const float3 dir = dirValid ? lightDir : float3(0.f);
-    const float lum = dot(demodulated, float3(0.2126f, 0.7152f, 0.0722f));
-
-    gOutDiffuseSh0[pixel] = float4(demodulated, hitDist);
-    gOutDiffuseSh1[pixel] = float4(dir * lum, 0.f);
+    if (gShYCoCg)
+    {
+        // Mirrors _NRD_LinearToYCoCg + _NRD_SG_Create in external/nrd-4/Shaders/NRD.hlsli.
+        const float3 ycocg = float3(dot(demodulated, float3(0.25f, 0.5f, 0.25f)),
+                                    dot(demodulated, float3(0.5f, 0.0f, -0.5f)),
+                                    dot(demodulated, float3(-0.25f, 0.5f, -0.25f)));
+        gOutDiffuseSh0[pixel] = float4(ycocg, hitDist);
+        gOutDiffuseSh1[pixel] = float4(dir * ycocg.x, 0.f);   // REBLUR scales by the YCoCg luma
+    }
+    else
+    {
+        const float lum = dot(demodulated, float3(0.2126f, 0.7152f, 0.0722f));
+        gOutDiffuseSh0[pixel] = float4(demodulated, hitDist);
+        gOutDiffuseSh1[pixel] = float4(dir * lum, 0.f);       // RELAX scales by Rec.709 luminance
+    }
 #else
     gOutDiffuseRadianceHitDist[pixel] = float4(demodulated, hitDist);
 #endif
