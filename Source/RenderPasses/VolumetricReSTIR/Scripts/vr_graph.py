@@ -394,7 +394,7 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     sh = env_bool("VR_NRD_SH", False)
     method = env("VR_NRD_METHOD", "RelaxDiffuseSh" if sh else "RelaxDiffuse")
 
-    def adapter(name, src, normal_src, demodulate):
+    def adapter(name, src, normal_src, demodulate, hitdist_src):
         # minReflectance 1.0 makes the divisor exactly 1, because albedo is always <= 1. That is how
         # the volume half opts out of albedo demodulation -- a surface albedo is not a property the
         # in-scattered radiance was ever multiplied by, so dividing by it would be inventing a
@@ -429,7 +429,12 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
             props.update({"outputSize": "Fixed", "fixedOutputSize": render})
         g.addPass(createPass("NRDAdapter", props), name)
         g.addEdge(src, name + ".color")
-        g.addEdge(restir + ".scatterDistance", name + ".scatterDistance")
+        # Each half gets ITS OWN hit distance. Both used to receive the medium's scatterDistance,
+        # which told the SURFACE denoiser "the hit is at the scatter point" rather than at the wall.
+        # RELAX ignores hit distance entirely with the pre-pass off -- measured byte-identical with
+        # VR_NRD_HITDIST=0 -- so it never noticed. REBLUR is hit-distance DRIVEN and sizes its kernel
+        # from it, so the bug landed squarely on REBLUR, in exactly the region where the medium is.
+        g.addEdge(hitdist_src, name + ".scatterDistance")
         g.addEdge(normal_src, name + ".guideNormalW")
         g.addEdge(gbuffer + ".specRough", name + ".specRough")
         g.addEdge(gd + ".diffuseAlbedo", name + ".diffuseAlbedo")
@@ -460,8 +465,12 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         return name
 
     # --- surface half: exactly the guides RELAX was designed for ---
+    # linearZ is RG32Float with view-space Z in .x, which the adapter's single-channel input reads
+    # directly. It is a view Z rather than a ray distance -- they differ by the view-direction cosine
+    # -- but it describes the SURFACE, which scatterDistance does not.
     a_s = adapter("NRDAdapterSurface", restir + ".surfaceColor",
-                  gbuffer + ".guideNormalW", demodulate=env_bool("VR_NRD_DEMOD", True))
+                  gbuffer + ".guideNormalW", demodulate=env_bool("VR_NRD_DEMOD", True),
+                  hitdist_src=gbuffer + ".linearZ")
     n_s = denoiser("NRDSurface", a_s, gbuffer + ".linearZ", gbuffer + ".mvec",
                    env_int("VR_NRD_SURF_ACCUM", 30), env_float("VR_NRD_SURF_PHI", 2.0))
 
@@ -477,7 +486,8 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     # to get the density gradient instead. Either way it beats the wall's normal, which actively
     # asserts edges that are not in the medium.
     a_v = adapter("NRDAdapterVolume", restir + ".volumeColor",
-                  restir + ".mediumNormal", demodulate=False)
+                  restir + ".mediumNormal", demodulate=False,
+                  hitdist_src=restir + ".scatterDistance")
     n_v = denoiser("NRDVolume", a_v, restir + ".linearZ", restir + ".mvec",
                    env_int("VR_NRD_VOL_ACCUM", 30), env_float("VR_NRD_VOL_PHI", 2.0))
 

@@ -19,7 +19,7 @@ vr.bind(m)
 RENDER = vr.env_size("VR_DISPLAY", (1280, 720))
 WARM = vr.env_int("VR_FLICK_WARM", 40)     # frames of motion before capturing, so history is settled
 N = vr.env_int("VR_FLICK_N", 6)            # consecutive frames to capture
-SPEED = vr.env_float("VR_FLICK_SPEED", 0.02)
+SPEED = vr.env_float("VR_FLICK_SPEED", 0.012)   # radians/frame for the orbit
 
 g = RenderGraph("flicker")
 scene = vr.load_scene("bistro")
@@ -50,15 +50,35 @@ vr.pin_clock()
 # Fixed, reproducible camera path: a steady dolly. Deterministic per frame index, so two runs with
 # different denoiser settings see byte-identical camera motion and the comparison is fair.
 cam = m.scene.camera
-p0 = cam.position
-t0 = cam.target
-d = float3(t0.x - p0.x, t0.y - p0.y, t0.z - p0.z)
+
+# Bistro's authored reference orbit, taken from the pre-Falcor-8 capture script rather than invented:
+# a 180-degree sweep around a point out in the plaza, at constant height, always looking at it.
+#
+#     ORBIT_CENTER = (-11.0, 6.025879, 0.0)   radius ~9.37   -180 degrees over 300 frames
+#
+# The centre matters and is NOT the camera's target. Bistro's target sits 0.95 units from the camera,
+# so orbiting around IT is the camera spinning on the spot -- which disoccludes violently and made
+# every denoiser score ~4x worse. That was a property of the path, not of rotation.
+import math
+
+ORBIT_CENTER = (-11.0, 6.025879, 0.0)
+ORBIT_DEGREES = vr.env_float("VR_ORBIT_DEG", -180.0)
+ORBIT_FRAMES = vr.env_int("VR_ORBIT_FRAMES", 300)
+
+_cx, _cy, _cz = ORBIT_CENTER
+_p = cam.position
+_radius = math.sqrt((_p.x - _cx) ** 2 + (_p.z - _cz) ** 2)
+_y = _p.y                      # constant height, as in the original
+_a0 = math.atan2(_p.z - _cz, _p.x - _cx)
+_step = (ORBIT_DEGREES * math.pi / 180.0) / max(1, ORBIT_FRAMES - 1)
+print("[flicker] orbit r=%.3f about (%.2f,%.2f,%.2f), %.4f rad/frame"
+      % (_radius, _cx, _cy, _cz, _step))
 
 
 def place(i):
-    s = SPEED * i
-    cam.position = float3(p0.x + d.x * s, p0.y + d.y * s, p0.z + d.z * s)
-    cam.target = float3(t0.x + d.x * s, t0.y + d.y * s, t0.z + d.z * s)
+    a = _a0 + _step * i
+    cam.position = float3(_cx + _radius * math.cos(a), _y, _cz + _radius * math.sin(a))
+    cam.target = float3(_cx, _cy, _cz)
 
 
 out_dir = os.environ["VR_OUT_DIR"]
