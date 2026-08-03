@@ -46,10 +46,37 @@ easier to resolve.
 Harness: `Scripts/flicker.py` (fixed camera dolly, consecutive captures, `VR_DENOISER`, `VR_TIME`)
 and `Scripts/flick_measure.py`.
 
+## Open: emissive surfaces bloom
+
+Reported visually -- light bulbs read far too bright and too large. Three facts line up into a
+mechanism, not yet confirmed by measurement:
+
+* `NRDAdapter::mMinReflectance = 0.01`, so demodulation divides by at least 0.01 -- up to 100x
+  amplification wherever diffuse albedo is near black.
+* `ModulateIllumination.emission` is never wired. Emission therefore rides inside
+  `accumulated_color`, gets demodulated by an albedo it was never multiplied by, and is denoised.
+* `maxIntensity` is 100000 against NRD's default of 1000, so nothing clamps the resulting spike.
+
+An emissive bulb has huge radiance and near-zero DIFFUSE albedo, so it takes the full 100x
+amplification. NRD then spreads that spike across its filter footprint, and re-modulation multiplies
+back each pixel's OWN albedo -- which cannot retrieve energy that has already leaked into
+neighbours. NVIDIA's guidance is that emission must not be denoised at all; the additive `emission`
+input on ModulateIllumination exists for exactly this.
+
+Test before fixing: capture `NRDAdapter.diffuseRadianceHitDist` and check whether its maxima sit on
+emissive geometry, and whether the bloom scales with `minReflectance`. If it does, the fix is to
+route emission around the denoiser rather than to raise the floor.
+
 ## Next, in order
 
-1. **Measure SH mode.** `VR_NRD_SH=1` with `RelaxDiffuseSh` and `ReblurDiffuseSh`, single and split,
-   plus the `Dc` vs `Cosine` resolve A/B. This is the run that decides whether the RR gap is real.
+0. **Confirm and fix the emissive bloom above.** Cheapest visible-quality win on the list.
+1. ~~Measure SH mode.~~ DONE. SH lands within noise of non-SH for both denoisers (RELAX 0.10703 vs
+   0.10719; REBLUR-SH 0.08281 vs 0.08370), so it does NOT close the RR gap -- RR keeps a ~3x
+   sharpness lead over every NRD configuration tested. The first REBLUR-SH attempt was invalid: the
+   adapter packed RELAX's linear-RGB SH layout for REBLUR, which expects YCoCg, so REBLUR
+   reinterpreted the channels (green cast, +30% energy). Fixed in `ee9cf95`; the identity test now
+   covers that path. The `Cosine` resolve is separately confirmed wrong for a medium: 45% darker and
+   the worst flicker of any anti-aliased row.
 2. **Sweep `NRD4_MINLUMW`** (0.0 / 0.3 / 0.6) on REBLUR split + TAA. Committed but never run — the
    sweep silently produced no captures, see the harness trap below. Rationale: RELAX/REBLUR see a
    structural zero beside a bright pixel, read a large luminance difference and refuse to blend, so
