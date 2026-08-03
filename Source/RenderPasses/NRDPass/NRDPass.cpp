@@ -265,7 +265,28 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     //     bistro  2.132e-04 -> 7.707e-05   (2.8x better)
     //     plume   1.059e-03 -> 1.059e-03   (byte-identical; no history resets to fix)
     // Strictly non-negative: it either helps or costs nothing on the scenes we have.
-    mRelaxSettings.historyFixFrameNum = 0;
+    //
+    // THAT CONCLUSION WAS WRONG, and specifically wrong because of how it was measured. Every number
+    // above was taken with a PINNED camera. History fix exists for pixels that have just been
+    // DISOCCLUDED, and a static camera barely disoccludes anything -- so the test could not see what
+    // the setting is for, and "strictly non-negative" only held inside that regime.
+    //
+    // Measured again with the camera moving on a fixed dolly (scratchpad flicker harness: capture
+    // consecutive frames, take the SECOND temporal difference so smooth motion cancels and only
+    // flicker remains), bistro, single denoiser:
+    //
+    //     historyFixFrameNum 0 (ours)                 0.46561
+    //     historyFixFrameNum 3 (NRD default)          0.41773   -10.3%
+    //     + diffusePrepassBlurRadius 30 (NRD default) 0.41464   -10.9%
+    //
+    // So NRD's default is restored. The static-scene MSE win for 0 is real but regime-specific, and
+    // a still camera is not the case this renderer is for.
+    //
+    // NOTE the opposite holds for the SPLIT path (VR_NRD_SPLIT=1): there each half of the radiance is
+    // punched through with structural zeros where the other half won the reservoir, and both of these
+    // settings work by spreading information spatially, so they spread the zeros and make it worse.
+    // That is why the split tunes its two branches separately.
+    mRelaxSettings.historyFixFrameNum = 3;
 
     // Debug overrides for the settings above. Not a substitute for Properties -- these exist so the
     // measurements quoted in this file (and in README.md) can be reproduced without a rebuild, and
