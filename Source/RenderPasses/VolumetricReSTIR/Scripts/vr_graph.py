@@ -368,7 +368,7 @@ _SIMPLE = {
 DENOISERS = ["none", "oidn", "oidncpu", "optix", "sr", "rr", "nrd"]
 
 
-def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True):
+def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True, emission=False):
     """Denoise the medium and the surfaces SEPARATELY, then add them back together.
 
     The problem this exists to fix, measured on bistro frame 40: NRD reduces Laplacian variance 6.5x
@@ -488,6 +488,10 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     g.addEdge(n_s + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.diffuseRadiance")
     g.addEdge(gd + ".diffuseAlbedo", "ModulateIllumination.diffuseReflectance")
     g.addEdge(n_v + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.residualRadiance")
+    # Emitters skip both denoisers. FinalShading drops them from the volume/surface pair when
+    # emissiveColor is connected, so the three buffers still sum to the original exactly.
+    if emission:
+        g.addEdge(restir + ".emissiveColor", "ModulateIllumination.emission")
     return "ModulateIllumination.output"
 
 
@@ -573,7 +577,8 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # VR_NRD_SPLIT=1 denoises the medium and the surfaces separately -- see add_nrd_split for
         # why, and for what it needs from the estimator.
         if env_bool("VR_NRD_SPLIT", False) and guides:
-            return add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=nrd_enabled)
+            return add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=nrd_enabled,
+                                 emission=env_bool("VR_NRD_EMISSION", False))
 
         adapter = "NRDAdapter"
         # VR_NRD_HITDIST=0 ablates the hit-distance guide (constant everywhere). Every guide fed to

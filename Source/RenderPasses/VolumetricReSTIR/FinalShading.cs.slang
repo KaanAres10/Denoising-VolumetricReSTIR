@@ -178,6 +178,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     gOutputFrame[pixelPos] = curColor;
 
+    // Computed first so the volume/surface split can exclude it: when emission is routed around the
+    // denoiser it must appear in exactly ONE of the three buffers, or compositing double-counts it.
+    // With emission split off, volume + surface + emissive == gOutputFrame.
+    const bool isEmissiveSample = !gUseReference && gCurReservoirs[pixelId].lightID == kSelfEmissionLightID;
+    const bool splitDropsEmissive = gOutputEmissiveColor && isEmissiveSample;
+
     if (gOutputVolumeColor || gOutputSurfaceColor)
     {
         // `depth == kRayTMax` is the same test evaluate_F itself uses to decide whether the sample
@@ -191,8 +197,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         // volume + surface == output exactly rather than only in rgb. A round-trip check that has to
         // special-case a channel is a check that will eventually be relaxed and stop catching things.
         const bool scatteredInMedium = !gUseReference && gCurReservoirs[pixelId].depth != kRayTMax;
-        if (gOutputVolumeColor) gVolumeColor[pixelPos] = scatteredInMedium ? curColor : float4(0.f);
-        if (gOutputSurfaceColor) gSurfaceColor[pixelPos] = scatteredInMedium ? float4(0.f) : curColor;
+        const float4 splitColor = splitDropsEmissive ? float4(0.f) : curColor;
+        if (gOutputVolumeColor) gVolumeColor[pixelPos] = scatteredInMedium ? splitColor : float4(0.f);
+        if (gOutputSurfaceColor) gSurfaceColor[pixelPos] = scatteredInMedium ? float4(0.f) : splitColor;
     }
 
     if (gOutputEmissiveColor || gOutputNonEmissiveColor)
@@ -200,7 +207,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         // Same test the lightDir path already uses to recognise a self-emission reservoir.
         // kSelfEmissionLightID is -3, i.e. NEGATIVE, so it must be compared explicitly rather than
         // folded into a "< 0" check meant for the env map.
-        const bool isEmissive = !gUseReference && gCurReservoirs[pixelId].lightID == kSelfEmissionLightID;
+        const bool isEmissive = isEmissiveSample;
         if (gOutputEmissiveColor) gEmissiveColor[pixelPos] = isEmissive ? curColor : float4(0.f);
         if (gOutputNonEmissiveColor) gNonEmissiveColor[pixelPos] = isEmissive ? float4(0.f) : curColor;
     }
