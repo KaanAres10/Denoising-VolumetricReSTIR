@@ -111,6 +111,35 @@ directly-visible emissive radiance as its own buffer -- the same shape of change
 surface split in `FinalShading.cs.slang`, and verifiable the same way: with the denoiser bypassed,
 emission + denoised must reconstruct `accumulated_color` exactly.
 
+## Open: REBLUR is fed the wrong hit distance, and normalising is not the fix
+
+REBLUR's smoke reads see-through while RELAX's stays opaque. Chasing that led to two findings, the
+second of which supersedes the first.
+
+1. We never call `REBLUR_FrontEnd_GetNormHitDist`. REBLUR wants `normHitDist` in [0;1] and must be
+   told the normalisation via `nrd::HitDistanceParameters`; we write raw metres. RELAX takes raw
+   metres by design, which is why only REBLUR is affected -- and REBLUR sizes its blur kernel from
+   that value, so it blurs near-maximally everywhere, which is what dissolves the medium.
+
+2. But normalising alone does NOT fix it. With the defaults (A=3, B=0.1, C=20) and diffuse
+   roughness, `smc -> 1`, so `f = 3 + 0.1*viewZ`. At viewZ ~12 m that is f ~4.2, and a 12 m hit
+   still normalises to `saturate(12/4.2) = 1.0`. Saturated either way.
+
+   The reason is semantic, and NRD.hlsli states it outright: hit distance "must not include primary
+   hit distance". `scatterDistance` is camera-to-scatter-point, i.e. exactly a primary distance.
+   Normalising it would convert the wrong quantity into the right units.
+
+So the question to answer first is what hit distance MEANS for a participating medium. Candidates,
+none yet tested:
+  * the distance from the scatter point to the next event (a secondary distance, which is what NRD
+    asks for) -- the estimator does not currently emit it;
+  * a transmittance-derived length such as the mean free path 1/sigma_t, which is the medium's own
+    characteristic scale and is what REBLUR's kernel radius arguably should track;
+  * nothing at all -- `VR_NRD_HITDIST=0` feeds a constant, and on RELAX that was measured
+    byte-identical, so REBLUR is the only denoiser for which this guide does anything.
+
+Until that is settled, EVERY REBLUR number in this file was measured with a saturated kernel.
+
 ## Next, in order
 
 0. **Confirm and fix the emissive bloom above.** Cheapest visible-quality win on the list.
