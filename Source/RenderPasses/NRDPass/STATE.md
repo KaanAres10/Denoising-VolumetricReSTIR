@@ -63,9 +63,30 @@ back each pixel's OWN albedo -- which cannot retrieve energy that has already le
 neighbours. NVIDIA's guidance is that emission must not be denoised at all; the additive `emission`
 input on ModulateIllumination exists for exactly this.
 
-Test before fixing: capture `NRDAdapter.diffuseRadianceHitDist` and check whether its maxima sit on
-emissive geometry, and whether the bloom scales with `minReflectance`. If it does, the fix is to
-route emission around the denoiser rather than to raise the floor.
+CONFIRMED by measurement. Emitter cores are the top 0.1% of the RAW image (unfiltered, so their
+extent is the true extent); the table is mean luminance in a ring at distance r, as a ratio to raw,
+where 1.00 would mean no leakage. The cores themselves are saturated and cannot show the effect.
+
+| config | r=2 | r=4 | r=8 | whole frame |
+|---|---|---|---|---|
+| raw ReSTIR | 1.00 | 1.00 | 1.00 | 1.00 |
+| maxIntensity 100000 (ours) | 14.72 | 1.91 | 1.09 | 1.10 |
+| maxIntensity 1000 (NRD default) | 17.51 | 8.06 | 4.60 | 2.29 |
+
+So energy really is being spread outward from emitters -- 14.7x immediately around them, decaying to
+baseline by ~8 px, with the whole frame 10% brighter, i.e. energy ADDED rather than redistributed.
+
+`maxIntensity` is NOT the lever. Lowering it to NRD's default makes the bloom markedly worse: the
+leak reaches 8 px instead of 4 and the frame doubles. The existing 100000 was the right call, and
+"restore NRD's default" would have been the wrong move here despite being right for
+historyFixFrameNum. Exposed as `VR_NRD_MAXINT` so this stays reproducible.
+
+That leaves the real fix: route emission AROUND the denoiser. Emission has no business being
+divided by a diffuse albedo it was never multiplied by, and `ModulateIllumination.emission` is an
+additive input that exists precisely so it can bypass the filter. It needs the estimator to emit
+directly-visible emissive radiance as its own buffer -- the same shape of change as the volume /
+surface split in `FinalShading.cs.slang`, and verifiable the same way: with the denoiser bypassed,
+emission + denoised must reconstruct `accumulated_color` exactly.
 
 ## Next, in order
 

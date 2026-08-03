@@ -442,7 +442,7 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         # smoother than the surfaces around it (scale-free gradient energy 56.9 vs 247.2 inside and
         # outside the plume), so the volume half can be filtered harder without destroying anything
         # that is actually there, while the surface half must stay conservative.
-        props = {"method": method, "worldSpaceMotion": False, "maxIntensity": 100000.0,
+        props = {"method": method, "worldSpaceMotion": False, "maxIntensity": env_float("VR_NRD_MAXINT", 100000.0),
                  "enabled": nrd_enabled,
                  "diffuseMaxAccumulatedFrameNum": accum,
                  "diffusePhiLuminance": phi}
@@ -639,7 +639,7 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # distance -- are reachable from NRDPass but are NOT wired into this graph.
         method = env("VR_NRD_METHOD", "RelaxDiffuseSh" if sh else "RelaxDiffuse")
         nrd_props = {"method": method,
-                     "worldSpaceMotion": False, "maxIntensity": 100000.0, "enabled": nrd_enabled}
+                     "worldSpaceMotion": False, "maxIntensity": env_float("VR_NRD_MAXINT", 100000.0), "enabled": nrd_enabled}
         if sh:
             nrd_props["shResolveMode"] = env("VR_NRD_SH_RESOLVE", "Dc")
         # VR_NRD_VALIDATION=1 renders NRD's own debug overlay (viewZ, normals, motion vectors,
