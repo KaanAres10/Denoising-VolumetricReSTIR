@@ -401,6 +401,12 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         # divisor and the re-modulation would then have to invent the same one back.
         props = {"useScatterDistance": env_bool("VR_NRD_HITDIST", True),
                  "useNormalGuide": env_bool("VR_NRD_NORMALS", True),
+                 # Substituted where the hit distance is absent, and fed EVERYWHERE when
+                 # VR_NRD_HITDIST=0. The 1000 default sits far past REBLUR's normalisation scale
+                 # (f = A + |viewZ|*B, about 4 at these depths), so it saturates -- meaning the
+                 # ablation switch feeds a MORE saturated value than the real guide rather than a
+                 # neutral one. Exposed so the kernel can actually be driven small.
+                 "missHitDistance": env_float("VR_NRD_MISSHIT", 1000.0),
                  # MEASURED WRONG, off by default. The idea was to divide out the rate at which this
                  # half won the reservoir, on the theory that the split's structural zeros bias it
                  # dark. They do not: ReSTIR's own weight W = runningSum/(p_y*M) ALREADY accounts for

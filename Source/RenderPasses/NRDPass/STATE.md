@@ -138,7 +138,26 @@ none yet tested:
   * nothing at all -- `VR_NRD_HITDIST=0` feeds a constant, and on RELAX that was measured
     byte-identical, so REBLUR is the only denoiser for which this guide does anything.
 
-Until that is settled, EVERY REBLUR number in this file was measured with a saturated kernel.
+TESTED, AND THE SATURATED-KERNEL EXPLANATION DOES NOT HOLD. `missHitDistance` is now exposed as
+`VR_NRD_MISSHIT`, so the guide can be driven to any constant. Sweeping it 3000x on REBLUR-SH split +
+TAA + emission (bistro, authored orbit, 90 frames):
+
+| hit distance fed | flicker | sharpness | brightness |
+|---|---|---|---|
+| surface linearZ / scatterDistance | 0.49034 | 0.00169 | 0.1552 |
+| constant 1000 (fully saturated) | 0.50566 | 0.00179 | 0.1554 |
+| constant 0.3 (small kernel) | 0.47100 | 0.00160 | 0.1653 |
+
+A 3000x change in the guide moves flicker 7% and sharpness 11%. If kernel radius were what dissolves
+the medium, that sweep would have been dramatic. So hit distance is a real but MINOR input, the
+missing normalisation is a correctness issue rather than the cause, and the transparency has a
+different source.
+
+The remaining candidate is the original one: REBLUR has no luminance edge-stopping, so it fills the
+split's structural zeros with surface radiance from outside the plume, while RELAX's luminance
+rejection refuses to blend a zero against a bright neighbour and so keeps the medium opaque. That
+predicts something falsifiable and untested: raising `NRD4_MINLUMW` on RELAX should make RELAX's
+smoke transparent too. If it does not, this explanation is wrong as well.
 
 ## Next, in order
 
