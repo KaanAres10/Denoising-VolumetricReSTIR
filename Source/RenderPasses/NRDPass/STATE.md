@@ -153,7 +153,39 @@ the medium, that sweep would have been dramatic. So hit distance is a real but M
 missing normalisation is a correctness issue rather than the cause, and the transparency has a
 different source.
 
-The remaining candidate is the original one: REBLUR has no luminance edge-stopping, so it fills the
+MECHANISM FOUND, by capturing each denoised half separately (Scripts-adjacent harness `halves.py`
+marks NRDSurface / NRDVolume filtered outputs). Inside dense smoke (mediumAlpha > 0.75, 14.3% of
+frame):
+
+| | volume half | surface half | surface share |
+|---|---|---|---|
+| raw | 0.00032 | 0.00000 | 0.1% |
+| RELAX | 0.00029 | 0.00001 | 3.3% |
+| REBLUR | 0.00027 | 0.00001 | 2.4% |
+
+So surface radiance bleeding IN is not the cause -- it is 2-3%, and REBLUR leaks LESS of it than
+RELAX. The cause is the volume half's own energy leaking OUT past the plume's silhouette:
+
+| source | core | ring+4 | ring+12 | ring+28 |
+|---|---|---|---|---|
+| raw | 0.000316 | 0.000281 | 0.000103 | 0.000016 |
+| RELAX | 0.000294 | 0.000250 | 0.000107 | 0.000019 |
+| REBLUR | 0.000269 | 0.000229 | 0.000108 | 0.000021 |
+
+Leak ratio (ring+12 / core): raw 0.3262, RELAX 0.3648, REBLUR 0.4010. REBLUR's core loses 15% of its
+energy and it reappears outside the plume (+31% at ring+28). A thinner core with a brighter halo is
+exactly what reads as see-through. REBLUR spreads about twice as much as RELAX relative to raw.
+
+THE FIX is to stop the volume half's energy escaping its own silhouette. The plume boundary is not
+in any guide the volume denoiser gets: mediumNormal is a gradient that goes quiet outside the
+medium, and viewZ falls back to the far plane there, so the denoiser has nothing marking "the medium
+ends here". mediumAlpha IS that boundary and there is no NRD slot for it -- so it has to be applied
+OUTSIDE the denoiser, by multiplying the filtered volume half by coverage before compositing. That
+is the transmittance compositing the original plan called B3 and I implemented as a plain additive
+sum. Same shape as the emission routing: a small pass or a ModulateIllumination reflectance input,
+verifiable by the bypassed round trip.
+
+Superseded candidate, now measured false: REBLUR has no luminance edge-stopping, so it fills the
 split's structural zeros with surface radiance from outside the plume, while RELAX's luminance
 rejection refuses to blend a zero against a bright neighbour and so keeps the medium opaque. That
 predicts something falsifiable and untested: raising `NRD4_MINLUMW` on RELAX should make RELAX's
