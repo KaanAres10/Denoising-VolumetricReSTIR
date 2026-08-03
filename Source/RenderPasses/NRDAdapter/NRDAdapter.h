@@ -46,6 +46,13 @@ private:
 
     /// Divide the medium's large-scale structure out of the radiance before NRD sees it. Off by
     /// default: it changes what the denoiser is fed. See NRDAdapter.cs.slang for the blur measurements.
+    /// Divide by the local rate at which this half won the reservoir, undoing the bias the stochastic
+    /// radiance split introduces. Off by default: it is only meaningful when the input IS one half of
+    /// a split, and on a composited image the indicator is 1 everywhere so it would be a no-op anyway.
+    bool mNormalizeBySelection = false;
+    int mSelectionBlur = 5;
+    float mSelectionFloor = 0.1f;
+
     bool mDemodulateVolume = false;
     /// Box half-width for the divisor's blur. 5 (an 11x11 kernel) measured best on the plume; the RAW
     /// density is worse than no demodulation at all.

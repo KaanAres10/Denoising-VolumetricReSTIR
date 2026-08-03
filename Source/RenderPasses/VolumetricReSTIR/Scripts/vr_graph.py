@@ -400,7 +400,26 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         # in-scattered radiance was ever multiplied by, so dividing by it would be inventing a
         # divisor and the re-modulation would then have to invent the same one back.
         props = {"useScatterDistance": env_bool("VR_NRD_HITDIST", True),
-                 "useNormalGuide": env_bool("VR_NRD_NORMALS", True)}
+                 "useNormalGuide": env_bool("VR_NRD_NORMALS", True),
+                 # MEASURED WRONG, off by default. The idea was to divide out the rate at which this
+                 # half won the reservoir, on the theory that the split's structural zeros bias it
+                 # dark. They do not: ReSTIR's own weight W = runningSum/(p_y*M) ALREADY accounts for
+                 # selection probability, which is why the two halves sum to accumulated_color
+                 # exactly. Dividing again double-corrects. Measured on bistro frame 40 as mean
+                 # radiance per coverage band, ratio to raw (1.000 = unbiased):
+                 #
+                 #     band                    off      on
+                 #     thin (0.01-0.25)      0.834   1.576
+                 #     partial (0.25-0.75)   0.964   1.397
+                 #     dense (>0.75)         0.977   1.155
+                 #
+                 # i.e. it turns a 17% shortfall into a 58% excess. The transition band's real problem
+                 # is VARIANCE, not bias -- the estimator is right on average but is zero most frames
+                 # and large occasionally, which is also why turning up diffusePrepassBlurRadius and
+                 # historyFixFrameNum made the flicker worse rather than better.
+                 "normalizeBySelection": env_bool("VR_NRD_SELNORM", False),
+                 "selectionBlur": env_int("VR_NRD_SELBLUR", 5),
+                 "selectionFloor": env_float("VR_NRD_SELFLOOR", 0.1)}
         if not demodulate:
             props["minReflectance"] = 1.0
         if sh:
@@ -731,7 +750,13 @@ def add_tonemapper(g, src, exposure=0.0, name="ToneMapper"):
     the emitters surviving, which is indistinguishable from broken lighting and cost a long hunt
     through the estimator, the params and the render scale before the tonemapper was suspected.
     """
-    g.addPass(createPass("ToneMapper", {"autoExposure": False, "exposureCompensation": exposure}), name)
+    # Linear operator, not the default filmic curve. An S-curve compresses highlights, which is
+    # exactly where two denoiser configurations differ most -- so a filmic tonemap hides the thing
+    # these images exist to show. Exposure compensation still applies, so a night exterior is
+    # viewable; the mapping above it is just a straight scale.
+    op = env("VR_TONEMAP_OP", "Linear")
+    g.addPass(createPass("ToneMapper", {"autoExposure": False, "exposureCompensation": exposure,
+                                        "operator": op}), name)
     g.addEdge(src, name + ".src")
     return name + ".dst"
 

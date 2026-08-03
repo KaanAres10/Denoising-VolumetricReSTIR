@@ -47,6 +47,37 @@ cbuffer CB
     //                                 noise and dividing by noise injects noise
     //   blur 5   -48%   blur 11  -56% (best)   blur 21  -49%   blur 81  -14%
     // A self-normalising local-contrast divisor (blur_small/blur_large) was also tried: -22% at best.
+    // --- selection-rate normalisation (for the stochastic radiance split) ---
+    // ReSTIR keeps ONE reservoir per pixel, so when the radiance is split into volume and surface
+    // halves a pixel's entire contribution lands in one of them and the other is exactly zero. Those
+    // zeros are structural, not physical, and NRD cannot tell the difference -- it averages them as
+    // real black. Measured on the plume, by coverage band:
+    //
+    //     band            % frame   surface holes
+    //     no medium        83.65%       0.0%
+    //     thin             0.83%       57.5%
+    //     partial          1.95%       92.2%   <- surface estimate comes out 0.078x too dark here
+    //     dense           13.57%       98.9%
+    //
+    // and which pixels are zero is re-randomised every frame, which is the flicker.
+    //
+    // The fix is NOT more filtering. Both of NRD's spatial tools (diffusePrepassBlurRadius,
+    // historyFixFrameNum) work by spreading information over ~30 pixels, so turning them up spreads
+    // the structural zeros too and makes the darkening WORSE -- measured, by trying it.
+    //
+    // Instead divide by the local rate at which this half actually won the reservoir. gColor.a is
+    // already the indicator: FinalShading writes the full alpha to whichever bucket fired and zero to
+    // the other. E[color] = rate * trueColor, so color / rate is unbiased, and the two corrected
+    // halves still sum to the original in expectation.
+    //
+    // This is a CORRECTION, not a demodulation: nothing multiplies it back downstream. The floor
+    // matters -- deep inside the medium the surface rate falls to ~0.011, and dividing by that turns
+    // residual noise into fireflies. Flooring leaves a little darkening exactly where the true
+    // surface contribution is tiny anyway.
+    bool  gNormalizeBySelection;
+    int   gSelectionBlur;    // box half-width in pixels
+    float gSelectionFloor;   // smallest rate we are willing to divide by
+
     bool  gDemodulateVolume;
     // False when nothing consumes gOutDemodDivisor. An unconnected output is not allocated, and
     // writing to the resulting null UAV is an access violation -- the failure the SH outputs hit.
@@ -155,7 +186,28 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
         structure = lerp(1.f, max(blurred, gVolumeStructureFloor), saturate(gMediumAlpha[pixel]));
     }
 
-    const float3 divisor = albedo * structure;
+    // Local rate at which this half won the reservoir. A plain box mean of the indicator: unlike the
+    // volumetric structure blur above this must NOT be coverage-weighted, because the quantity being
+    // estimated IS the coverage-like selection probability itself.
+    float selection = 1.f;
+    if (gNormalizeBySelection)
+    {
+        const int rs = gSelectionBlur;
+        float hits = 0.f;
+        float total = 0.f;
+        for (int sy = -rs; sy <= rs; sy++)
+        {
+            for (int sx = -rs; sx <= rs; sx++)
+            {
+                const int2 q = clamp(int2(pixel) + int2(sx, sy), int2(0), int2(gResolution) - 1);
+                hits += gColor[q].a > 0.f ? 1.f : 0.f;
+                total += 1.f;
+            }
+        }
+        selection = max(hits / max(total, 1.f), gSelectionFloor);
+    }
+
+    const float3 divisor = albedo * structure * selection;
     const float3 demodulated = radiance / divisor;
     if (gWriteDemodDivisor) gOutDemodDivisor[pixel] = float4(divisor, 1.f);
 

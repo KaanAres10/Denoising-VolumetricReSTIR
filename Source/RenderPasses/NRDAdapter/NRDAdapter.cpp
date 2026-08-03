@@ -23,6 +23,9 @@ const char kDemodDivisorOutput[] = "demodDivisor";
 const char kMinReflectance[] = "minReflectance";
 const char kMissHitDistance[] = "missHitDistance";
 const char kDemodulateVolume[] = "demodulateVolume";
+const char kNormalizeBySelection[] = "normalizeBySelection";
+const char kSelectionBlur[] = "selectionBlur";
+const char kSelectionFloor[] = "selectionFloor";
 const char kVolumeStructureBlur[] = "volumeStructureBlur";
 const char kVolumeStructureFloor[] = "volumeStructureFloor";
 #if FALCOR_HAS_NRD4
@@ -53,6 +56,12 @@ NRDAdapter::NRDAdapter(ref<Device> pDevice, const Properties& props) : RenderPas
             mUseNormalGuide = value;
         else if (key == kDemodulateVolume)
             mDemodulateVolume = value;
+        else if (key == kNormalizeBySelection)
+            mNormalizeBySelection = value;
+        else if (key == kSelectionBlur)
+            mSelectionBlur = value;
+        else if (key == kSelectionFloor)
+            mSelectionFloor = value;
         else if (key == kVolumeStructureBlur)
             mVolumeStructureBlur = value;
         else if (key == kVolumeStructureFloor)
@@ -99,6 +108,9 @@ Properties NRDAdapter::getProperties() const
     props["useScatterDistance"] = mUseScatterDistance;
     props["useNormalGuide"] = mUseNormalGuide;
     props[kDemodulateVolume] = mDemodulateVolume;
+    props[kNormalizeBySelection] = mNormalizeBySelection;
+    props[kSelectionBlur] = mSelectionBlur;
+    props[kSelectionFloor] = mSelectionFloor;
     props[kVolumeStructureBlur] = mVolumeStructureBlur;
     props[kVolumeStructureFloor] = mVolumeStructureFloor;
 #if FALCOR_HAS_NRD4
@@ -257,6 +269,9 @@ void NRDAdapter::execute(RenderContext* pRenderContext, const RenderData& render
     var["CB"]["gMissHitDistance"] = mMissHitDistance;
     var["CB"]["gUseScatterDistance"] = mUseScatterDistance;
     var["CB"]["gUseNormalGuide"] = mUseNormalGuide;
+    var["CB"]["gNormalizeBySelection"] = mNormalizeBySelection;
+    var["CB"]["gSelectionBlur"] = mSelectionBlur;
+    var["CB"]["gSelectionFloor"] = mSelectionFloor;
     var["CB"]["gDemodulateVolume"] = demod;
     var["CB"]["gWriteDemodDivisor"] = pDivisor != nullptr;
     var["CB"]["gVolumeStructureBlur"] = mVolumeStructureBlur;
