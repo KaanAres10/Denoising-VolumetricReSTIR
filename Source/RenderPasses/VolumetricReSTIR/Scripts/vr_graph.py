@@ -737,6 +737,29 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
             g.addEdge(adapter + ".demodDivisor", "ModulateIllumination.diffuseReflectance")
         else:
             g.addEdge(gd + ".diffuseAlbedo", "ModulateIllumination.diffuseReflectance")
+
+        # VR_NRD_TAA=1 appends temporal anti-aliasing. This is not a denoiser setting -- it addresses
+        # a DIFFERENT artifact that no amount of denoising can remove.
+        #
+        # A pixel is a point sample. Thin geometry (window grilles, the string lights, railings) is
+        # narrower than a pixel or straddles its boundary, so as the camera moves sub-pixel amounts
+        # the sample lands on the bar in one frame and misses it in the next. The renderer is not
+        # uncertain about that pixel -- it is confidently sampling a different thing each frame -- so
+        # NRD cannot fix it, and measurement puts the residual flicker exactly on that geometry.
+        #
+        # TAA fixes it by jittering the camera sub-pixel per frame and accumulating with
+        # reprojection, so each pixel converges to the area average. That is why jitter must be ON
+        # for this to do anything at all: without it every frame samples the identical sub-pixel
+        # location and there is no extra coverage to accumulate.
+        #
+        # This is also what makes NRD comparable to Ray Reconstruction. RR does denoising AND the
+        # temporal AA resolve in one learned pass; NRD is denoise-only, so without this the two are
+        # not the same kind of thing. Measured on bistro under camera motion, RR was 52% steadier.
+        if env_bool("VR_NRD_TAA", False):
+            g.addPass(createPass("TAA"), "TAA")
+            g.addEdge("ModulateIllumination.output", "TAA.colorIn")
+            g.addEdge(gbuffer + ".mvec", "TAA.motionVecs")
+            return "TAA.colorOut"
         return "ModulateIllumination.output"
 
     raise ValueError("unknown denoiser '%s' (have: %s)" % (mode, ", ".join(DENOISERS)))

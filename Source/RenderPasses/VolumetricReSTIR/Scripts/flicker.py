@@ -26,9 +26,21 @@ scene = vr.load_scene("bistro")
 restir = vr.add_restir(g, scene, render=RENDER, guides=True, mOutputDepth=True,
                        mMotionVecMode="Deterministic")
 color = restir + ".accumulated_color"
-out = vr.add_denoiser(g, "nrd", color, scene, RENDER, RENDER, restir=restir, guides=True,
+# VR_DENOISER selects which denoiser is under test. The camera path, warm-up and capture frames are
+# identical whichever is chosen, so sequences from different denoisers are directly comparable.
+MODE = vr.env("VR_DENOISER", "nrd").lower()
+out = vr.add_denoiser(g, MODE, color, scene, RENDER, RENDER, restir=restir, guides=True,
                       nrd_enabled=vr.env_bool("VR_NRD_ENABLED", True))
 tm = vr.add_tonemapper(g, out, exposure=scene.get("exposure", 0.0))
+# VR_TAA_LDR=1 puts temporal AA AFTER the tonemapper instead of before it. Not cosmetic: TAA fetches
+# history with a bicubic Catmull-Rom filter, whose negative lobes on raw HDR produce negative values
+# that clamp to zero and lose energy -- measured as a 36% drop in mean brightness when TAA ran on the
+# linear signal. Tonemapping first bounds the range, which is where TAA is normally applied.
+if vr.env_bool("VR_TAA_LDR", False):
+    g.addPass(createPass("TAA"), "TAA_LDR")
+    g.addEdge(tm, "TAA_LDR.colorIn")
+    g.addEdge("GBufferRaster.mvec", "TAA_LDR.motionVecs")
+    tm = "TAA_LDR.colorOut"
 g.markOutput(tm)
 m.addGraph(g)
 m.resizeSwapChain(RENDER[0], RENDER[1])
@@ -57,9 +69,26 @@ m.frameCapture.addFrames(g, [WARM + k for k in range(N)])
 
 # Without this Mogwai never quits after the loop -- it is an interactive app, and the run just hangs
 # until something kills it.
-m.clock.exitFrame = WARM + N + 60
+m.clock.exitFrame = WARM + N + max(60, vr.env_int('VR_TIME_N', 60) + 3)
 print("[flicker] warm=%d capture=%d..%d speed=%.3f" % (WARM, WARM, WARM + N - 1, SPEED))
 sys.stdout.flush()
-for i in range(WARM + N + 60):
+# VR_TIME=1 also reports frame cost. Wall clock and END TO END (CPU submit + GPU + present), so it
+# is an upper bound rather than a GPU-only figure -- Mogwai exposes no device to Python, so Falcor's
+# profiler is unreachable from a script. Timed over the same camera path as the image capture, after
+# a warm-up, so denoisers are compared doing identical work.
+import time
+
+TIME_N = vr.env_int("VR_TIME_N", 60) if vr.env_bool("VR_TIME", False) else 0
+t_start = None
+for i in range(WARM + N + max(60, TIME_N + 3)):
     place(i)
+    if TIME_N and i == WARM + N:
+        m.renderFrame()          # one untimed frame so the capture flush is not counted
+        t_start = time.perf_counter()
+        continue
     m.renderFrame()
+    if TIME_N and t_start is not None and i == WARM + N + TIME_N:
+        dt = (time.perf_counter() - t_start) / TIME_N
+        print("[time] %.3f ms/frame over %d frames" % (dt * 1000.0, TIME_N))
+        sys.stdout.flush()
+        t_start = None

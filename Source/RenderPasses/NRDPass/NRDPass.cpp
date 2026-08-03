@@ -308,6 +308,15 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     mRelaxSettings.spatialVarianceEstimationHistoryThreshold =
         envU("NRD4_SVAR", mRelaxSettings.spatialVarianceEstimationHistoryThreshold);
     mDisocclusionThreshold = envF("NRD4_DISOCC", mDisocclusionThreshold);
+
+    // Two RELAX knobs left at NRD's defaults until now, exposed because they target the SPLIT path's
+    // specific weakness. Splitting the radiance leaves each half punched through with structural
+    // zeros wherever the other half won the reservoir; RELAX's luminance edge-stopping sees a zero
+    // pixel beside a bright one, reads a huge luminance difference, and refuses to blend them -- so
+    // the holes survive filtering. A floor on that weight forces it to blend across them.
+    mRelaxSettings.diffuseMinLuminanceWeight = envF("NRD4_MINLUMW", mRelaxSettings.diffuseMinLuminanceWeight);
+    mRelaxSettings.luminanceEdgeStoppingRelaxation =
+        envF("NRD4_LUMRELAX", mRelaxSettings.luminanceEdgeStoppingRelaxation);
 #else
     // Override some defaults coming from the NRD SDK.
     mRelaxDiffuseSpecularSettings.diffusePrepassBlurRadius = 16.0f;
