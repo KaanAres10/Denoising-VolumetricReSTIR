@@ -93,6 +93,13 @@ const char kDisocclusionThreshold[] = "disocclusionThreshold";
 // Pack radiance settings.
 const char kMaxIntensity[] = "maxIntensity";
 
+// Per-instance v4 tuning, named for what they mean in BOTH RelaxSettings and ReblurSettings. The
+// split path needs these as properties rather than env vars: its two NRD instances live in one
+// process and must be tuned differently from each other.
+const char kPrepassBlurRadius[] = "prepassBlurRadius";
+const char kMaxBlurRadius[] = "maxBlurRadius";
+const char kHistoryFixFrameNum[] = "historyFixFrameNum";
+
 // ReLAX diffuse/specular settings.
 const char kDiffusePrepassBlurRadius[] = "diffusePrepassBlurRadius";
 const char kSpecularPrepassBlurRadius[] = "specularPrepassBlurRadius";
@@ -537,6 +544,41 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
             {
                 logWarning("Unknown property '{}' in NRD properties.", key);
             }
+        }
+#endif
+#if FALCOR_HAS_NRD4
+        // PER-INSTANCE v4 tuning. The v3.1 property names above are deliberately rejected under v4
+        // because their meanings changed, but that left the split path unable to tune its two halves
+        // differently at all: add_nrd_split has always passed diffuseMaxAccumulatedFrameNum and
+        // diffusePhiLuminance, and under v4 they landed in the unknown-property warning and did
+        // nothing. These few are re-accepted under names that mean the same thing in both structs,
+        // and applied to whichever one the chosen method uses. Env NRD4_* stays the process-wide
+        // override; these are what let one graph hold two differently tuned instances.
+        else if (key == kPrepassBlurRadius || key == kDiffusePrepassBlurRadius)
+        {
+            mRelaxSettings.diffusePrepassBlurRadius = value;
+            mRelaxSettings.specularPrepassBlurRadius = value;
+            mReblurSettings.diffusePrepassBlurRadius = value;
+            mReblurSettings.specularPrepassBlurRadius = value;
+        }
+        else if (key == kMaxBlurRadius)
+        {
+            // REBLUR only; RELAX has no equivalent (it is a-trous, not a Poisson-disc blur).
+            mReblurSettings.maxBlurRadius = value;
+        }
+        else if (key == kDiffuseMaxAccumulatedFrameNum)
+        {
+            mRelaxSettings.diffuseMaxAccumulatedFrameNum = value;
+            mReblurSettings.maxAccumulatedFrameNum = value;
+        }
+        else if (key == kDiffusePhiLuminance)
+        {
+            mRelaxSettings.diffusePhiLuminance = value; // no REBLUR counterpart
+        }
+        else if (key == kHistoryFixFrameNum)
+        {
+            mRelaxSettings.historyFixFrameNum = value;
+            mReblurSettings.historyFixFrameNum = value;
         }
 #endif
         else

@@ -453,7 +453,8 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
             g.addEdge(restir + ".lightDir", name + ".lightDir")
         return name
 
-    def denoiser(name, adapter_name, viewz_src, mvec_src, accum, phi, confidence_src=None):
+    def denoiser(name, adapter_name, viewz_src, mvec_src, accum, phi, confidence_src=None,
+                 max_blur=None):
         # Each half gets its OWN tuning. They are not the same problem: the converged medium is 4.3x
         # smoother than the surfaces around it (scale-free gradient energy 56.9 vs 247.2 inside and
         # outside the plume), so the volume half can be filtered harder without destroying anything
@@ -461,7 +462,19 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         props = {"method": method, "worldSpaceMotion": False, "maxIntensity": env_float("VR_NRD_MAXINT", 100000.0),
                  "enabled": nrd_enabled,
                  "diffuseMaxAccumulatedFrameNum": accum,
-                 "diffusePhiLuminance": phi}
+                 "diffusePhiLuminance": phi,
+                 # The pre-pass is wrong for BOTH halves and for the same reason: v4 sizes its kernel
+                 # as prepassBlurRadius * saturate(hitDist / frustumSize), which assumes a short
+                 # secondary-bounce length. Both branches feed a primary distance of the same order as
+                 # the frustum, so the factor saturates and the pre-pass degenerates into a
+                 # full-radius blur. Measured monotonically bad on RELAX (radius 30 was worse than the
+                 # undenoised input); on REBLUR it is most of the halo -- the volume half's energy
+                 # 14-30 px OUTSIDE the plume's silhouette goes 2.40x raw -> 1.43x with this at 0.
+                 # REBLUR had been running at NRD's default 30 because every tuning decision in this
+                 # port was applied to RelaxSettings only.
+                 "prepassBlurRadius": env_float("VR_NRD_PREPASS", 0.0)}
+        if max_blur is not None:
+            props["maxBlurRadius"] = max_blur
         if sh:
             props["shResolveMode"] = env("VR_NRD_SH_RESOLVE", "Dc")
         g.addPass(createPass("NRD", props), name)
@@ -526,8 +539,24 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     a_v = adapter("NRDAdapterVolume", restir + ".volumeColor",
                   restir + ".mediumNormal", demodulate=False,
                   hitdist_src=restir + ".scatterDistance")
+    #
+    # The volume branch gets a TIGHTER max blur radius than NRD's default 30, and it is the halo fix.
+    # Nothing in the volume denoiser's guides marks where the plume ends -- mediumNormal goes quiet
+    # outside the medium and viewZ falls back to the far plane -- so a wide kernel simply carries the
+    # plume's radiance out past its own silhouette. Volume half as a ratio to raw, by signed distance
+    # from the silhouette:
+    #
+    #     band                 6-14 px out   14-30 px out   30-80 px out
+    #     prepass 30, blur 30     1.43x          2.40x          3.41x
+    #     prepass 0,  blur 30     1.26x          1.43x          0.79x
+    #     prepass 0,  blur 12     1.15x          0.91x          0.16x
+    #
+    # and the plume's INTERIOR gets slightly brighter doing it (0.87 -> 0.88 at -20..-8 px), because
+    # the energy stops leaving. RELAX at its own defaults is 1.37 / 1.89 / 17.92 on the same bands,
+    # so this is now the better-confined of the two rather than the worse.
     n_v = denoiser("NRDVolume", a_v, restir + ".linearZ", restir + ".mvec",
-                   env_int("VR_NRD_VOL_ACCUM", 30), env_float("VR_NRD_VOL_PHI", 2.0))
+                   env_int("VR_NRD_VOL_ACCUM", 30), env_float("VR_NRD_VOL_PHI", 2.0),
+                   max_blur=env_float("VR_NRD_VOL_BLUR", 12.0))
 
     # --- composite ---
     # residualRadiance is a plain `outputColor.rgb += ...` term in ModulateIllumination, which is
