@@ -317,6 +317,9 @@ private:
     enum class VolumeNormalMode { Camera = 0, Gradient = 1 };
     VolumeNormalMode mVolumeNormalMode = VolumeNormalMode::Camera;
 
+    /// Knee of the volume-half confinement mask: cov = saturate(mediumAlpha / knee).
+    float mCoverageKnee = 0.5f;
+
     // Render scale. 'Default' reproduces the previous behaviour exactly (outputs sized to the
     // swapchain), so existing scripts are unaffected. Setting this below display resolution is what
     // makes a temporal upscaler actually save time: ReSTIR runs on fewer pixels and DLSS restores

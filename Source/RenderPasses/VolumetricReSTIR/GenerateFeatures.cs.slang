@@ -69,6 +69,13 @@ cbuffer CB
     // Density at the scatter point. Unlike optical thickness (an integral along the whole ray) this is
     // a LOCAL quantity, which is the reason to expect it to carry structure the integrals average away.
     bool    gOutputScatterDensity;
+    // Confinement mask for the split's volume half. NOT the raw coverage: the volume denoiser blurs
+    // the plume's radiance past its own silhouette (measured leak ratio raw 0.326 -> REBLUR 0.401,
+    // with the core losing 15% of its energy), and multiplying by raw alpha would kill that halo but
+    // also darken the core by ~10% -- trading one error for another. saturate(alpha/knee) is ~1
+    // wherever the medium actually is and 0 outside, so it confines without dimming.
+    bool    gOutputMediumCoverage;
+    float   gCoverageKnee;
     // 0 = camera-facing stand-in, 1 = density gradient. A switch rather than a replacement: the
     // existing comment rejects the gradient as noisy in the plume core and prone to GVDB apron
     // artifacts, and that objection deserves a measurement rather than an assumption.
@@ -99,6 +106,9 @@ RWTexture2D<float> gOpticalThickness;
 RWTexture2D<float4> gVolumeVelocity;
 // Density at the scatter point; 0 where the ray met no medium.
 RWTexture2D<float> gScatterDensity;
+/// rgb all carry the mask: ModulateIllumination reads a reflectance as .rgb, and a single-channel
+/// R16Float bound there would read (a,0,0) and tint the medium red.
+RWTexture2D<float4> gMediumCoverage;
 // Raw expected scatter distance along the ray (world units), -1 where the ray met no medium.
 RWTexture2D<float> gScatterDistance;
 
@@ -279,6 +289,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 // took the magnitude with it when the direction lived in xyz. Consumers reading the
                 // texture directly still get the magnitude from .w without recomputing it.
                 gVolumeVelocity[pixelPos] = float4(v, length(v));
+            }
+
+            if (gOutputMediumCoverage)
+            {
+                const float cov = saturate((1.f - accuTransmittance) / max(gCoverageKnee, 1e-4f));
+                gMediumCoverage[pixelPos] = float4(cov, cov, cov, 1.f);
             }
 
             if (gOutputScatterDensity)

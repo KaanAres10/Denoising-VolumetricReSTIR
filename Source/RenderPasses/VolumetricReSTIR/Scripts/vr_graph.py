@@ -302,6 +302,11 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
         # gradient. Left as a switch because the gradient was rejected once on stated grounds and
         # that objection deserves a measurement.
         "mVolumeNormalMode": "Gradient" if env("VR_VOL_NORMAL", "camera").lower() == "gradient" else "Camera",
+        # Knee of the volume-half confinement mask, cov = saturate(mediumAlpha / knee). SMALLER is
+        # gentler: the mask reaches 1 sooner, so more of the plume's genuine soft edge survives.
+        # Measured leak ratio (ring+12 / core) against raw's 0.3262: knee 0.5 gives 0.2208 (over-
+        # confined, eats real wisps), knee 0.2 gives 0.3260. 0.2 is the default on that basis.
+        "coverageKnee": env_float("VR_NRD_COVKNEE", 0.2),
         "mParams": dict(scene.get("params", {})),
     }
     # The reference is brute-force path tracing: no reuse, accumulated over thousands of frames.
@@ -503,7 +508,19 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     g.addPass(createPass("ModulateIllumination"), "ModulateIllumination")
     g.addEdge(n_s + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.diffuseRadiance")
     g.addEdge(gd + ".diffuseAlbedo", "ModulateIllumination.diffuseReflectance")
-    g.addEdge(n_v + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.residualRadiance")
+    # VR_NRD_VOLMASK confines the volume half to the plume. residualRadiance is purely ADDITIVE, so
+    # nothing can attenuate energy the denoiser blurred outside the medium's silhouette -- measured
+    # leak ratio (ring+12 / core) raw 0.326, RELAX 0.365, REBLUR 0.401, with REBLUR's core losing 15%
+    # of its energy to the halo. The specular pair is unused and is a MULTIPLY, so routing the volume
+    # half through it with a coverage mask kills whatever landed outside.
+    #
+    # The mask is saturate(mediumAlpha / knee), not raw alpha: the core sits near alpha 0.9, so a raw
+    # multiply would remove the halo and darken the core ~10% at the same time.
+    if env_bool("VR_NRD_VOLMASK", False):
+        g.addEdge(n_v + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.specularRadiance")
+        g.addEdge(restir + ".mediumCoverage", "ModulateIllumination.specularReflectance")
+    else:
+        g.addEdge(n_v + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.residualRadiance")
     # Emitters skip both denoisers. FinalShading drops them from the volume/surface pair when
     # emissiveColor is connected, so the three buffers still sum to the original exactly.
     if emission:

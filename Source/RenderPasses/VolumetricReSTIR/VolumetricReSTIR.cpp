@@ -51,6 +51,7 @@ namespace
     const std::string kOpticalThickness = "opticalThickness";
     const std::string kVolumeVelocity = "volumeVelocity";
     const std::string kScatterDensity = "scatterDensity";
+    const std::string kMediumCoverage = "mediumCoverage";
     const std::string kVolumeColor = "volumeColor";
     const std::string kSurfaceColor = "surfaceColor";
     const std::string kEmissiveColor = "emissiveColor";
@@ -96,6 +97,8 @@ namespace
         // optical thickness and scatter distance are all integrals along the ray, which average away
         // exactly the interior structure the denoiser is destroying.
         { kScatterDensity, "gScatterDensity", "medium density at the expected scatter point", true /* optional */, ResourceFormat::R32Float },
+        // RGB, not R16: consumed as a reflectance, which is read as .rgb.
+        { kMediumCoverage, "gMediumCoverage", "confinement mask for the volume half (alpha/knee, replicated)", true /* optional */, ResourceFormat::RGBA16Float },
         // The radiance split. volumeColor + surfaceColor == accumulated_color exactly, so RGBA32Float
         // to match it -- at RGBA16 the sum would not round-trip and the check that guards this would
         // have to be loosened into uselessness.
@@ -234,6 +237,7 @@ void VolumetricReSTIR::parseProperties(const Properties& props)
     props.getTo("mOutputDepth", mOutputDepth);
     props.getTo("mOutputVolumeGuides", mOutputVolumeGuides);
     props.getTo("mDepthAsNDC", mDepthAsNDC);
+    props.getTo("coverageKnee", mCoverageKnee);
     {
         std::string mode;
         if (props.getTo("mVolumeNormalMode", mode))
@@ -812,10 +816,15 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         vars["CB"]["gOutputOpticalThickness"] = writeTau;
         vars["CB"]["gOutputScatterDistance"] = writeScatter;
         vars["CB"]["gOutputVolumeVelocity"] = writeVelocity;
+        ref<Texture> pCoverage = renderData.getTexture(kMediumCoverage);
+        if (pCoverage) vars["gMediumCoverage"] = pCoverage;
+        vars["CB"]["gOutputMediumCoverage"] = pCoverage != nullptr;
+        vars["CB"]["gCoverageKnee"] = mCoverageKnee;
         vars["CB"]["gOutputScatterDensity"] = writeDensity;
         vars["CB"]["gVolumeNormalMode"] = (uint32_t)mVolumeNormalMode;
         vars["CB"]["gOutputVolumeGuides"] =
-            writeAlpha || writeNormal || writeTau || writeScatter || writeVelocity || writeDensity;
+            writeAlpha || writeNormal || writeTau || writeScatter || writeVelocity || writeDensity
+            || pCoverage != nullptr;
 
         if (mParams.mUseSurfaceScene)
         {
