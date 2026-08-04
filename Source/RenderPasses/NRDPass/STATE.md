@@ -127,8 +127,32 @@ is real. It is also irrelevant, because it was measured on the wrong region: the
 BROAD medium-density region, which every measurement so far excluded. The same mistake produced the
 earlier "surface share is only 2.4%, so bleed-in is not the cause" conclusion.
 
-What is NOT yet known, and must be measured per alpha BAND (not on one dense mask) before anything
-else is built:
+NARROWED, 2026-08-04. The transparency is TEMPORAL, not spatial. With bistro's STATIC default
+camera, RELAX, REBLUR and REBLUR+mask are all opaque and visually near-identical -- the plume
+occludes the building in every one. The see-through appearance appears only in the ORBIT captures.
+
+That invalidates every measurement taken to diagnose it. `halves.py` uses the static camera, so the
+per-band energies, the chroma comparison and the leak ratio were all measured in the regime where
+the bug does not happen. They came back clean because nothing was wrong in that frame.
+
+Consistent with the temporal reading: per band on the static view, REBLUR's volume half is within
+5-9% of RELAX's, its chroma is identical (0.78 both), and its volume:surface ratio is slightly
+BETTER (2.54 vs 2.38). By every static measure REBLUR should look MORE opaque.
+
+Leading hypothesis, untested: the volume half's viewZ is the estimator's linearZ, i.e. the view Z of
+a STOCHASTICALLY chosen scatter point, so it jitters frame to frame even for a static medium. Under
+camera motion REBLUR's disocclusion test sees that jitter on top of real reprojection error and
+rejects history continuously, so the volume half never accumulates; TAA then smooths the unaccumulated
+signal into a faint haze. RELAX would have to be more tolerant of the same input for this to be the
+explanation, which is checkable.
+
+Next measurement, and it must be on the ORBIT capture, not the static one:
+  * volume-half energy per alpha band, orbit vs static, RELAX vs REBLUR -- does REBLUR's volume half
+    collapse only when the camera moves;
+  * NRD's validation overlay (VR_NRD_VALIDATION=1) on the volume instance, which draws history
+    length -- if history is being reset every frame in the medium it will show there directly.
+
+Older list, superseded but kept because the band method is still the right shape:
   * how the volume half's energy compares to RELAX's across 0.1 < alpha < 0.75, not just above 0.75;
   * how the surface half's share varies across those bands -- structure is visible at energy
     fractions far below where it shows up in a mean;
