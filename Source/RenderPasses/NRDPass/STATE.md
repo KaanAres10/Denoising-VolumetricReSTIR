@@ -449,6 +449,65 @@ smoke transparent too. If it does not, this explanation is wrong as well.
    whole explanation for `VR_NRD_VOLMV` measuring 1.86e-05, and it blocks the velocity-guided
    temporal work entirely. Fixing it needs the bake tool, the loader, and a re-bake of 100 frames.
 
+## MEASURE FLICKER BY SPATIAL SCALE -- the per-pixel metric misses what people see
+
+The second temporal difference used everywhere in this file is a HIGH-PASS measure: it is dominated
+by per-pixel sparkle and cancels smooth change on purpose. The artifact people actually report when
+the camera moves -- "the scene changes", whole regions shifting brightness together -- is the
+opposite kind, and that metric is blind to it BY CONSTRUCTION. Blur first, then measure. `scale.py`.
+
+Instability at increasing spatial scale, x1e-3, normalised by mean brightness (90-frame orbit, split
++ TAA + emission + mask):
+
+| config | s=0 (per-pixel) | s=8 | s=32 | s=128 | whole-frame |
+|---|---|---|---|---|---|
+| RELAX | 293.4 | 77.2 | **28.3** | **14.4** | **11.88** |
+| REBLUR | 263.6 | 55.4 | **16.0** | **9.2** | **7.70** |
+| Ray Reconstruction | **321.5** | 62.1 | 17.7 | 10.1 | 8.43 |
+
+**The ranking INVERTS with scale.** At s=0 RR is worst, which is what every earlier number in this
+file measured and why they kept saying RR was the least stable. At s=32 and above RELAX is the clear
+outlier -- 76% worse than REBLUR at s=32, 54% worse on whole-frame brightness. Two different
+artifacts, and the one that gets reported is the coarse one. Always report both scales.
+
+LOCALISED TO THE SURFACE HALF. Using the split to give each half a different denoiser
+(`VR_NRD_VOL_METHOD`), at s=32 on a 30-frame run:
+
+| config | s=32 | whole-frame |
+|---|---|---|
+| RELAX both halves | 19.13 | 5.91 |
+| RELAX surfaces + REBLUR medium | 17.79 (-7%) | 5.50 |
+| **REBLUR surfaces + RELAX medium** | **7.58 (-60%)** | 1.85 |
+| REBLUR both | 5.72 (-70%) | 1.16 |
+
+So it is the SURFACE branch, not the medium -- swapping only that one accounts for 60% of it.
+
+NOT REACHABLE FROM RELAX'S SETTINGS, swept against this metric rather than the per-pixel one:
+
+| knob | s=32 |
+|---|---|
+| baseline (atrous 6) | 19.13 |
+| `NRD4_ATROUS` 8 | **17.76 (-7%)** |
+| antilag fully off | 19.06 (-0.4%) |
+| `NRD4_CLAMPSIGMA` 3 | 19.12 |
+| `NRD4_FASTACCUM` off | 19.12 |
+| `NRD4_SVAR` 8 | 19.14 |
+| `NRD4_MINLUMW` 0.3 | 18.80 |
+| `NRD4_PHILUM` 8 | 18.98 |
+| `NRD4_HISTFIX` 0 | 20.59, and 26% too dark |
+| atrous 5 / 4 / 3 | 20.65 / 21.93 / 22.39 -- monotonically WORSE |
+
+Atrous is monotonic 3 -> 8, so 8 is the best RELAX can do and it is worth 7%, not 3.3x.
+
+AND IT IS NOT REBLUR'S STABILIZATION PASS, which was the obvious hypothesis: REBLUR with
+`maxStabilizedFrameNum = 0` sits at 5.78 against 5.72 with it on. Unchanged. The difference is that
+RELAX's a-trous weights come from a per-frame variance estimate, so when that estimate moves the
+filtered result moves with it over the whole footprint, while REBLUR's Poisson-disc radius is driven
+by hit distance and accumulation speed, which vary slowly.
+
+THE FIX, therefore, is to run the SURFACE half under REBLUR. The split already allows it and
+`VR_NRD_VOL_METHOD` now makes the pairing explicit in either direction.
+
 ## THE FLICKER IS THE EMISSIVE BUFFER, and it never touches the denoiser
 
 This is the answer to "why does it flicker", and it is not the denoiser, not aliasing, and not RELAX.

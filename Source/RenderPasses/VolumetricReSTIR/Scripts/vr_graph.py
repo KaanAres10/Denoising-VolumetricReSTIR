@@ -583,9 +583,24 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     # volume denoiser then has a normal guide that cannot reject anything. Set VR_VOL_NORMAL=gradient
     # to get the density gradient instead. Either way it beats the wall's normal, which actively
     # asserts edges that are not in the medium.
+    # VR_NRD_VOL_METHOD picks a DIFFERENT denoiser for the medium than for the surfaces, which is a
+    # thing the split makes possible and which the measurements ask for. Instability by spatial
+    # scale, x1e-3 (the second temporal difference AFTER blurring, so it sees whole regions moving
+    # together rather than per-pixel sparkle -- which is the artifact people actually notice when the
+    # camera moves, and which the per-pixel metric is blind to by construction):
+    #
+    #     sigma        0       8      32     128   whole-frame
+    #     RELAX    261.8    59.4    19.1     8.4      5.91
+    #     REBLUR   233.1    36.3     5.7     2.1      1.16
+    #
+    # REBLUR is 3.3x steadier at sigma 32 and 5.1x on whole-frame brightness. It is NOT its temporal
+    # stabilization pass -- turning that off leaves it at 5.78 vs 5.72, unchanged. The medium is a
+    # large smooth region covering 17% of the frame, which is what dominates those coarse scales, and
+    # in-medium per-pixel instability is RELAX 0.49x against REBLUR 0.22x.
+    vol_method = env("VR_NRD_VOL_METHOD", "") or None
     a_v = adapter("NRDAdapterVolume", restir + ".volumeColor",
                   restir + ".mediumNormal", demodulate=False,
-                  hitdist_src=restir + ".scatterDistance")
+                  hitdist_src=restir + ".scatterDistance", method_override=vol_method)
     #
     # The volume branch gets a TIGHTER max blur radius than NRD's default 30, and it is the halo fix.
     # Nothing in the volume denoiser's guides marks where the plume ends -- mediumNormal goes quiet
@@ -611,7 +626,7 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     vol_blur = env_float("VR_NRD_VOL_BLUR", 12.0 * (render[1] / 720.0) if render else 12.0)
     n_v = denoiser("NRDVolume", a_v, restir + ".linearZ", restir + ".mvec",
                    env_int("VR_NRD_VOL_ACCUM", 30), env_float("VR_NRD_VOL_PHI", 2.0),
-                   max_blur=vol_blur)
+                   max_blur=vol_blur, method_override=vol_method)
 
     # --- composite ---
     # residualRadiance is a plain `outputColor.rgb += ...` term in ModulateIllumination, which is
