@@ -373,6 +373,24 @@ _SIMPLE = {
 DENOISERS = ["none", "oidn", "oidncpu", "optix", "sr", "rr", "nrd"]
 
 
+def taa_props():
+    """TAA's two controls, exposed because they are the ONLY effective stability lever left here.
+
+    Measured on bistro's orbit with the split: NRD's own temporal settings are inert on this content.
+    Going from maxAccumulatedFrameNum 30 to 1 -- thirty frames of accumulation down to one -- moves
+    flicker 0.3%, and fast-history length, clamp sigma, antilag reset and disocclusion threshold are
+    all the same story. That is not a bug: VolumetricReSTIR does its OWN temporal reuse, so NRD is
+    handed an already-accumulated signal and has little left to accumulate. What survives is aliasing
+    on sub-pixel geometry, which is a sampling problem, and TAA is the pass that addresses it.
+
+    alpha is the weight of the CURRENT frame: lower = longer history = steadier, at the cost of
+    ghosting. colorBoxSigma is how far history may stray from the local neighbourhood before it is
+    clamped: higher = steadier, at the cost of smearing.
+    """
+    return {"alpha": env_float("VR_TAA_ALPHA", 0.1),
+            "colorBoxSigma": env_float("VR_TAA_SIGMA", 1.0)}
+
+
 def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True, emission=False):
     """Denoise the medium and the surfaces SEPARATELY, then add them back together.
 
@@ -901,7 +919,7 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # temporal AA resolve in one learned pass; NRD is denoise-only, so without this the two are
         # not the same kind of thing. Measured on bistro under camera motion, RR was 52% steadier.
         if env_bool("VR_NRD_TAA", False):
-            g.addPass(createPass("TAA"), "TAA")
+            g.addPass(createPass("TAA", taa_props()), "TAA")
             g.addEdge("ModulateIllumination.output", "TAA.colorIn")
             g.addEdge(gbuffer + ".mvec", "TAA.motionVecs")
             return "TAA.colorOut"

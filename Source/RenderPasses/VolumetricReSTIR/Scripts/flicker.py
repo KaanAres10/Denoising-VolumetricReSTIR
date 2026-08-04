@@ -37,7 +37,7 @@ tm = vr.add_tonemapper(g, out, exposure=scene.get("exposure", 0.0))
 # that clamp to zero and lose energy -- measured as a 36% drop in mean brightness when TAA ran on the
 # linear signal. Tonemapping first bounds the range, which is where TAA is normally applied.
 if vr.env_bool("VR_TAA_LDR", False):
-    g.addPass(createPass("TAA"), "TAA_LDR")
+    g.addPass(createPass("TAA", vr.taa_props()), "TAA_LDR")
     g.addEdge(tm, "TAA_LDR.colorIn")
     g.addEdge("GBufferRaster.mvec", "TAA_LDR.motionVecs")
     tm = "TAA_LDR.colorOut"

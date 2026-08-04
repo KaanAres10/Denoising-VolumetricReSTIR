@@ -449,6 +449,61 @@ smoke transparent too. If it does not, this explanation is wrong as well.
    whole explanation for `VR_NRD_VOLMV` measuring 1.86e-05, and it blocks the velocity-guided
    temporal work entirely. Fixing it needs the bake tool, the loader, and a re-bake of 100 frames.
 
+## RELAX's flicker is NOT a tuning problem, and here is the proof
+
+Asked to make RELAX as steady as REBLUR and RR. It cannot be done with RELAX's settings, and the
+measurement that settles it is one line: **`diffuseMaxAccumulatedFrameNum` 30 -> 1 moves flicker
+0.3%.** Thirty frames of temporal accumulation down to one. If accumulation were doing the work that
+would be catastrophic; it is nothing.
+
+The reason is not a bug. **VolumetricReSTIR does its own temporal reuse**, so NRD is handed a signal
+that is already a multi-frame average and has little left to accumulate. Every temporal knob is
+therefore inert by construction. Swept on bistro's orbit, split + emission + mask, N=30, against a
+0.35849 baseline with TAA off:
+
+| knob | flicker | note |
+|---|---|---|
+| `NRD4_MAXACCUM` 30 -> 1 | +0.3% | thirty frames of history to one |
+| `NRD4_MAXACCUM` 30 -> 60 | -0.0% | |
+| `NRD4_FASTACCUM` 2 -> 6 (NRD default) | -0.0% | the v3.1 carry-over is not the problem |
+| `NRD4_FASTACCUM` -> 30 (fast history off) | -0.0% | |
+| `NRD4_CLAMPSIGMA` 2 -> 3 | -0.0% | |
+| `NRD4_ANTILAG_RESET` 0.5 -> 0 | +0.0% | |
+| `NRD4_DISOCC` 0.01 -> 0.05 | +1.5% | worse |
+| `NRD4_ATROUS` 6 -> 8 | +0.3% | worse |
+| `NRD4_PHILUM` 2 -> 8 | +0.3% | worse |
+
+For scale: raw ReSTIR with NO denoiser is 1.69641 and RELAX is 0.35849, so RELAX is cutting flicker
+4.7x. It is working; it is just saturated.
+
+WHERE THE REBLUR GAP COMES FROM, then, is structural rather than tuning: REBLUR has a temporal
+stabilization pass (`REBLUR_TemporalStabilization`, a TAA-shaped reproject-clamp-blend) and RELAX has
+no equivalent. At N=90 with TAA: RELAX 0.29336, REBLUR 0.26358 (-10.2%), and 44.60% vs 37.82% of
+pixels taking a hard jump.
+
+AND NOTE THE PREMISE IS HALF WRONG: **Ray Reconstruction is 9.6% WORSE than RELAX on flicker**
+(0.32150, 51.29% hard pixels -- the worst of the four). RR reads as steadier because it is 2.5x
+sharper, and crisp reads as solid. Sharpness and stability are being conflated by eye, which is
+exactly why both numbers are always reported here.
+
+WHAT DID HELP, both small and both now exposed:
+* `NRD4_MINLUMW = 0.3` -- the sweep that had been committed-but-never-run (it silently produced no
+  captures). -1.4% flicker at N=30, +0.7% sharpness. Real but marginal.
+* `VR_TAA_SIGMA` 1.0 -> 2.0 -- TAA's colour-box clamp. Flicker unchanged, **sharpness +55.5%** at
+  N=90, no ghosting visible at frame 62. The current TAA is over-clamping and throwing detail away.
+  Not defaulted: `d1` drops 1.9%, which is consistent with mild lag, and one frame cannot rule out
+  ghosting. Worth a proper A/B before adopting.
+
+RELAX antilag is now exposed too (`NRD4_ANTILAG_ACC` / `_SPATIAL` / `_TEMPORAL` / `_RESET`), since
+NVIDIA's guide says to integrate with it disabled and it had never been reachable. It changes nothing
+here, but that is now a measurement rather than an assumption.
+
+TRAP FOUND WHILE DOING THIS: per-instance properties are parsed AFTER the env-override block, so
+re-enabling them silently killed `NRD4_MAXACCUM`, `NRD4_PHILUM`, `NRD4_HISTFIX` and `NRD4_PREPASS` on
+the split path. A dead debug override is worse than none -- a sweep runs, reports no effect, and the
+wrong conclusion gets written down. The affected env vars are now re-applied after the property loop.
+The first RELAX sweep in this section was run before that fix and had to be redone.
+
 ## How much of this is tuned to bistro's plume?
 
 Asked directly, and worth having a straight answer on record. Everything this session was measured on

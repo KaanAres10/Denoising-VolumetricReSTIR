@@ -325,6 +325,20 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     mRelaxSettings.luminanceEdgeStoppingRelaxation =
         envF("NRD4_LUMRELAX", mRelaxSettings.luminanceEdgeStoppingRelaxation);
 
+    // RELAX's antilag, which was never exposed. It works by RESETTING history when it decides the
+    // signal is lagging, and NVIDIA's own integration guide says "antilag parameters need to be
+    // carefully tuned; initial integration should be done with disabled antilag". A history reset
+    // under camera motion is indistinguishable from flicker, so this is the first place to look when
+    // RELAX is unstable. resetAmount = 0 disables the reset while leaving the acceleration.
+    mRelaxSettings.antilagSettings.accelerationAmount =
+        envF("NRD4_ANTILAG_ACC", mRelaxSettings.antilagSettings.accelerationAmount);
+    mRelaxSettings.antilagSettings.spatialSigmaScale =
+        envF("NRD4_ANTILAG_SPATIAL", mRelaxSettings.antilagSettings.spatialSigmaScale);
+    mRelaxSettings.antilagSettings.temporalSigmaScale =
+        envF("NRD4_ANTILAG_TEMPORAL", mRelaxSettings.antilagSettings.temporalSigmaScale);
+    mRelaxSettings.antilagSettings.resetAmount =
+        envF("NRD4_ANTILAG_RESET", mRelaxSettings.antilagSettings.resetAmount);
+
     // REBLUR gets NONE of the tuning above. Everything from line 213 down applies to mRelaxSettings
     // only, so under v4 REBLUR has been running at NRD's stock defaults throughout -- including
     // diffusePrepassBlurRadius = 30, the exact value measured here as WORSE THAN THE UNDENOISED
@@ -586,6 +600,28 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
             logWarning("Unknown property '{}' in NRD properties.", key);
         }
     }
+
+#if FALCOR_HAS_NRD4
+    // The env overrides are set BEFORE this loop, so any property that names the same setting
+    // silently wins -- which quietly killed NRD4_MAXACCUM, NRD4_PHILUM, NRD4_HISTFIX and
+    // NRD4_PREPASS on the split path the moment per-instance properties were re-enabled, and a dead
+    // debug override is worse than none: a sweep runs, reports no effect, and the wrong conclusion
+    // gets written down. Env is the debug channel and must win, so re-apply exactly the ones a
+    // property can now clobber. Anything without a property counterpart is unaffected and stays
+    // where it is set above.
+    auto reF = [](const char* n, float d)
+    { const char* v = std::getenv(n); return v ? std::strtof(v, nullptr) : d; };
+    auto reU = [](const char* n, uint32_t d)
+    { const char* v = std::getenv(n); return v ? uint32_t(std::strtoul(v, nullptr, 10)) : d; };
+    mRelaxSettings.diffusePrepassBlurRadius = reF("NRD4_PREPASS", mRelaxSettings.diffusePrepassBlurRadius);
+    mRelaxSettings.diffuseMaxAccumulatedFrameNum = reU("NRD4_MAXACCUM", mRelaxSettings.diffuseMaxAccumulatedFrameNum);
+    mRelaxSettings.diffusePhiLuminance = reF("NRD4_PHILUM", mRelaxSettings.diffusePhiLuminance);
+    mRelaxSettings.historyFixFrameNum = reU("NRD4_HISTFIX", mRelaxSettings.historyFixFrameNum);
+    mReblurSettings.diffusePrepassBlurRadius = reF("NRD4_R_PREPASS", mReblurSettings.diffusePrepassBlurRadius);
+    mReblurSettings.maxBlurRadius = reF("NRD4_R_MAXBLUR", mReblurSettings.maxBlurRadius);
+    mReblurSettings.maxAccumulatedFrameNum = reU("NRD4_R_MAXACCUM", mReblurSettings.maxAccumulatedFrameNum);
+    mReblurSettings.historyFixFrameNum = reU("NRD4_R_HISTFIX", mReblurSettings.historyFixFrameNum);
+#endif
 }
 
 Properties NRDPass::getProperties() const
