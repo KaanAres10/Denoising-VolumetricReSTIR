@@ -111,6 +111,32 @@ directly-visible emissive radiance as its own buffer -- the same shape of change
 surface split in `FinalShading.cs.slang`, and verifiable the same way: with the denoiser bypassed,
 emission + denoised must reconstruct `accumulated_color` exactly.
 
+## OPEN AND UNFIXED: REBLUR's medium is far too transparent
+
+Read this before trusting anything below it about REBLUR.
+
+The coverage mask (`VR_NRD_VOLMASK`, commit 68de73c) does NOT fix the visible problem. It changes
+3.18% of pixels by a mean of 0.2/255 -- invisible. Looked at side by side, REBLUR with and without
+the mask are indistinguishable, and both show the doors, wall panels, plant pots, string lights and
+paving stones straight through the plume, which reads as a faint haze. RELAX in the same frame is a
+solid occluding mass.
+
+The mask was built and shipped on the strength of a leak ratio going 0.401 -> 0.326, and that number
+is real. It is also irrelevant, because it was measured on the wrong region: the mask
+`mediumAlpha > 0.75` covers only the plume's core, 14% of the frame. The transparency lives in the
+BROAD medium-density region, which every measurement so far excluded. The same mistake produced the
+earlier "surface share is only 2.4%, so bleed-in is not the cause" conclusion.
+
+What is NOT yet known, and must be measured per alpha BAND (not on one dense mask) before anything
+else is built:
+  * how the volume half's energy compares to RELAX's across 0.1 < alpha < 0.75, not just above 0.75;
+  * how the surface half's share varies across those bands -- structure is visible at energy
+    fractions far below where it shows up in a mean;
+  * whether REBLUR's volume half is genuinely dimmer there, or the surface half is brighter, or both.
+
+Method note for whoever picks this up: check the IMAGE before claiming a fix. Three fixes this
+session were declared on metrics alone and two of them changed nothing a viewer could see.
+
 ## Open: REBLUR is fed the wrong hit distance, and normalising is not the fix
 
 REBLUR's smoke reads see-through while RELAX's stays opaque. Chasing that led to two findings, the
