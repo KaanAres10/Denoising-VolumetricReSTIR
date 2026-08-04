@@ -58,6 +58,57 @@ Superseded by this, kept because the reasoning pattern recurs: the volume half l
 are 2% of the frame and the dense core is 0.93 vs RELAX's 0.94. The standing hypothesis (stochastic
 scatter-point viewZ jitter rejecting history in the volume half) was never tested and is now moot.
 
+## SOLVED: the blocky plume boundary, which the confidence fix itself caused
+
+Reported after the confidence fix shipped: "the boundary of the volume, opaqueness not there, and the
+boundary seems to have wrong transparency." Correct, and it was the fix's own side effect. Feeding
+raw transmittance as `IN_DIFF_CONFIDENCE` makes accumulation change abruptly across the silhouette,
+and NRD schedules its work in TILES (`REBLUR_ClassifyTiles`) -- so an abrupt per-tile change in
+accumulation comes out as hard rectangular seams cutting into the plume, plus surviving ghosts of a
+street lamp and a bollard. Visible at 3x zoom on frame 62 of the orbit; invisible in every band mean,
+because the seams are a few percent of the frame.
+
+FIX: divide the surface half by transmittance BEFORE the filter and multiply it back after
+(`VR_NRD_SURFTR`, default ON). The half is `T * L_surface`, and `T` belongs to the medium in FRONT of
+the wall -- it varies over a few pixels along a boundary in none of NRD's guides and does not follow
+the surface's motion vector. Demodulated, the denoiser sees the unoccluded wall, smooth, with no
+plume-shaped feature to tile on; the occlusion is re-applied from the estimator's own per-pixel `T`.
+
+Re-modulation uses the adapter's exported `demodDivisor`, NOT albedo again -- once transmittance is
+in the divisor the two differ, and having ModulateIllumination re-derive the formula is how a
+demodulate/remodulate pair silently stops being a round trip. Bypassed round trip closes at max
+9.7656e-04 (exactly the fp16 quantum), mean 9.94e-08.
+
+Demodulation does NOT subsume the confidence fix, which I assumed and measured to be wrong. The
+divisor is floored at 0.05, so it stops tracking `T` where the medium is opaque. Composite against
+the undenoised image of the same frame, 20-8 px inside the silhouette:
+
+| neither | demodulation alone | confidence alone | both |
+|---|---|---|---|
+| 1.399 | 1.332 | 0.945 | **0.979** |
+
+and the floor cannot be lowered to cover it: 0.05 -> 0.02 -> 0.01 -> 0.003 gives 1.332 -> 2.515 ->
+4.640 -> 6.142, because dividing near-zero surface radiance by near-zero `T` makes fireflies the
+filter spreads and re-modulation cannot retrieve. That is the emissive-bloom failure mode in a
+different divisor.
+
+So the two own different regimes, and the ADAPTER emits the handover itself --
+`saturate(T / minTransmittance)`, 1 while the divisor still tracks `T`, ramping to 0 as it floors out
+-- rather than a second threshold that could drift from the first. Raw `T` as confidence measured
+worse where demodulation already works (composite 4-6 px inside: 1.013/1.027 with demodulation alone
+against 1.067/1.088 with raw-T confidence on top).
+
+Differencing the two 90-frame orbits confirms the change is boundary-localised: interior and
+background untouched, 2.9% of pixels moving by more than 0.02. Popping 38.58% -> 37.82%, flicker
+unchanged.
+
+METHOD NOTE, the expensive one this round: band means over the whole silhouette said the two
+configurations were identical (0.0590 / 0.0510 ghost correlation, composite within 1% of truth at
+every band). They are not, and the difference is glaring at 3x zoom. Two separate traps combined --
+the metric averaged over a ring that mixes every local context around the plume, and the captures
+were at a DIFFERENT camera pose from the frames being looked at, because `halves.py` and `flicker.py`
+step the orbit at different rates. Diff the sequences to find where they differ, then look there.
+
 ## SOLVED: the halo, and what the popping actually is
 
 Reported alongside the residual see-through. Both turned out to be separate from it.
@@ -422,7 +473,16 @@ smoke transparent too. If it does not, this explanation is wrong as well.
 `NRD4_MINLUMW`, `NRD4_LUMRELAX`, and the `NRD4_R_*` family. Nothing on this list changes the default
 path.
 
-The one exception, deliberately: **`VR_NRD_SURFCONF` defaults ON**, because it is a correctness fix
-rather than an experiment -- without it the split path draws the scene through the smoke. It only
-takes effect when `VR_NRD_SPLIT=1`, which is itself off by default, so the default single-denoiser
-path is unchanged. `VR_NRD_SURFCONF=0` restores the old behaviour for an A/B.
+Two exceptions, deliberately, both correctness fixes rather than experiments and both confined to the
+split path (itself off by default, so the single-denoiser default is unchanged):
+
+* **`VR_NRD_SURFTR` defaults ON** -- transmittance demodulation of the surface half. Off, the plume's
+  boundary comes out in hard rectangles. `VR_NRD_SURFTR=0` restores the old behaviour for an A/B, and
+  with it off `VR_NRD_SURFCONF` falls back to raw transmittance as before.
+* **history confidence is always on in the split** -- sourced from the adapter's `historyConfidence`
+  when demodulation is on, else from `mediumTransmittance` under `VR_NRD_SURFCONF`. Without it the
+  split path draws the scene through the smoke.
+
+`VR_NRD_MINTR` (default 0.05) is the divisor floor AND the confidence handover point; they are the
+same number on purpose. Do not raise it without re-checking the deep-interior number, and do not
+lower it at all -- see the firefly measurements above.
