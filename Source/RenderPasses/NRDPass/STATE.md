@@ -146,7 +146,22 @@ rejects history continuously, so the volume half never accumulates; TAA then smo
 signal into a faint haze. RELAX would have to be more tolerant of the same input for this to be the
 explanation, which is checkable.
 
-Next measurement, and it must be on the ORBIT capture, not the static one:
+LOCALISED, on the orbit capture (`halves.py` now takes VR_ORBIT=1). Volume half per coverage band,
+as a fraction of raw:
+
+| band | % frame | raw (x1e-4) | RELAX | REBLUR | RELAX/raw | REBLUR/raw |
+|---|---|---|---|---|---|---|
+| 0.10-0.35 | 0.87% | 0.817 | 0.843 | 0.706 | 1.03 | 0.86 |
+| 0.35-0.75 | 1.10% | 2.007 | 1.770 | 1.568 | 0.88 | 0.78 |
+| 0.75-1.00 | 20.21% | 3.903 | 3.683 | 3.643 | 0.94 | 0.93 |
+
+Under motion REBLUR loses 14-22% of the volume half in the THIN and MID bands while RELAX loses
+0-12%; the dense core is intact in both. That is the transparency -- the plume's body thins while its
+core stays, so it reads as haze over the buildings. It is also exactly where the scatter point is
+most stochastic, i.e. where the volume half's viewZ jitters most, which is what the temporal
+hypothesis predicts.
+
+Still to do:
   * volume-half energy per alpha band, orbit vs static, RELAX vs REBLUR -- does REBLUR's volume half
     collapse only when the camera moves;
   * NRD's validation overlay (VR_NRD_VALIDATION=1) on the volume instance, which draws history

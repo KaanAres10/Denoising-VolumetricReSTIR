@@ -31,4 +31,30 @@ m.addGraph(g)
 m.resizeSwapChain(RENDER[0], RENDER[1])
 m.ui = True
 vr.pin_clock()
-vr.capture(g, vr.env_int("VR_CAPTURE_FRAME", 40), os.environ["VR_OUT_DIR"], "hv", exit_after=True)
+# VR_ORBIT=1 drives bistro's authored orbit before capturing, because the artifact this script
+# exists to diagnose only appears under camera motion -- on the static default camera RELAX and
+# REBLUR are visually identical. Measuring the halves on the static frame was measuring the regime
+# where nothing is wrong.
+FRAME = vr.env_int("VR_CAPTURE_FRAME", 40)
+if vr.env_bool("VR_ORBIT", False):
+    import math
+    cam = m.scene.camera
+    cx, cy, cz = -11.0, 6.025879, 0.0
+    p0 = cam.position
+    r = math.sqrt((p0.x - cx) ** 2 + (p0.z - cz) ** 2)
+    y, a0 = p0.y, math.atan2(p0.z - cz, p0.x - cx)
+    step = (-180.0 * math.pi / 180.0) / 99.0
+    for i in range(FRAME):
+        a = a0 + step * i
+        cam.position = float3(cx + r * math.cos(a), y, cz + r * math.sin(a))
+        cam.target = float3(cx, cy, cz)
+        m.renderFrame()
+    # Hold the final pose for the capture frame itself.
+    a = a0 + step * FRAME
+    cam.position = float3(cx + r * math.cos(a), y, cz + r * math.sin(a))
+    cam.target = float3(cx, cy, cz)
+    print("[halves] orbited %d frames, r=%.2f" % (FRAME, r))
+    sys.stdout.flush()
+
+vr.capture(g, FRAME if not vr.env_bool("VR_ORBIT", False) else FRAME + 1,
+           os.environ["VR_OUT_DIR"], "hv", exit_after=True)
