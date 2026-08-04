@@ -449,6 +449,64 @@ smoke transparent too. If it does not, this explanation is wrong as well.
    whole explanation for `VR_NRD_VOLMV` measuring 1.86e-05, and it blocks the velocity-guided
    temporal work entirely. Fixing it needs the bake tool, the loader, and a re-bake of 100 frames.
 
+## TOP OPEN PROBLEM: NRD's temporal accumulation contributes NOTHING here
+
+Established two independent ways, and it invalidates a lot of what is written below it. Every NRD
+result in this project is from a denoiser running with ~1 frame of history, i.e. effectively
+spatial-only.
+
+**Functional proof, no interpretation required.** Static camera (`VR_ORBIT_DEG=0`), 8 consecutive
+frames, single denoiser, frame-to-frame difference:
+
+| config | d1 | d2 |
+|---|---|---|
+| raw ReSTIR, no denoiser | 0.27490 | 0.46012 |
+| NRD, `maxAccumulatedFrameNum = 1` | 0.03109 | 0.05108 |
+| NRD, `maxAccumulatedFrameNum = 30` | 0.03141 | 0.05173 |
+
+One frame of history performs the SAME as thirty. The 8.8x improvement over raw is entirely RELAX's
+spatial a-trous; the temporal stage does nothing.
+
+**NRD's own validation overlay agrees** (`VR_NRD_VALIDATION=1`, now wired on both the split and
+single paths). With a COMPLETELY STATIC camera at frame 40+:
+* The MV viewport is saturated -- black means the supplied motion vector matches the reprojection NRD
+  derives from world position; ours disagrees by >= 1 px in both axes with nothing moving.
+* DIFF-SPEC FRAMES is covered in NRD's `historyLength < 2` checkerboard across the whole frame. That
+  marker is unambiguous and does not depend on reading colours: it is only drawn where history is
+  under 2 frames. After 40 static frames it should be pinned at the 30-frame cap.
+
+Identical on the split and non-split paths, so it is the integration, not the split.
+
+REFUTED so far, each measured rather than argued:
+* Motion vectors. `GBufferRaster.mvec` is <= 0.25 px on a static camera and `VolumetricReSTIR.mvec`
+  is <= 0.0004 px, i.e. correctly zero.
+* viewZ. Valid and fully populated -- max 110 m, mean 22 m, 100% non-zero.
+* The `copyMatrix` transpose. `NRD4_NO_TRANSPOSE=1` gives 3.8 against 3.9, no change. Kept as a
+  switch so it does not need re-deriving.
+* Normal encoding mismatch between our packing and the NRD library build. The overlay prints the
+  encoding it was compiled with: it reads **NORMALS 2**, matching NRDPass's
+  `NRD_NORMAL_ENCODING = 2`.
+* `accumulationMode` (left at CONTINUE), `frameIndex` (increments), prev matrices, prev sizes and
+  prev jitter (all updated at the end of execute).
+* History confidence. The volume branch has none wired at all and shows the same history length.
+
+STILL TO CHECK, in the order I would try them:
+1. Whether the history-length resource the overlay reads is even the one RELAX_DIFFUSE_SH writes --
+   if the SH variant stores it elsewhere, the overlay reading is wrong and only the functional test
+   above stands (that test is the stronger of the two anyway).
+2. `viewZ` SIGN. Falcor's view space is right-handed with -Z forward and we feed a positive linearZ.
+   NRD uses `abs(viewZ)` in the places checked so far, which is why this is second rather than first,
+   but the unprojection path was not read end to end.
+3. `IN_VIEWZ` format: NRD asks for "R16f+" and gets RG32Float. Binding is by texture so this should
+   be fine, but it has not been verified against what NRD's descriptor expects.
+4. Instrument `nrd::GetComputeDispatches` and log which passes NRD actually schedules -- if the
+   temporal accumulation dispatch is being skipped entirely, none of the above matters.
+
+THE COROLLARY, and the reason this is at the top of the file: **every temporal conclusion below is
+suspect.** "NRD's accumulation is saturated because VolumetricReSTIR already accumulates" was the
+earlier explanation for the same observation, and it was wrong -- accumulation is not saturated, it
+is not running. Retune after this is fixed, not before.
+
 ## MEASURE FLICKER BY SPATIAL SCALE -- the per-pixel metric misses what people see
 
 The second temporal difference used everywhere in this file is a HIGH-PASS measure: it is dominated
