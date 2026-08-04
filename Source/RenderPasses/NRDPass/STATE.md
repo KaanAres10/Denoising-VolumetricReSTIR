@@ -497,6 +497,39 @@ FOUR MITIGATIONS TRIED, ALL MEASURED WORSE OR NEUTRAL (N=30, baseline 0.26185):
 
 Switches kept, default off, as recorded dead ends: `VR_NRD_EMISDN`, `VR_NRD_EMISTAA`.
 
+### "But REBLUR and RR work" -- they do not, and measuring per-category says why
+
+Same bucketing, applied to all three on the FINAL displayed image (RELAX and REBLUR after TAA, RR
+after its own resolve, since that is what each configuration actually shows):
+
+| | total flicker energy | emitter share | emitter per-pixel | in-medium per-pixel |
+|---|---|---|---|---|
+| RELAX + TAA | 31499 | 14.9% | 5.85x | 0.49x |
+| REBLUR + TAA | **26813** | 18.0% | 7.05x | **0.22x** |
+| Ray Reconstruction | **38422** | 16.0% | 6.27x | 0.38x |
+
+Two corrections fall out, both against things stated earlier in this file:
+
+1. **RR does not "work". It is the WORST of the three on flicker** -- 22% more total flicker energy
+   than RELAX, and 99.8% of its worst-flickering pixels are emitters, at a higher per-pixel rate
+   (6.27x) than RELAX's. It reads as steadier because it is 2.5x sharper and resolves the background
+   crisply; sharpness is being mistaken for stability, per-category this time rather than in the
+   frame mean.
+
+2. **Denoising the emission does NOT fix the strobe.** RR takes `accumulated_color` straight into
+   DLSSDPass -- it never goes through `add_nrd_split`, so the emission bypass does not apply to it
+   and RR denoises emission along with everything else. It still has the worst emitter tail of the
+   three. So "route emission through a denoiser" is refuted by RR's own numbers, not just by the two
+   NRD attempts above. A signal that is exactly zero in 76% of frames is hard for ANY filter.
+
+3. REBLUR's real advantage is **in the medium**, where it is 2.2x steadier than RELAX (0.22x vs
+   0.49x per-pixel), not on emitters -- its emitter share is actually the highest of the three. The
+   10% total-flicker gap to RELAX is the medium and the surfaces, not the thing that dominates the
+   absolute level.
+
+Which is the strongest argument yet that the fix belongs at the source: three different denoisers,
+including a trained one that filters emission directly, all fail to remove it.
+
 THE ACTUAL FIX IS AT THE SOURCE, and it is an estimator change, not a denoiser one: emission should
 not be a stochastic reservoir choice. Integrated deterministically along the primary ray during the
 march -- the same shape of change as `opticalThickness`, which already rides that march -- it would
