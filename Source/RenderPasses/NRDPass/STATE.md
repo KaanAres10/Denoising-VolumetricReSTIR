@@ -449,6 +449,51 @@ smoke transparent too. If it does not, this explanation is wrong as well.
    whole explanation for `VR_NRD_VOLMV` measuring 1.86e-05, and it blocks the velocity-guided
    temporal work entirely. Fixing it needs the bake tool, the loader, and a re-bake of 100 frames.
 
+## How much of this is tuned to bistro's plume?
+
+Asked directly, and worth having a straight answer on record. Everything this session was measured on
+ONE scene, ONE medium, ONE camera path, ONE resolution (1280x720), and for the still analyses ONE
+frame. Splitting the changes by what they actually rest on:
+
+MECHANISM, not tuning -- these follow from what the quantities MEAN and should transfer:
+* Transmittance demodulation of the surface half. `L = T * L_surface` is the compositing identity for
+  a participating medium; `T` not following the surface's motion vector is a property of geometry,
+  not of this plume.
+* Re-modulating by the adapter's exported divisor rather than re-deriving it.
+* The confidence handover being the SAME number as the divisor floor.
+* Pre-pass 0. Derived from `saturate(hitDist / frustumSize)` saturating whenever hit distance is a
+  camera-to-scatter distance, which is true of any primary-distance guide, and already established
+  for RELAX by a monotonic sweep.
+* Per-instance v4 properties.
+
+TUNED, and the honest risk list:
+* `VR_NRD_MINTR = 0.05` -- the divisor floor, i.e. "never amplify by more than 20x". Dimensionless
+  (transmittance is [0;1]) so it carries across scenes in units, but the right value depends on how
+  noisy the surface estimate is, so it is really a function of spp and medium density. Chosen from a
+  4-point sweep on bistro; 0.02 and below were catastrophic (fireflies), 0.05 was the first that
+  worked. NOT bracketed from above -- 0.1 and 0.2 were never tried.
+* `VR_NRD_VOL_BLUR = 12` px at 720p -- now scaled by render height so the world-space footprint is
+  constant, but how far a medium's radiance may legitimately spread is a property of the MEDIUM. A
+  thin wide fog would want a larger radius than a dense compact plume. Highest overfitting risk on
+  the list.
+* `VR_NRD_COVKNEE = 0.2` (pre-existing) -- same character.
+
+UNTESTED REGIMES, where the reasoning may hold but the measurement does not exist:
+* A medium that fills the frame (thin fog). Then `T ~ 0.5` everywhere, demodulation is active
+  everywhere and the confidence handover never fires -- the opposite balance to bistro's plume, where
+  the core is opaque and demodulation floors out over 20% of the frame.
+* A small or distant medium, where the plume is a few dozen pixels across and the blur radius is
+  comparable to its whole extent.
+* An ANIMATED medium. Bistro is a single time step, so only the camera moves; nothing here tests a
+  plume moving against a static camera, which is exactly the case velocity-guided reprojection is
+  for. The plume scene can animate but has no surfaces to speak of, so it cannot exercise the split.
+* Any resolution other than 1280x720.
+* Anisotropic phase functions. The Dc SH resolve assumes `g = 0`.
+
+Cheapest checks if this needs to hold elsewhere, in order: run the plume scene with the split on to
+get a second medium; re-run the halo sweep at 4K to confirm the resolution scaling behaves; sweep
+`VR_NRD_MINTR` upward (0.1, 0.2) to find the top of the working range rather than only the bottom.
+
 ## Traps that have already cost time
 
 * **Never pipe a Mogwai run through `Select-Object -First N`.** It closes the pipeline and kills the
