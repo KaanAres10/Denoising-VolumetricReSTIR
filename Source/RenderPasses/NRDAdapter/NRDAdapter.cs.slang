@@ -255,8 +255,10 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     // firefly. Below the floor the divisor stops tracking T, so those pixels simply keep the old
     // behaviour -- which is where the history-confidence path still earns its keep.
     const float trRaw = gTransmittance[pixel].x;
-    const float transmittance = gDemodulateTransmittance
-        ? max(trRaw, gMinTransmittance) : 1.f;
+    // Hard floor under the user-facing floor: gMinTransmittance is settable to 0 from a script, and
+    // 0 here divides the whole surface half by zero.
+    const float trFloor = max(gMinTransmittance, 1e-4f);
+    const float transmittance = gDemodulateTransmittance ? max(trRaw, trFloor) : 1.f;
 
     if (gWriteHistoryConfidence)
     {
@@ -272,7 +274,16 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
 
     const float3 divisor = albedo * structure * selection * transmittance;
     const float3 demodulated = radiance / divisor;
-    if (gWriteDemodDivisor) gOutDemodDivisor[pixel] = float4(divisor, 1.f);
+
+    // What gets multiplied back downstream is NOT the whole divisor: `selection` is deliberately
+    // excluded. It is a CORRECTION for the split's structural zeros, not a demodulation -- the
+    // estimator is too dark there and dividing by the local win-rate is the whole point, so
+    // re-modulating by it would undo the correction and leave the code looking like it still worked.
+    // Everything else here is a genuine demodulate/remodulate pair.
+    //
+    // This only matters now that ModulateIllumination consumes this output. Before transmittance
+    // demodulation it was fed plain albedo, so the question could not arise.
+    if (gWriteDemodDivisor) gOutDemodDivisor[pixel] = float4(albedo * structure * transmittance, 1.f);
 
     // --- hit distance ---
     // -1 means the ray passed through empty space. Feed a finite stand-in rather than the sentinel:
