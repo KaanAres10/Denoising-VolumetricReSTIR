@@ -63,6 +63,14 @@ private:
     int mVolumeStructureBlur = 5;
     /// Floor on the medium term, same role as mMinReflectance.
     float mVolumeStructureFloor = 0.05f;
+
+    /// Divide the SURFACE half by primary-ray transmittance before denoising, so the denoiser sees
+    /// the unoccluded wall and the plume's silhouette is re-applied afterwards, sharp, from the
+    /// estimator. Requires the "transmittance" input; ModulateIllumination must be fed this pass's
+    /// "demodDivisor" output so the same value is multiplied back.
+    bool mDemodulateTransmittance = false;
+    /// Floor on the transmittance term, same role as mMinReflectance.
+    float mMinTransmittance = 0.05f;
 #if FALCOR_HAS_NRD4
     /// Emit the SH0/SH1 pair for NRD v4's RELAX_DIFFUSE_SH instead of packed radiance+hitDist.
     /// Changes what reflect() declares, so toggling it needs a graph recompile.

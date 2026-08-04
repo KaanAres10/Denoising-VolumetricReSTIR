@@ -92,6 +92,36 @@ cbuffer CB
     bool  gWriteDemodDivisor;
     int   gVolumeStructureBlur;   // box half-width in pixels
     float gVolumeStructureFloor;  // divisor floor, same role as gMinReflectance
+
+    // --- transmittance demodulation, for the SURFACE half ---
+    // The surface half is T * L_surface, and T is a property of the medium in FRONT of the wall. That
+    // makes it the one factor in this buffer that a surface denoiser has no business filtering: it
+    // varies over a few pixels at the plume's boundary, along a silhouette that appears in NONE of
+    // NRD's guides, and it does not follow the surface's motion vector.
+    //
+    // So divide it out first and put it back after, exactly as albedo already is. The denoiser then
+    // sees L_surface -- the unoccluded wall, smooth and with no plume-shaped feature in it at all --
+    // and blurring that is harmless. The occlusion is re-applied afterwards from the estimator's own
+    // T, which is sharp and per-pixel exact, so the boundary's opacity stops being the accidental
+    // outcome of two independently blurred halves.
+    //
+    // It does NOT subsume the history-confidence fix, which is what I first assumed and measured to
+    // be wrong. The floor below is load-bearing: deep inside the plume T is far under it, so the
+    // divisor stops tracking T and demodulation stops working exactly where the medium is opaque.
+    // Composite against the undenoised image of the same frame, 20-8 px inside the silhouette:
+    //
+    //     neither fix 1.399    demodulation alone 1.332    confidence alone 0.945    both 0.979
+    //
+    // and the floor cannot simply be lowered to cover it -- 0.05 -> 0.02 -> 0.01 -> 0.003 gives
+    // 1.332 -> 2.515 -> 4.640 -> 6.142, because dividing a near-zero surface radiance by a near-zero
+    // T amplifies noise into fireflies that the filter then spreads and re-modulation cannot
+    // retrieve. That is the emissive-bloom failure mode again, in a different divisor.
+    //
+    // So the two own different regimes, and gOutHistoryConfidence hands over between them at THIS
+    // threshold rather than at a second one that could drift.
+    bool  gDemodulateTransmittance;
+    float gMinTransmittance;      // divisor floor, same role as gMinReflectance
+    bool  gWriteHistoryConfidence;
 }
 
 // Inputs.
@@ -102,6 +132,7 @@ Texture2D<float4> gSpecRough;        // .a = perceptual roughness (GBufferRaster
 Texture2D<float4> gDiffuseAlbedo;    // demodulation divisor (DLSSDGuides, medium-blended)
 Texture2D<float> gScatterDensity;    // medium density at the scatter point; 0 where no medium
 Texture2D<float> gMediumAlpha;       // medium coverage (1 - transmittance), the blend weight
+Texture2D<float4> gTransmittance;    // primary-ray transmittance; 1 where the ray met no medium
 
 // Outputs.
 // NOTE: NRDPass binds diffuseRadianceHitDist as a UAV and rewrites it in place, so nothing
@@ -110,6 +141,10 @@ RWTexture2D<float4> gOutNormalRoughness;
 /// EXACTLY what the radiance was divided by, so ModulateIllumination can multiply back the same
 /// value rather than two sites agreeing on a formula by hand.
 RWTexture2D<float4> gOutDemodDivisor;
+/// NRD's IN_DIFF_CONFIDENCE, for the surface half: 1 wherever demodulation is doing its job, ramping
+/// to 0 as transmittance falls under the divisor floor and it stops. Written here rather than by the
+/// estimator so the handover threshold is the SAME number the divisor is floored at, by construction.
+RWTexture2D<float4> gOutHistoryConfidence;
 
 #if SH_MODE
 // NRD v4 spherical-harmonics mode. SH1 carries the DIRECTION incoming radiance arrives from, scaled
@@ -215,7 +250,27 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
         selection = max(hits / max(total, 1.f), gSelectionFloor);
     }
 
-    const float3 divisor = albedo * structure * selection;
+    // Floored for the same reason albedo is: where the medium is nearly opaque the true surface
+    // contribution is ~0 anyway, and dividing by a near-zero T would turn the residual into a
+    // firefly. Below the floor the divisor stops tracking T, so those pixels simply keep the old
+    // behaviour -- which is where the history-confidence path still earns its keep.
+    const float trRaw = gTransmittance[pixel].x;
+    const float transmittance = gDemodulateTransmittance
+        ? max(trRaw, gMinTransmittance) : 1.f;
+
+    if (gWriteHistoryConfidence)
+    {
+        // 1 while the divisor still tracks T, falling to 0 as it floors out. Running confidence
+        // BELOW 1 where demodulation already works measures worse, not better: it discards history
+        // the demodulated signal could still use, and the extra noise inflates the mean (composite
+        // 4-6 px inside the silhouette, 1.013/1.027 with demodulation alone against 1.067/1.088 with
+        // both applied everywhere).
+        const float c = gDemodulateTransmittance
+            ? saturate(trRaw / max(gMinTransmittance, 1e-6f)) : saturate(trRaw);
+        gOutHistoryConfidence[pixel] = float4(c, c, c, 1.f);
+    }
+
+    const float3 divisor = albedo * structure * selection * transmittance;
     const float3 demodulated = radiance / divisor;
     if (gWriteDemodDivisor) gOutDemodDivisor[pixel] = float4(divisor, 1.f);
 

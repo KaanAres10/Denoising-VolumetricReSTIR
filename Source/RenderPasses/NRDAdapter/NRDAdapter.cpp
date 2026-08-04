@@ -14,15 +14,19 @@ const char kSpecRoughInput[] = "specRough";
 const char kDiffuseAlbedoInput[] = "diffuseAlbedo";
 const char kScatterDensityInput[] = "scatterDensity";
 const char kMediumAlphaInput[] = "mediumAlpha";
+const char kTransmittanceInput[] = "transmittance";
 
 // Names match NRDPass's input pins so the graph wiring reads directly.
 const char kDiffuseRadianceHitDistOutput[] = "diffuseRadianceHitDist";
 const char kNormalRoughnessOutput[] = "normWRoughnessMaterialID";
 const char kDemodDivisorOutput[] = "demodDivisor";
+const char kHistoryConfidenceOutput[] = "historyConfidence";
 
 const char kMinReflectance[] = "minReflectance";
 const char kMissHitDistance[] = "missHitDistance";
 const char kDemodulateVolume[] = "demodulateVolume";
+const char kDemodulateTransmittance[] = "demodulateTransmittance";
+const char kMinTransmittance[] = "minTransmittance";
 const char kNormalizeBySelection[] = "normalizeBySelection";
 const char kSelectionBlur[] = "selectionBlur";
 const char kSelectionFloor[] = "selectionFloor";
@@ -57,6 +61,10 @@ NRDAdapter::NRDAdapter(ref<Device> pDevice, const Properties& props) : RenderPas
             mUseNormalGuide = value;
         else if (key == kDemodulateVolume)
             mDemodulateVolume = value;
+        else if (key == kDemodulateTransmittance)
+            mDemodulateTransmittance = value;
+        else if (key == kMinTransmittance)
+            mMinTransmittance = value;
         else if (key == kNormalizeBySelection)
             mNormalizeBySelection = value;
         else if (key == kSelectionBlur)
@@ -111,6 +119,8 @@ Properties NRDAdapter::getProperties() const
     props["useScatterDistance"] = mUseScatterDistance;
     props["useNormalGuide"] = mUseNormalGuide;
     props[kDemodulateVolume] = mDemodulateVolume;
+    props[kDemodulateTransmittance] = mDemodulateTransmittance;
+    props[kMinTransmittance] = mMinTransmittance;
     props[kNormalizeBySelection] = mNormalizeBySelection;
     props[kSelectionBlur] = mSelectionBlur;
     props[kSelectionFloor] = mSelectionFloor;
@@ -140,6 +150,8 @@ RenderPassReflection NRDAdapter::reflect(const CompileData& compileData)
     r.addInput(kScatterDensityInput, "Medium density at the scatter point (volumetric demodulation)")
         .flags(RenderPassReflection::Field::Flags::Optional);
     r.addInput(kMediumAlphaInput, "Medium coverage, the blend weight for volumetric demodulation")
+        .flags(RenderPassReflection::Field::Flags::Optional);
+    r.addInput(kTransmittanceInput, "Primary-ray transmittance (surface-half demodulation divisor)")
         .flags(RenderPassReflection::Field::Flags::Optional);
 #if FALCOR_HAS_NRD4
     // Required in SH mode, and NOT optional: SH1 carries "direction * luminance", so an unbound
@@ -202,6 +214,12 @@ RenderPassReflection NRDAdapter::reflect(const CompileData& compileData)
     // downstream is bit-identical to the divisor used here.
     r.addOutput(kDemodDivisorOutput, "Exactly what the radiance was divided by")
         .format(ResourceFormat::RGBA32Float)
+        .texture2D(sz.x, sz.y)
+        .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
+    // NRD wants "R8+" and reads a single channel. RGBA16Float keeps the ramp smooth -- at 1/255 the
+    // handover between demodulation and history rejection would be a visible staircase.
+    r.addOutput(kHistoryConfidenceOutput, "NRD history confidence for the surface half")
+        .format(ResourceFormat::RGBA16Float)
         .texture2D(sz.x, sz.y)
         .bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
     r.addOutput(kNormalRoughnessOutput, "Oct-encoded normal, linear roughness, material ID")
@@ -278,6 +296,22 @@ void NRDAdapter::execute(RenderContext* pRenderContext, const RenderData& render
     var["CB"]["gSelectionFloor"] = mSelectionFloor;
     var["CB"]["gDemodulateVolume"] = demod;
     var["CB"]["gWriteDemodDivisor"] = pDivisor != nullptr;
+    // Gated on its OWN input, individually -- the coupled gate that silently zeroed the volumetric
+    // guides is the mistake this project has already paid for once.
+    const auto pTransmittance = renderData.getTexture(kTransmittanceInput);
+    const bool demodTr = mDemodulateTransmittance && pTransmittance != nullptr;
+    if (mDemodulateTransmittance && !demodTr)
+    {
+        logWarning("NRDAdapter: '{}' is on but '{}' is not connected; transmittance demodulation is disabled.",
+                   kDemodulateTransmittance, kTransmittanceInput);
+    }
+    const auto pConfidence = renderData.getTexture(kHistoryConfidenceOutput);
+    var["CB"]["gWriteHistoryConfidence"] = pConfidence != nullptr;
+    var["gOutHistoryConfidence"] = pConfidence ? pConfidence : renderData.getTexture(kDiffuseRadianceHitDistOutput);
+    var["CB"]["gDemodulateTransmittance"] = demodTr;
+    var["CB"]["gMinTransmittance"] = mMinTransmittance;
+    // Any bound texture will do when the feature is off; the shader never reads it.
+    var["gTransmittance"] = pTransmittance ? pTransmittance : renderData.getTexture(kDiffuseAlbedoInput);
     var["CB"]["gVolumeStructureBlur"] = mVolumeStructureBlur;
     var["CB"]["gVolumeStructureFloor"] = mVolumeStructureFloor;
 

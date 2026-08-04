@@ -399,7 +399,16 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     sh = env_bool("VR_NRD_SH", False)
     method = env("VR_NRD_METHOD", "RelaxDiffuseSh" if sh else "RelaxDiffuse")
 
-    def adapter(name, src, normal_src, demodulate, hitdist_src):
+    # Divide the surface half by primary-ray transmittance before denoising, and put it back after.
+    # T is the one factor in that buffer a SURFACE denoiser has no business filtering: it varies over
+    # a few pixels along the plume's silhouette, which appears in none of NRD's guides, and it belongs
+    # to the medium in front of the wall rather than to the wall. Demodulated, the denoiser sees the
+    # unoccluded wall -- smooth, no plume-shaped feature at all -- and the occlusion is re-applied
+    # from the estimator's own per-pixel T, so the boundary's opacity stops being the accidental
+    # outcome of two independently blurred halves.
+    surf_demod_tr = env_bool("VR_NRD_SURFTR", True)
+
+    def adapter(name, src, normal_src, demodulate, hitdist_src, transmittance_src=None):
         # minReflectance 1.0 makes the divisor exactly 1, because albedo is always <= 1. That is how
         # the volume half opts out of albedo demodulation -- a surface albedo is not a property the
         # in-scattered radiance was ever multiplied by, so dividing by it would be inventing a
@@ -433,6 +442,9 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
                  "selectionFloor": env_float("VR_NRD_SELFLOOR", 0.1)}
         if not demodulate:
             props["minReflectance"] = 1.0
+        if transmittance_src:
+            props["demodulateTransmittance"] = True
+            props["minTransmittance"] = env_float("VR_NRD_MINTR", 0.05)
         if sh:
             props["shMode"] = True
             props["shYCoCg"] = method.lower().startswith("reblur")
@@ -449,6 +461,8 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         g.addEdge(normal_src, name + ".guideNormalW")
         g.addEdge(gbuffer + ".specRough", name + ".specRough")
         g.addEdge(gd + ".diffuseAlbedo", name + ".diffuseAlbedo")
+        if transmittance_src:
+            g.addEdge(transmittance_src, name + ".transmittance")
         if sh:
             g.addEdge(restir + ".lightDir", name + ".lightDir")
         return name
@@ -500,7 +514,8 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     # -- but it describes the SURFACE, which scatterDistance does not.
     a_s = adapter("NRDAdapterSurface", restir + ".surfaceColor",
                   gbuffer + ".guideNormalW", demodulate=env_bool("VR_NRD_DEMOD", True),
-                  hitdist_src=gbuffer + ".linearZ")
+                  hitdist_src=gbuffer + ".linearZ",
+                  transmittance_src=(restir + ".mediumTransmittance") if surf_demod_tr else None)
     #
     # The surface half also gets primary-ray transmittance as NRD's HISTORY CONFIDENCE, which is what
     # fixes the see-through smoke. The half is T * L_surface, and T belongs to the medium in FRONT of
@@ -522,8 +537,17 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     # than an experiment. VR_NRD_SURFCONF=0 restores the old behaviour for an A/B.
     n_s = denoiser("NRDSurface", a_s, gbuffer + ".linearZ", gbuffer + ".mvec",
                    env_int("VR_NRD_SURF_ACCUM", 30), env_float("VR_NRD_SURF_PHI", 2.0),
-                   confidence_src=(restir + ".mediumTransmittance"
-                                   if env_bool("VR_NRD_SURFCONF", True) else None))
+    #
+    # With demodulation on, the confidence comes from the ADAPTER rather than from raw transmittance,
+    # and the difference is the point. Raw T rejects history everywhere the medium is thick, including
+    # where demodulation is already handling it -- measured worse there (composite 4-6 px inside the
+    # silhouette: 1.013/1.027 with demodulation alone against 1.067/1.088 with raw-T confidence on
+    # top). The adapter instead emits saturate(T / minTransmittance): 1 while the divisor still tracks
+    # T, ramping to 0 as it floors out, so each mechanism covers exactly the regime the other cannot
+    # and the handover sits at one number rather than two that could drift apart.
+                   confidence_src=((a_s + ".historyConfidence") if surf_demod_tr
+                                   else (restir + ".mediumTransmittance"
+                                         if env_bool("VR_NRD_SURFCONF", True) else None)))
 
     # --- volume half: the medium's own geometry ---
     #
@@ -563,7 +587,12 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     # what the volume half needs: no reflectance to multiply back.
     g.addPass(createPass("ModulateIllumination"), "ModulateIllumination")
     g.addEdge(n_s + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.diffuseRadiance")
-    g.addEdge(gd + ".diffuseAlbedo", "ModulateIllumination.diffuseReflectance")
+    # Re-modulate by EXACTLY what the adapter divided by, not by albedo again. Once transmittance is
+    # part of the divisor the two are different, and having ModulateIllumination re-derive the formula
+    # is how a demodulate/remodulate pair silently stops being a round trip. demodDivisor is the
+    # adapter's own record of what it used.
+    g.addEdge(a_s + ".demodDivisor" if surf_demod_tr else gd + ".diffuseAlbedo",
+              "ModulateIllumination.diffuseReflectance")
     # VR_NRD_VOLMASK confines the volume half to the plume. residualRadiance is purely ADDITIVE, so
     # nothing can attenuate energy the denoiser blurred outside the medium's silhouette -- measured
     # leak ratio (ring+12 / core) raw 0.326, RELAX 0.365, REBLUR 0.401, with REBLUR's core losing 15%
