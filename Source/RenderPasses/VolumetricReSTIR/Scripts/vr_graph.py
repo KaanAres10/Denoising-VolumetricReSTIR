@@ -578,9 +578,17 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     # and the plume's INTERIOR gets slightly brighter doing it (0.87 -> 0.88 at -20..-8 px), because
     # the energy stops leaving. RELAX at its own defaults is 1.37 / 1.89 / 17.92 on the same bands,
     # so this is now the better-confined of the two rather than the worse.
+    #
+    # SCALED BY RESOLUTION, because NRD's blur radius is in PIXELS and 12 was measured at 720p. Left
+    # as a bare 12 it would be a much smaller world-space footprint at 4K and a much larger one at
+    # 540p -- i.e. the one number here most likely to be silently wrong on someone else's setup. This
+    # keeps the footprint constant in world space, which is what a medium's confinement wants; it
+    # does NOT make the value scene-independent, since how far the plume's radiance may legitimately
+    # spread is a property of the medium, not of the camera.
+    vol_blur = env_float("VR_NRD_VOL_BLUR", 12.0 * (render[1] / 720.0) if render else 12.0)
     n_v = denoiser("NRDVolume", a_v, restir + ".linearZ", restir + ".mvec",
                    env_int("VR_NRD_VOL_ACCUM", 30), env_float("VR_NRD_VOL_PHI", 2.0),
-                   max_blur=env_float("VR_NRD_VOL_BLUR", 12.0))
+                   max_blur=vol_blur)
 
     # --- composite ---
     # residualRadiance is a plain `outputColor.rgb += ...` term in ModulateIllumination, which is
