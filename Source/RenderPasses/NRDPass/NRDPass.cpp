@@ -317,6 +317,58 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     mRelaxSettings.diffuseMinLuminanceWeight = envF("NRD4_MINLUMW", mRelaxSettings.diffuseMinLuminanceWeight);
     mRelaxSettings.luminanceEdgeStoppingRelaxation =
         envF("NRD4_LUMRELAX", mRelaxSettings.luminanceEdgeStoppingRelaxation);
+
+    // REBLUR gets NONE of the tuning above. Everything from line 213 down applies to mRelaxSettings
+    // only, so under v4 REBLUR has been running at NRD's stock defaults throughout -- including
+    // diffusePrepassBlurRadius = 30, the exact value measured here as WORSE THAN THE UNDENOISED
+    // INPUT, monotonically, for the same reason it is wrong for RELAX: the kernel is sized by
+    // saturate(hitDist / frustumSize) and this renderer's hit distance is a scatter distance of the
+    // same order as the frustum, so the factor saturates and the pre-pass degenerates into a
+    // full-radius blur. That asymmetry is a candidate cause of REBLUR's medium reading transparent
+    // under motion, so every knob it could plausibly turn on is exposed here before anything is
+    // claimed about it. Defaults are NRD's, so this block changes no behaviour on its own.
+    mReblurSettings.diffusePrepassBlurRadius = envF("NRD4_R_PREPASS", mReblurSettings.diffusePrepassBlurRadius);
+    mReblurSettings.specularPrepassBlurRadius = envF("NRD4_R_PREPASS", mReblurSettings.specularPrepassBlurRadius);
+    mReblurSettings.enableAntiFirefly = envU("NRD4_R_ANTIFIREFLY", mReblurSettings.enableAntiFirefly ? 1u : 0u) != 0u;
+    mReblurSettings.maxAccumulatedFrameNum = envU("NRD4_R_MAXACCUM", mReblurSettings.maxAccumulatedFrameNum);
+    mReblurSettings.maxFastAccumulatedFrameNum = envU("NRD4_R_FASTACCUM", mReblurSettings.maxFastAccumulatedFrameNum);
+    mReblurSettings.historyFixFrameNum = envU("NRD4_R_HISTFIX", mReblurSettings.historyFixFrameNum);
+    mReblurSettings.fastHistoryClampingSigmaScale =
+        envF("NRD4_R_CLAMPSIGMA", mReblurSettings.fastHistoryClampingSigmaScale);
+    mReblurSettings.minHitDistanceWeight = envF("NRD4_R_MINHITW", mReblurSettings.minHitDistanceWeight);
+    mReblurSettings.maxBlurRadius = envF("NRD4_R_MAXBLUR", mReblurSettings.maxBlurRadius);
+    mReblurSettings.planeDistanceSensitivity = envF("NRD4_R_PLANEDIST", mReblurSettings.planeDistanceSensitivity);
+    mReblurSettings.lobeAngleFraction = envF("NRD4_R_LOBEFRAC", mReblurSettings.lobeAngleFraction);
+    mReblurSettings.fireflySuppressorMinRelativeScale =
+        envF("NRD4_R_FIREFLYSCALE", mReblurSettings.fireflySuppressorMinRelativeScale);
+    mReblurSettings.antilagSettings.luminanceSigmaScale =
+        envF("NRD4_R_ANTILAGSIGMA", mReblurSettings.antilagSettings.luminanceSigmaScale);
+    mReblurSettings.antilagSettings.luminanceSensitivity =
+        envF("NRD4_R_ANTILAGSENS", mReblurSettings.antilagSettings.luminanceSensitivity);
+
+    // REBLUR-only passes with no RELAX counterpart, so they are the first place to look for a
+    // difference that appears ONLY under camera motion.
+    //
+    // maxStabilizedFrameNum drives REBLUR_TemporalStabilization, a TAA-shaped pass that reprojects
+    // the previous stabilized luma, clamps it to the local 3x3 box and re-scales the colour by the
+    // result. "0" disables it, which is also NVIDIA's own advice when a TAA/DLSS pass follows -- and
+    // one does here whenever VR_NRD_TAA=1.
+    mReblurSettings.maxStabilizedFrameNum = envU("NRD4_R_STABIL", mReblurSettings.maxStabilizedFrameNum);
+
+    // hitDistanceReconstructionMode: 0 = OFF, 1 = AREA_3X3, 2 = AREA_5X5. NRD's header states this
+    // "must be used in case of probabilistic sampling, when a pixel can be skipped and have 0
+    // (invalid) hit distance" -- which is exactly what the surface/volume split produces, since a
+    // pixel whose reservoir went to the other half writes zero into this one.
+    {
+        uint32_t m = envU("NRD4_R_HITRECON", (uint32_t)mReblurSettings.hitDistanceReconstructionMode);
+        if (m < (uint32_t)nrd::HitDistanceReconstructionMode::MAX_NUM)
+            mReblurSettings.hitDistanceReconstructionMode = (nrd::HitDistanceReconstructionMode)m;
+    }
+
+    // Writes accumulated history length into .w instead of the normalized hit distance, which is the
+    // cheapest way to SEE whether history is being rejected inside the medium every frame.
+    mReblurSettings.returnHistoryLengthInsteadOfOcclusion =
+        envU("NRD4_R_HISTLEN", mReblurSettings.returnHistoryLengthInsteadOfOcclusion ? 1u : 0u) != 0u;
 #else
     // Override some defaults coming from the NRD SDK.
     mRelaxDiffuseSpecularSettings.diffusePrepassBlurRadius = 16.0f;

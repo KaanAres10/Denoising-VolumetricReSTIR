@@ -76,6 +76,8 @@ cbuffer CB
     // wherever the medium actually is and 0 outside, so it confines without dimming.
     bool    gOutputMediumCoverage;
     float   gCoverageKnee;
+    // Primary-ray transmittance, for NRD's IN_DIFF_CONFIDENCE on the surface half. See the write site.
+    bool    gOutputMediumTransmittance;
     // 0 = camera-facing stand-in, 1 = density gradient. A switch rather than a replacement: the
     // existing comment rejects the gradient as noisy in the plume core and prone to GVDB apron
     // artifacts, and that objection deserves a measurement rather than an assumption.
@@ -109,6 +111,9 @@ RWTexture2D<float> gScatterDensity;
 /// rgb all carry the mask: ModulateIllumination reads a reflectance as .rgb, and a single-channel
 /// R16Float bound there would read (a,0,0) and tint the medium red.
 RWTexture2D<float4> gMediumCoverage;
+/// rgb all carry the value for the same reason as gMediumCoverage: NRD samples confidence as a
+/// single channel, but the texture is easier to inspect and to reuse when it is not (c,0,0).
+RWTexture2D<float4> gMediumTransmittance;
 // Raw expected scatter distance along the ray (world units), -1 where the ray met no medium.
 RWTexture2D<float> gScatterDistance;
 
@@ -295,6 +300,28 @@ void main(uint3 DTid : SV_DispatchThreadID)
             {
                 const float cov = saturate((1.f - accuTransmittance) / max(gCoverageKnee, 1e-4f));
                 gMediumCoverage[pixelPos] = float4(cov, cov, cov, 1.f);
+            }
+
+            // Transmittance, straight, as NRD's history confidence for the SURFACE half.
+            //
+            // The surface half's radiance is T * L_surface. T belongs to the medium BETWEEN camera
+            // and surface, so it does not follow the surface's motion vector -- and a denoiser
+            // reprojecting along that vector will happily carry a wall's radiance into a pixel the
+            // plume has since moved in front of. Every guide it could test says the reprojection is
+            // valid, because viewZ, normal and plane distance all describe the wall, and smoke does
+            // not change the G-buffer. Measured on bistro's orbit, dense band (alpha > 0.75): the
+            // undenoised surface half is 7.2e-4 there, RELAX gives 8.3e-4, REBLUR gives 146.5e-4 --
+            // twenty times the energy that exists, which is the entire "see-through smoke".
+            //
+            // Confidence is 1 where there is no medium (nothing to invalidate) and falls to 0 as the
+            // medium goes opaque, which is exactly where a stale reprojection does the most damage
+            // and where losing the accumulation costs least, since the term is multiplied by T
+            // anyway. Written for EVERY pixel, medium or not: a confidence texture that is zero
+            // outside the plume would reset history across the whole frame.
+            if (gOutputMediumTransmittance)
+            {
+                const float tr = saturate(accuTransmittance);
+                gMediumTransmittance[pixelPos] = float4(tr, tr, tr, 1.f);
             }
 
             if (gOutputScatterDensity)

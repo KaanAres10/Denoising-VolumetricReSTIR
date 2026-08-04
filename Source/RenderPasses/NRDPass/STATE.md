@@ -14,30 +14,69 @@ asked. Three fixes were declared on metrics alone and two changed nothing a view
 The corollary, which cost a whole evening on its own: **check the output FILES exist** before
 believing an exit code. See the harness traps at the end.
 
-## Top open problem: REBLUR's medium is transparent under motion
+## SOLVED: REBLUR's medium was transparent under motion
 
-Symptom: with the camera orbiting, REBLUR's plume reads as haze -- doors, wall panels, plant pots and
-paving stones are visible through it. RELAX in the same frame occludes properly.
+Symptom: with the camera orbiting, REBLUR's plume read as haze -- doors, wall panels, plant pots and
+paving stones visible through it. RELAX in the same frame occluded properly.
 
-Established:
-* It is TEMPORAL. On the static camera RELAX and REBLUR are visually identical and both opaque.
-* It is BAND-SPECIFIC. Under motion REBLUR loses 14-22% of the volume half at alpha 0.10-0.75 while
-  RELAX loses 0-12%; the dense core is intact in both. The plume's body thins while its core stays,
-  which is exactly what reads as haze.
+**It was the SURFACE half, not the volume half.** Every measurement before this one was aimed at the
+wrong buffer. Captured separately (`halves.py`), REBLUR's surface half has no plume-shaped hole in
+it at all: the awning, shopfront, scooter and paving are drawn sharply straight through where the
+smoke is. The composite is volume + surface, so a fully-lit building gets added behind an otherwise
+correct plume. Mean radiance in the dense band (`mediumAlpha > 0.75`, 20.2% of frame), x1e-4:
 
-Refuted, each with numbers in the sections below: surface radiance bleeding in; a saturated
-hit-distance kernel; energy leaking past the silhouette (the coverage mask fixed that leak and
-changed 3.18% of pixels by 0.2/255, i.e. nothing visible).
+| surface half, dense band | value | vs raw |
+|---|---|---|
+| raw split (undenoised) | 7.20 | 1.0x |
+| RELAX | 8.25 | 1.1x |
+| **REBLUR** | **146.46** | **20.3x** |
+| REBLUR, every spatial pass off | 146.16 | 20.3x |
+| REBLUR, `maxAccumulatedFrameNum = 1` | 8.30 | 1.2x |
+| **REBLUR + history confidence (fix)** | **8.29** | **1.2x** |
 
-Leading hypothesis, UNTESTED: the volume half's viewZ is the view Z of a stochastically chosen
-scatter point, so it jitters frame to frame; under motion REBLUR's disocclusion test rejects history
-continuously and the volume half never accumulates. The thin/mid bands are where the scatter point is
-most stochastic, which matches where the loss is.
+Mechanism: the surface half is `T * L_surface`, and `T` belongs to the medium in FRONT of the wall,
+so it does not travel along the wall's motion vector -- but every guide NRD can test (viewZ, normal,
+plane distance) describes the wall, and smoke does not change the G-buffer. REBLUR therefore accepts
+history from before the plume moved across, and keeps drawing the building. RELAX escapes because
+its luminance edge-stopping refuses to blend a bright history against a zero current sample. Under a
+static camera those pixels were ALWAYS occluded, so history is zero too and nothing fills in -- which
+is why the bug is invisible without the orbit.
 
-The one run that settles it: `VR_NRD_VALIDATION=1` on the VOLUME instance draws history length
-directly. `add_nrd_split` does not wire validation yet -- add `enableValidation` to its denoiser()
-props and mark `NRDVolume.validation`. Then reproduce with
-`halves.py VR_ORBIT=1 VR_NRD_SPLIT=1 VR_NRD_METHOD=ReblurDiffuseSh`.
+Fix: `VR_NRD_SURFCONF`, ON by default in the split path. The estimator emits `mediumTransmittance`
+(a new GenerateFeatures output, written for every pixel) and the surface branch feeds it to NRD's
+`IN_DIFF_CONFIDENCE` -- an input that was declared in NRDPass and never produced. Confidence is 1
+outside the medium and falls to 0 as it goes opaque, which is where a stale reprojection does most
+damage and where losing accumulation costs least, since the term is multiplied by `T` anyway.
+Confirmed visually AND numerically; RELAX moves 8.2518e-4 -> 8.2409e-4, i.e. it costs nothing, and
+the volume half is byte-identical either way.
+
+Ablated first, none of them mattered (dense-band surface half): pre-pass 0 -> 146.82, temporal
+stabilization 0 -> 126.10, anti-firefly off -> 148.54, history fix 0 -> 137.62.
+
+Superseded by this, kept because the reasoning pattern recurs: the volume half loses 14-22% at alpha
+0.10-0.75 under motion where RELAX loses 0-12%. That is real and it is a red herring -- those bands
+are 2% of the frame and the dense core is 0.93 vs RELAX's 0.94. The standing hypothesis (stochastic
+scatter-point viewZ jitter rejecting history in the volume half) was never tested and is now moot.
+
+## REBLUR runs at NRD's stock defaults
+
+Everything in the v4 block below applies to `mRelaxSettings` ONLY. REBLUR was untouched throughout
+the port, including `diffusePrepassBlurRadius = 30` -- the exact value measured here as worse than
+the undenoised input, monotonically, because the kernel is sized by `saturate(hitDist / frustumSize)`
+and this renderer's hit distance is a scatter distance of the same order as the frustum.
+
+Its settings are now exposed as `NRD4_R_*` (PREPASS, STABIL, ANTIFIREFLY, MAXACCUM, FASTACCUM,
+HISTFIX, CLAMPSIGMA, MINHITW, MAXBLUR, PLANEDIST, LOBEFRAC, FIREFLYSCALE, ANTILAGSIGMA, ANTILAGSENS,
+HITRECON, HISTLEN), all defaulting to NRD's values so the block changes nothing on its own. That is
+what made the ablation table above possible. Two worth knowing about:
+* `NRD4_R_HISTLEN=1` writes accumulated history length into `.w` instead of the normalized hit
+  distance -- the cheapest way to see history being rejected, and no validation-overlay wiring needed.
+* `NRD4_R_HITRECON=1` is AREA_3X3. NRD's header says it "must be used in case of probabilistic
+  sampling, when a pixel can be skipped and have 0 (invalid) hit distance", which is exactly what the
+  split produces. Never measured.
+
+Still worth retuning REBLUR properly against the RELAX reasoning; the pre-pass is the obvious first
+candidate.
 
 ## Current numbers (bistro, 1280x720, moving camera)
 
@@ -128,9 +167,11 @@ directly-visible emissive radiance as its own buffer -- the same shape of change
 surface split in `FinalShading.cs.slang`, and verifiable the same way: with the denoiser bypassed,
 emission + denoised must reconstruct `accumulated_color` exactly.
 
-## OPEN AND UNFIXED: REBLUR's medium is far too transparent
+## History of the transparency hunt (SOLVED above; kept for the method, not the conclusions)
 
-Read this before trusting anything below it about REBLUR.
+Everything in this section and the next was aimed at the VOLUME half. The defect was in the SURFACE
+half. Read them as a record of how five plausible mechanisms were each built, measured and refuted --
+the pattern is worth keeping even though every conclusion here is superseded.
 
 The coverage mask (`VR_NRD_VOLMASK`, commit 68de73c) does NOT fix the visible problem. It changes
 3.18% of pixels by a mean of 0.2/255 -- invisible. Looked at side by side, REBLUR with and without
@@ -322,4 +363,10 @@ smoke transparent too. If it does not, this explanation is wrong as well.
 ## Switches added, all default off
 
 `VR_NRD_SPLIT`, `VR_NRD_VOLDEMOD`, `VR_NRD_SELNORM`, `VR_NRD_TAA`, `VR_TAA_LDR`, `VR_VOL_NORMAL`,
-`NRD4_MINLUMW`, `NRD4_LUMRELAX`. Nothing on this list changes the default path.
+`NRD4_MINLUMW`, `NRD4_LUMRELAX`, and the `NRD4_R_*` family. Nothing on this list changes the default
+path.
+
+The one exception, deliberately: **`VR_NRD_SURFCONF` defaults ON**, because it is a correctness fix
+rather than an experiment -- without it the split path draws the scene through the smoke. It only
+takes effect when `VR_NRD_SPLIT=1`, which is itself off by default, so the default single-denoiser
+path is unchanged. `VR_NRD_SURFCONF=0` restores the old behaviour for an A/B.

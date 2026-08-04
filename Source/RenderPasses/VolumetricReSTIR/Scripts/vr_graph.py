@@ -453,7 +453,7 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
             g.addEdge(restir + ".lightDir", name + ".lightDir")
         return name
 
-    def denoiser(name, adapter_name, viewz_src, mvec_src, accum, phi):
+    def denoiser(name, adapter_name, viewz_src, mvec_src, accum, phi, confidence_src=None):
         # Each half gets its OWN tuning. They are not the same problem: the converged medium is 4.3x
         # smoother than the surfaces around it (scale-free gradient energy 56.9 vs 247.2 inside and
         # outside the plume), so the volume half can be filtered harder without destroying anything
@@ -473,6 +473,12 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         g.addEdge(adapter_name + ".normWRoughnessMaterialID", name + ".normWRoughnessMaterialID")
         g.addEdge(viewz_src, name + ".viewZ")
         g.addEdge(mvec_src, name + ".mvec")
+        # NRDPass gates isHistoryConfidenceAvailable on BOTH inputs being connected, so the same
+        # texture goes to both slots -- NRD only reads the one its method declares, and a
+        # diffuse-only method never touches the specular slot.
+        if confidence_src:
+            g.addEdge(confidence_src, name + ".diffuseConfidence")
+            g.addEdge(confidence_src, name + ".specularConfidence")
         return name
 
     # --- surface half: exactly the guides RELAX was designed for ---
@@ -482,8 +488,29 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     a_s = adapter("NRDAdapterSurface", restir + ".surfaceColor",
                   gbuffer + ".guideNormalW", demodulate=env_bool("VR_NRD_DEMOD", True),
                   hitdist_src=gbuffer + ".linearZ")
+    #
+    # The surface half also gets primary-ray transmittance as NRD's HISTORY CONFIDENCE, which is what
+    # fixes the see-through smoke. The half is T * L_surface, and T belongs to the medium in FRONT of
+    # the surface, so it does not travel along the surface's motion vector -- yet every guide the
+    # denoiser can test (viewZ, normal, plane distance) describes the wall behind the smoke and says
+    # the reprojection is fine. REBLUR therefore keeps drawing the building it saw before the plume
+    # moved across it. Measured on bistro's orbit, dense band (mediumAlpha > 0.75), surface half:
+    #
+    #     raw split 7.2e-4    RELAX 8.3e-4    REBLUR 146.5e-4    REBLUR + confidence 8.3e-4
+    #
+    # i.e. REBLUR put back twenty times the surface energy that exists there. Forcing
+    # maxAccumulatedFrameNum = 1 collapses it to 8.3e-4 and disabling every SPATIAL pass changes
+    # nothing (146.2e-4), so it is the temporal reprojection, not the blur. RELAX escapes because its
+    # luminance edge-stopping already refuses to blend a bright history against a zero current sample
+    # -- which is why confidence costs RELAX nothing (8.2518e-4 -> 8.2409e-4, unchanged outside the
+    # plume). The volume half is byte-identical either way; only the surface branch is wired to it.
+    #
+    # ON by default, unlike every other switch in this file, because it is a correctness fix rather
+    # than an experiment. VR_NRD_SURFCONF=0 restores the old behaviour for an A/B.
     n_s = denoiser("NRDSurface", a_s, gbuffer + ".linearZ", gbuffer + ".mvec",
-                   env_int("VR_NRD_SURF_ACCUM", 30), env_float("VR_NRD_SURF_PHI", 2.0))
+                   env_int("VR_NRD_SURF_ACCUM", 30), env_float("VR_NRD_SURF_PHI", 2.0),
+                   confidence_src=(restir + ".mediumTransmittance"
+                                   if env_bool("VR_NRD_SURFCONF", True) else None))
 
     # --- volume half: the medium's own geometry ---
     #

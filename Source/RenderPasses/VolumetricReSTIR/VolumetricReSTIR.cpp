@@ -52,6 +52,7 @@ namespace
     const std::string kVolumeVelocity = "volumeVelocity";
     const std::string kScatterDensity = "scatterDensity";
     const std::string kMediumCoverage = "mediumCoverage";
+    const std::string kMediumTransmittance = "mediumTransmittance";
     const std::string kVolumeColor = "volumeColor";
     const std::string kSurfaceColor = "surfaceColor";
     const std::string kEmissiveColor = "emissiveColor";
@@ -99,6 +100,10 @@ namespace
         { kScatterDensity, "gScatterDensity", "medium density at the expected scatter point", true /* optional */, ResourceFormat::R32Float },
         // RGB, not R16: consumed as a reflectance, which is read as .rgb.
         { kMediumCoverage, "gMediumCoverage", "confinement mask for the volume half (alpha/knee, replicated)", true /* optional */, ResourceFormat::RGBA16Float },
+        // Primary-ray transmittance, for NRD's IN_DIFF_CONFIDENCE on the SURFACE half. NRD wants
+        // "R8+" and reads one channel; RGBA16Float matches the coverage mask above so the two can be
+        // swapped in a graph, and keeps the value exact rather than quantised to 1/255.
+        { kMediumTransmittance, "gMediumTransmittance", "primary-ray transmittance (NRD history confidence)", true /* optional */, ResourceFormat::RGBA16Float },
         // The radiance split. volumeColor + surfaceColor == accumulated_color exactly, so RGBA32Float
         // to match it -- at RGBA16 the sum would not round-trip and the check that guards this would
         // have to be loosened into uselessness.
@@ -820,11 +825,14 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (pCoverage) vars["gMediumCoverage"] = pCoverage;
         vars["CB"]["gOutputMediumCoverage"] = pCoverage != nullptr;
         vars["CB"]["gCoverageKnee"] = mCoverageKnee;
+        ref<Texture> pTransmittance = renderData.getTexture(kMediumTransmittance);
+        if (pTransmittance) vars["gMediumTransmittance"] = pTransmittance;
+        vars["CB"]["gOutputMediumTransmittance"] = pTransmittance != nullptr;
         vars["CB"]["gOutputScatterDensity"] = writeDensity;
         vars["CB"]["gVolumeNormalMode"] = (uint32_t)mVolumeNormalMode;
         vars["CB"]["gOutputVolumeGuides"] =
             writeAlpha || writeNormal || writeTau || writeScatter || writeVelocity || writeDensity
-            || pCoverage != nullptr;
+            || pCoverage != nullptr || pTransmittance != nullptr;
 
         if (mParams.mUseSurfaceScene)
         {
