@@ -58,6 +58,62 @@ Superseded by this, kept because the reasoning pattern recurs: the volume half l
 are 2% of the frame and the dense core is 0.93 vs RELAX's 0.94. The standing hypothesis (stochastic
 scatter-point viewZ jitter rejecting history in the volume half) was never tested and is now moot.
 
+## SOLVED: the halo, and what the popping actually is
+
+Reported alongside the residual see-through. Both turned out to be separate from it.
+
+**Halo** is the volume half's spatial blur carrying the plume's radiance past its own silhouette.
+Measured as a radial profile from the `mediumAlpha > 0.5` boundary, volume half as a ratio to raw:
+
+| config | 6-14 px out | 14-30 px out | 30-80 px out | interior |
+|---|---|---|---|---|
+| pre-pass 30, max blur 30 (NRD default) | 1.43x | 2.40x | 3.41x | 0.87x |
+| pre-pass 0, max blur 30 | 1.26x | 1.43x | 0.79x | 0.87x |
+| **pre-pass 0, max blur 12 (now)** | **1.15x** | **0.91x** | **0.16x** | **0.88x** |
+| all spatial filtering off | 0.88x | 0.56x | 0.18x | 0.88x |
+| RELAX at its defaults | 1.37x | 1.89x | 17.92x | 0.92x |
+
+The interior gets BRIGHTER, not dimmer, because the energy stops leaving. Now better confined than
+RELAX on every band. Pre-pass reason is the one already established for RELAX -- the kernel is sized
+by `saturate(hitDist / frustumSize)` and both branches feed a primary distance of the same order as
+the frustum, so it saturates into a full-radius blur. `VR_NRD_PREPASS` / `VR_NRD_VOL_BLUR`.
+
+**Popping is mostly not ours.** Per-pixel second-difference maps over the orbit put the instability
+on sub-pixel geometry -- window grilles, string lights, awning edges -- and show the plume as the
+STEADIEST region of the frame in every configuration. Share of pixels taking a jump > 0.25:
+
+| config | mean | p99.5 | worst | %px > 0.25 |
+|---|---|---|---|---|
+| REBLUR, session start | 0.2682 | 0.9731 | 2.5225 | 44.02% |
+| + history confidence | 0.2650 | 0.9816 | 2.4876 | 42.35% |
+| + per-branch tuning | 0.2633 | 1.0123 | 2.5302 | **38.58%** |
+| DLSS Ray Reconstruction | 0.3215 | 1.0028 | 2.6892 | 51.29% |
+
+RR is the worst of the four on every popping measure, so "compare to RR" cuts the other way here --
+RR's lead is sharpness (0.00334 vs 0.0013), not stability. Note p99.5 rises slightly with the tuned
+kernel: less blur means the pops that remain are marginally stronger.
+
+REFUTED while chasing this: NRD's README requires HDR inputs in [0; 250] and `maxIntensity` is
+100000, so nothing enforces it -- but the largest value actually reaching NRD is 100.8 and no pixel
+exceeds 250. Also no effect: `hitDistanceReconstructionMode = AREA_3X3` (identical to pre-pass 0
+alone, on every band) and `maxStabilizedFrameNum = 0` (slightly WORSE on the surface half, 1.35x vs
+1.28x at the silhouette).
+
+Still there, and probably irreducible: at the immediate silhouette (+-2 px) the surface half sits at
+1.28x raw. RELAX is 1.29x and killing all spatial filtering still leaves 1.27x, so this is filter
+footprint at a boundary no guide describes, not a bug with a fix.
+
+## Per-instance tuning under v4
+
+The split holds TWO NRD instances in one process, so env vars cannot tune them differently. All
+RELAX/REBLUR property names were rejected under v4 on purpose (their meanings changed), which also
+meant `add_nrd_split`'s `diffuseMaxAccumulatedFrameNum` and `diffusePhiLuminance` had been landing in
+the unknown-property warning and doing nothing since the port -- its "each half gets its own tuning"
+comment was false. Re-accepted under names meaning the same thing in both structs:
+`prepassBlurRadius`, `maxBlurRadius` (REBLUR only), `diffuseMaxAccumulatedFrameNum`,
+`diffusePhiLuminance`, `historyFixFrameNum`. Both re-enabled values equal NRD's defaults and RELAX
+reproduces 0.29336 flicker byte-for-byte, so nothing moved silently.
+
 ## REBLUR runs at NRD's stock defaults
 
 Everything in the v4 block below applies to `mRelaxSettings` ONLY. REBLUR was untouched throughout
