@@ -5,22 +5,39 @@ open threads and the traps. Written 2026-08-03.
 
 ## The one thing to read first
 
-**Every comparison against DLSS Ray Reconstruction so far was run WITHOUT SH mode.** NVIDIA's own
-overview says:
+**Check the IMAGE before claiming a fix.** Nearly every wrong conclusion in this file came from
+comparing captures that differed in more than the variable under test -- a static camera against an
+orbit, an ACES capture against a Linear one, and an "orbit" of radius 0.95 that was the camera
+spinning on the spot. The numbers were correct every time; they were answering a question nobody had
+asked. Three fixes were declared on metrics alone and two changed nothing a viewer could see.
 
-> Its modern "SH" mode achieves quality comparable with DLSS-RR
+The corollary, which cost a whole evening on its own: **check the output FILES exist** before
+believing an exit code. See the harness traps at the end.
 
-`VR_NRD_SH` defaults to false, so every number below used `RelaxDiffuse` / `ReblurDiffuse`, not the
-SH variants. The 2.6-3x sharpness deficit against RR was measured in the one mode NVIDIA does not
-claim parity for, and it was described as "structural" on that basis. That conclusion is not
-supported yet.
+## Top open problem: REBLUR's medium is transparent under motion
 
-SH mode is already implemented and verified here — the resolve round-trip identity test landed at
-3.02e-11 — and `VR_NRD_SH_RESOLVE` offers `Dc` (the defensible resolve for an isotropic phase
-function, which is what both scenes use) and `Cosine` (NVIDIA's intended surface usage). Neither has
-ever been measured under camera motion.
+Symptom: with the camera orbiting, REBLUR's plume reads as haze -- doors, wall panels, plant pots and
+paving stones are visible through it. RELAX in the same frame occludes properly.
 
-SH is not free: RELAX 3.25 -> 4.80 ms, REBLUR 2.55 -> 3.40 ms per NVIDIA's own figures.
+Established:
+* It is TEMPORAL. On the static camera RELAX and REBLUR are visually identical and both opaque.
+* It is BAND-SPECIFIC. Under motion REBLUR loses 14-22% of the volume half at alpha 0.10-0.75 while
+  RELAX loses 0-12%; the dense core is intact in both. The plume's body thins while its core stays,
+  which is exactly what reads as haze.
+
+Refuted, each with numbers in the sections below: surface radiance bleeding in; a saturated
+hit-distance kernel; energy leaking past the silhouette (the coverage mask fixed that leak and
+changed 3.18% of pixels by 0.2/255, i.e. nothing visible).
+
+Leading hypothesis, UNTESTED: the volume half's viewZ is the view Z of a stochastically chosen
+scatter point, so it jitters frame to frame; under motion REBLUR's disocclusion test rejects history
+continuously and the volume half never accumulates. The thin/mid bands are where the scatter point is
+most stochastic, which matches where the loss is.
+
+The one run that settles it: `VR_NRD_VALIDATION=1` on the VOLUME instance draws history length
+directly. `add_nrd_split` does not wire validation yet -- add `enableValidation` to its denoiser()
+props and mark `NRDVolume.validation`. Then reproduce with
+`halves.py VR_ORBIT=1 VR_NRD_SPLIT=1 VR_NRD_METHOD=ReblurDiffuseSh`.
 
 ## Current numbers (bistro, 1280x720, moving camera)
 
