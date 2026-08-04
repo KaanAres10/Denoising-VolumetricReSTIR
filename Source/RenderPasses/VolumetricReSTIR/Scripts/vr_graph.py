@@ -514,6 +514,15 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
             props["maxBlurRadius"] = max_blur
         if sh:
             props["shResolveMode"] = env("VR_NRD_SH_RESOLVE", "Dc")
+        # NRD's own opinion of the inputs, which is worth more than any amount of tuning against a
+        # denoiser that might be reading a bad guide. Nine viewports; the ones that matter here are
+        # MV (viewport 3: the provided motion vector reprojected, MINUS the reprojection NRD derives
+        # from world position, in pixels -- black is correct, colour is error, blue is off-screen),
+        # UNITS & JITTER (viewport 4: a RED dot means the jitter is outside [-0.5; 0.5], i.e. NRD is
+        # being told something it cannot use), and DIFF-SPEC FRAMES (viewport 8: accumulated history
+        # length, which says whether temporal accumulation is happening at all).
+        if env_bool("VR_NRD_VALIDATION", False):
+            props["enableValidation"] = True
         g.addPass(createPass("NRD", props), name)
         if sh:
             g.addEdge(adapter_name + ".diffuseSh0", name + ".diffuseSh0")

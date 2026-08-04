@@ -1504,8 +1504,17 @@ static nrd::Method getNrdMethod(NRDPass::DenoisingMethod denoisingMethod)
 /// while Falcor uses row-major layout
 static void copyMatrix(float* dstMatrix, const float4x4& srcMatrix)
 {
-    float4x4 col_major = transpose(srcMatrix);
-    memcpy(dstMatrix, static_cast<const float*>(col_major.data()), sizeof(float4x4));
+    // NRD4_NO_TRANSPOSE=1 hands the matrix over untransposed. This exists because NRD's validation
+    // overlay reports the MV viewport as saturated even with a COMPLETELY STATIC camera, where the
+    // motion vector is measured at <= 0.25 px and viewZ is valid -- i.e. NRD's own expected
+    // reprojection disagrees with ours when nothing is moving. Accumulated history length sits at
+    // ~4 frames against a cap of 30 under those conditions, with NRD's "historyLength < 2"
+    // checkerboard covering much of the frame. A layout mismatch here would produce exactly that,
+    // and would be invisible everywhere else, since nothing outside NRD consumes these copies.
+    static const bool noTranspose = []
+    { const char* v = std::getenv("NRD4_NO_TRANSPOSE"); return v && std::strtol(v, nullptr, 10) != 0; }();
+    float4x4 m = noTranspose ? srcMatrix : transpose(srcMatrix);
+    memcpy(dstMatrix, static_cast<const float*>(m.data()), sizeof(float4x4));
 }
 
 void NRDPass::reinit()
