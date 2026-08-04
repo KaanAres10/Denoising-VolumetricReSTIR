@@ -449,6 +449,62 @@ smoke transparent too. If it does not, this explanation is wrong as well.
    whole explanation for `VR_NRD_VOLMV` measuring 1.86e-05, and it blocks the velocity-guided
    temporal work entirely. Fixing it needs the bake tool, the loader, and a re-bake of 100 frames.
 
+## THE FLICKER IS THE EMISSIVE BUFFER, and it never touches the denoiser
+
+This is the answer to "why does it flicker", and it is not the denoiser, not aliasing, and not RELAX.
+
+Bucketing the per-pixel second temporal difference by what each pixel IS (`fdiag.py` captures
+consecutive frames with guides, `fwhere.py` buckets them), on the composite BEFORE the tonemapper and
+TAA:
+
+| category | % of frame | % of flicker energy | per-pixel rate |
+|---|---|---|---|
+| **emitter present** | **2.55%** | **95.7%** | **37.5x** |
+| inside the medium (a > 0.35) | 17.02% | 3.4% | 0.20x |
+| flat surface | 80.43% | 0.9% | 0.01x |
+
+and **99% of the worst-flickering pixels are emitters**. After TAA they are still 99.4% of the tail.
+
+The cause is in `FinalShading.cs.slang`: `emissiveColor` is `curColor` only when the reservoir
+happened to pick self-emission, else zero. Measured over 8 consecutive frames at emitter cores:
+
+* **76% of pixel-frames are exactly ZERO**
+* **98.4% of pixels are on/off** (zero in some frames, non-zero in others)
+* temporal std / mean = **2.65**
+* the emissive term is **100% of the composite** at those pixels (median share 1.00)
+
+So it strobes, and `VR_NRD_EMISSION=1` adds it RAW -- `ModulateIllumination.emission` is a plain
+additive input. That is why every RELAX and REBLUR setting is inert on it: the flicker never passes
+through a denoiser at all. It also explains the pop maps (string lights, bulbs), why the medium is
+the steadiest region, and why all three denoisers score so similarly.
+
+TAA is what currently handles it, taking emitters from 95.7% of flicker energy down to 14.9%. That
+is the whole reason TAA cuts flicker 27% here.
+
+FOUR MITIGATIONS TRIED, ALL MEASURED WORSE OR NEUTRAL (N=30, baseline 0.26185):
+* Denoise emission with its own instance, no demodulation, under RELAX -- **+6.6%**, sharpness +21%.
+  RELAX's `atrousIterationNum` is documented "[2; 8]", so its spatial pass cannot be switched off and
+  the point emitters get smeared back into the bloom the bypass existed to remove. `maxBlurRadius` is
+  a REBLUR-only setting, so it does nothing here -- that is why the first attempt looked so bad.
+* Same but forcing REBLUR for that branch with pre-pass 0 and maxBlurRadius 0 -- **+5.6%**. Better,
+  still worse than doing nothing: NRD's anti-firefly and fast-history clamping exist to suppress
+  exactly the spikes that ARE this signal.
+* TAA alpha 0.02 + colorBoxSigma 8 (long history, loose clamp) -- total flicker energy UP, emitter
+  share only 14.9% -> 12.1%.
+* An unclamped reprojected average of the emissive buffer alone (`VR_NRD_EMISTAA`, a second TAA at
+  sigma 15) -- **-23% flicker energy BEFORE the composite TAA**, which confirms the diagnosis, but
+  **+1.3% after it**: two temporal filters in series with different reprojections fight each other.
+
+Switches kept, default off, as recorded dead ends: `VR_NRD_EMISDN`, `VR_NRD_EMISTAA`.
+
+THE ACTUAL FIX IS AT THE SOURCE, and it is an estimator change, not a denoiser one: emission should
+not be a stochastic reservoir choice. Integrated deterministically along the primary ray during the
+march -- the same shape of change as `opticalThickness`, which already rides that march -- it would
+not strobe at all and would need no filtering, which is also what NVIDIA assumes when they say
+emission must not be denoised. Doing that means FinalShading must stop emitting it stochastically or
+the contribution is double counted, and the volume + surface + emissive == accumulated_color identity
+would need restating. That is the next piece of work here.
+
 ## RELAX's flicker is NOT a tuning problem, and here is the proof
 
 Asked to make RELAX as steady as REBLUR and RR. It cannot be done with RELAX's settings, and the

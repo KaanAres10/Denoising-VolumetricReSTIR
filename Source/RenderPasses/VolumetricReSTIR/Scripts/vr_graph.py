@@ -426,7 +426,8 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     # outcome of two independently blurred halves.
     surf_demod_tr = env_bool("VR_NRD_SURFTR", True)
 
-    def adapter(name, src, normal_src, demodulate, hitdist_src, transmittance_src=None):
+    def adapter(name, src, normal_src, demodulate, hitdist_src, transmittance_src=None,
+                method_override=None):
         # minReflectance 1.0 makes the divisor exactly 1, because albedo is always <= 1. That is how
         # the volume half opts out of albedo demodulation -- a surface albedo is not a property the
         # in-scattered radiance was ever multiplied by, so dividing by it would be inventing a
@@ -465,7 +466,10 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
             props["minTransmittance"] = env_float("VR_NRD_MINTR", 0.05)
         if sh:
             props["shMode"] = True
-            props["shYCoCg"] = method.lower().startswith("reblur")
+            # Must follow THIS instance's method, not the graph's: REBLUR packs SH0 as YCoCg and
+            # RELAX as linear RGB, and neither validates its input, so a mismatch is a green cast
+            # rather than an error. That bug has already been shipped here once.
+            props["shYCoCg"] = (method_override or method).lower().startswith("reblur")
         if render is not None:
             props.update({"outputSize": "Fixed", "fixedOutputSize": render})
         g.addPass(createPass("NRDAdapter", props), name)
@@ -486,12 +490,13 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         return name
 
     def denoiser(name, adapter_name, viewz_src, mvec_src, accum, phi, confidence_src=None,
-                 max_blur=None):
+                 max_blur=None, method_override=None):
         # Each half gets its OWN tuning. They are not the same problem: the converged medium is 4.3x
         # smoother than the surfaces around it (scale-free gradient energy 56.9 vs 247.2 inside and
         # outside the plume), so the volume half can be filtered harder without destroying anything
         # that is actually there, while the surface half must stay conservative.
-        props = {"method": method, "worldSpaceMotion": False, "maxIntensity": env_float("VR_NRD_MAXINT", 100000.0),
+        props = {"method": method_override or method,
+                 "worldSpaceMotion": False, "maxIntensity": env_float("VR_NRD_MAXINT", 100000.0),
                  "enabled": nrd_enabled,
                  "diffuseMaxAccumulatedFrameNum": accum,
                  "diffusePhiLuminance": phi,
@@ -634,8 +639,67 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
         g.addEdge(n_v + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.residualRadiance")
     # Emitters skip both denoisers. FinalShading drops them from the volume/surface pair when
     # emissiveColor is connected, so the three buffers still sum to the original exactly.
+    #
+    # But NOT filtering them at all is where essentially all of this configuration's flicker comes
+    # from, and it took bucketing the per-pixel second temporal difference by what each pixel IS to
+    # see it. Before TAA, emitter pixels are 2.55% of the frame and carry 95.7% of the flicker
+    # energy -- 37.5x the per-pixel rate -- and 99% of the worst-flickering pixels are emitters. The
+    # reason is in FinalShading: emissiveColor is `curColor` only when the reservoir happened to pick
+    # self-emission, else zero. Measured over 8 consecutive frames at emitter cores: 76% of
+    # pixel-frames are exactly ZERO, 98.4% of pixels are on/off, temporal std/mean is 2.65, and the
+    # emissive term is 100% of the composite there. It strobes, and it is added raw.
+    #
+    # Both existing options are wrong. Bypassed (emission=True) it strobes. Folded back into the
+    # denoised path (emission=False) it is demodulated by a diffuse albedo it was never multiplied
+    # by, taking the full 100x from the minReflectance floor -- that is the 6.89x bloom.
+    #
+    # The missing option is to denoise it WITHOUT demodulating it: its own adapter with
+    # minReflectance = 1.0 (the divisor is then exactly 1, the same trick the volume half uses to opt
+    # out), and a kernel small enough that a point emitter is not smeared back into a bloom.
     if emission:
-        g.addEdge(restir + ".emissiveColor", "ModulateIllumination.emission")
+        if env_bool("VR_NRD_EMISDN", False):
+            # ALWAYS REBLUR here, whatever the graph's method is, and the reason is not preference.
+            # This branch needs temporal accumulation with as close to NO spatial filtering as the
+            # library allows, because any real blur radius smears a point emitter straight back into
+            # the bloom that routing emission around the denoiser existed to fix. RELAX cannot do
+            # that -- atrousIterationNum is documented "[2; 8]", so its spatial pass cannot be turned
+            # off, and running it here measured 6.6% WORSE flicker with sharpness up 21%, which is
+            # the bloom's extra gradients. REBLUR can: pre-pass 0 and maxBlurRadius 0 leave only the
+            # 1-pixel minBlurRadius floor.
+            emis_method = env("VR_NRD_EMIS_METHOD", "ReblurDiffuseSh" if sh else "ReblurDiffuse")
+            a_e = adapter("NRDAdapterEmissive", restir + ".emissiveColor",
+                          gbuffer + ".guideNormalW", demodulate=False,
+                          hitdist_src=gbuffer + ".linearZ", method_override=emis_method)
+            # This is the one input in the graph NRD's temporal pass has real work to do on. The
+            # surface and volume halves arrive already averaged by VolumetricReSTIR's own temporal
+            # reuse -- measured: accumulating 30 frames instead of 1 moves flicker 0.3% -- whereas
+            # emissiveColor is re-randomised every frame: at emitter cores 76% of pixel-frames are
+            # exactly zero and 98.4% of pixels are on/off.
+            n_e = denoiser("NRDEmissive", a_e, gbuffer + ".linearZ", gbuffer + ".mvec",
+                           env_int("VR_NRD_EMIS_ACCUM", 30), env_float("VR_NRD_EMIS_PHI", 2.0),
+                           max_blur=env_float("VR_NRD_EMIS_BLUR", 0.0),
+                           method_override=emis_method)
+            g.addEdge(n_e + ".filteredDiffuseRadianceHitDist", "ModulateIllumination.emission")
+        elif env_bool("VR_NRD_EMISTAA", False):
+            # A reprojected temporal AVERAGE of the emissive buffer, which is what an unbiased but
+            # on/off signal actually needs -- not a denoiser. Both denoiser routes measured worse
+            # (RELAX +6.6%, REBLUR +5.6%): NRD's anti-firefly and history clamping exist to suppress
+            # exactly the spikes that ARE the signal here, so they fight it.
+            #
+            # colorBoxSigma is turned right up because the clamp is the specific thing in the way. On
+            # a frame where the reservoir did not pick emission the pixel reads 0, its neighbourhood
+            # box collapses to ~0, and a clamped history gets pulled down to 0 with it -- which is
+            # why the composite's own TAA leaves emitters as 99% of the worst-flickering pixels no
+            # matter how its alpha and sigma are set. Removing the clamp is the point; a long history
+            # alone does nothing.
+            g.addPass(createPass("TAA", {"alpha": env_float("VR_EMIS_TAA_ALPHA", 0.05),
+                                         "colorBoxSigma": env_float("VR_EMIS_TAA_SIGMA", 15.0)}),
+                      "EmissiveTAA")
+            g.addEdge(restir + ".emissiveColor", "EmissiveTAA.colorIn")
+            g.addEdge(gbuffer + ".mvec", "EmissiveTAA.motionVecs")
+            g.addEdge("EmissiveTAA.colorOut", "ModulateIllumination.emission")
+        else:
+            g.addEdge(restir + ".emissiveColor", "ModulateIllumination.emission")
     return "ModulateIllumination.output"
 
 
