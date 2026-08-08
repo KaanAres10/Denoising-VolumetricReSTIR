@@ -525,7 +525,37 @@ reached only under `VR_NRD_VALIDATION=1`; `readdiag2.py` reads it). Static camer
 
 So the threshold SCALE is fine (14.5 m is sane) and the rejection is driven by a genuine ~4.4 m
 disagreement between the view Z we hand NRD and the one NRD derives by reconstructing the world
-position. CORRECTION -- I first called this ratio angular and it is NOT. Fitting it properly:
+position. RE-MEASURED with an unsaturated encoding (the previous version stored viewZ/100 in 8 bits, so sky
+pixels clipped in both channels and their ratio read 1.0 by construction). Now 0.0% of pixels clip:
+
+| quantity | value |
+|---|---|
+| ratio NRD / ours | median 0.792, p05 0.620, p95 0.957 |
+| ratio by depth quartile | 8-15 m **0.651**, 15-18 m **0.722**, 18-25 m **0.800**, 25-108 m **0.902** |
+| planeDist / frustumSize | 0.306 -- against a threshold of 0.02 |
+
+**The ratio rises monotonically toward 1 with depth, which is a CONSTANT OFFSET**, not a scale and
+not an angle: solving `ratio = 1 - c/viewZ` per quartile gives c = 4.01, 4.59, 4.30, 3.92 m, i.e.
+**NRD's derived view Z is ours minus a roughly constant ~4.2 m**. Identical on both the surface and
+volume branches, which take different viewZ textures -- so it is not the texture.
+
+A constant offset along the view axis is a TRANSLATION. That is in tension with `NRD4_RELVIEW=1`
+(zeroing the view matrices' translation) changing nothing, and the two can only be reconciled if the
+offset is introduced by NRD's own camera-relative rebasing rather than by the matrix we pass.
+
+**CAVEAT, and it may well be the whole answer: the diagnostic itself is suspect here.** It computes
+`AffineTransform(gWorldToViewPrev, X)` with a CURRENT-frame X, whereas RELAX's real code builds
+`prevWorldPos` through `GetPreviousWorldPosFromPixelPos` and keeps the frame conventions matched. If
+NRD's camera-relative origin differs between those paths, a constant offset is exactly what mixing
+them would produce -- in which case there is no integration bug here at all and the disocclusion
+threshold is being blamed for something else. Distinguishing the two needs the diagnostic to
+replicate NRD's exact call sequence rather than borrow its helpers, which is where I stopped.
+
+WHAT IS NOT IN DOUBT, whatever the above turns out to be: raising the threshold restores accumulation
+and measurably improves the image (-31% at sigma 32, within 0.4% of the undenoised reference, no
+ghosting by eye). The open question is why it is needed, not whether it helps.
+
+SUPERSEDED -- I first called this ratio angular and it is NOT. Fitting it properly:
 
 | | value |
 |---|---|
