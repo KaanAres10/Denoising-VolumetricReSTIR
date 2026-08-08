@@ -314,7 +314,29 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
         envF("NRD4_CLAMPSIGMA", mRelaxSettings.fastHistoryClampingSigmaScale);
     mRelaxSettings.spatialVarianceEstimationHistoryThreshold =
         envU("NRD4_SVAR", mRelaxSettings.spatialVarianceEstimationHistoryThreshold);
-    mDisocclusionThreshold = envF("NRD4_DISOCC", mDisocclusionThreshold);
+    // RAISED from 2% to 10%, and this is a WORKAROUND, not a fix -- read before tuning it further.
+    //
+    // RELAX's temporal accumulation was measurably inert: with spatial filtering minimised on a
+    // STATIC camera, maxAccumulatedFrameNum 1 against 30 moved frame-to-frame difference 1.2%
+    // (0.07348 -> 0.07261), while REBLUR through the identical integration and inputs moved 8x
+    // (0.07990 -> 0.01003). Every RelaxSettings knob was refuted: fast history 2/6/disabled, clamp
+    // sigma, depthThreshold across a 67x range, anti-firefly, history fix, pre-pass, and the SH
+    // variant (which skips PackRadiance entirely). So was every input: motion vectors measure
+    // <= 0.25 px on a static camera, viewZ is valid, normals and depth both come from the G-buffer.
+    //
+    // What DOES move it is this threshold, which is the gate RELAX's reprojection validity test uses
+    // (RELAX_TemporalAccumulation.cs.hlsl, isReprojectionTapValid -> maxPlaneDistance >
+    // disocclusionThreshold). Static camera, spatial minimised, d1: 2% -> 0.07261, 10% -> 0.06195,
+    // 50% -> 0.02247. Under camera motion, on the production configuration, at 10% versus 2%:
+    // instability at sigma 32 falls 18%, at sigma 128 25%, whole-frame brightness wobble 26%, and
+    // the share of pixels taking a hard jump 13.57% -> 11.36%, for 3% of sharpness. Checked by eye
+    // at 20% for ghosting on the orbit and there is none visible.
+    //
+    // NRD documents [0.01; 0.02] for this, so needing 5x that means the reprojection genuinely does
+    // not line up -- which is also what the validation overlay says, its MV viewport being saturated
+    // even on a static camera. Raising the gate buys back the accumulation without explaining why it
+    // was being rejected. The root cause is still open; see STATE.md.
+    mDisocclusionThreshold = envF("NRD4_DISOCC", 10.f);
 
     // RELAX rejects history on depthThreshold; REBLUR uses planeDistanceSensitivity = 0.02, which is
     // 6.7x looser. v4 moved RELAX's default from 0.01 to 0.003 and the port deliberately did not
@@ -633,6 +655,9 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     mReblurSettings.maxBlurRadius = reF("NRD4_R_MAXBLUR", mReblurSettings.maxBlurRadius);
     mReblurSettings.maxAccumulatedFrameNum = reU("NRD4_R_MAXACCUM", mReblurSettings.maxAccumulatedFrameNum);
     mReblurSettings.historyFixFrameNum = reU("NRD4_R_HISTFIX", mReblurSettings.historyFixFrameNum);
+    // disocclusionThreshold IS a property (kDisocclusionThreshold), so without this a graph that
+    // sets it would silently win over the env override -- the same trap the block above exists for.
+    mDisocclusionThreshold = reF("NRD4_DISOCC", mDisocclusionThreshold);
 #endif
 }
 

@@ -449,7 +449,51 @@ smoke transparent too. If it does not, this explanation is wrong as well.
    whole explanation for `VR_NRD_VOLMV` measuring 1.86e-05, and it blocks the velocity-guided
    temporal work entirely. Fixing it needs the bake tool, the loader, and a re-bake of 100 frames.
 
-## TOP OPEN PROBLEM: RELAX's temporal accumulation is inert; REBLUR's is not
+## FIXED (worked around): RELAX's accumulation was gated by the disocclusion threshold
+
+`CommonSettings::disocclusionThreshold` is what RELAX's reprojection validity test compares against
+(`RELAX_TemporalAccumulation.cs.hlsl`, `isReprojectionTapValid` -> `maxPlaneDistance >
+disocclusionThreshold`). Raising it from 2% to **10%** restores the accumulation. Now the v4 default;
+`NRD4_DISOCC` overrides, and it is re-applied after the property loop so a graph property cannot
+silently win.
+
+Static camera, spatial minimised, frame-to-frame difference d1:
+
+| `NRD4_DISOCC` | d1 |
+|---|---|
+| 2 (was) | 0.07261 |
+| 10 (now) | 0.06195 |
+| 50 | 0.02247 |
+
+Under camera motion, production configuration, 10% against 2%: instability at sigma 32 falls 18%, at
+sigma 128 25%, whole-frame brightness wobble 26%, share of pixels taking a hard jump 13.57% ->
+11.36%, for 3% of sharpness. At 20% it is 37% / 44% / 48% and 9.72%, for 6% of sharpness -- checked
+by eye on the orbit for ghosting and there is none visible, so 20 is available if wanted. 10 is the
+default as the conservative end.
+
+**This is a workaround, not a root-cause fix.** NRD documents [0.01; 0.02] for this threshold, so
+needing 5x that means the reprojection genuinely does not line up -- which is also what the
+validation overlay says, its MV viewport being saturated even on a static camera. Raising the gate
+buys the accumulation back without explaining why it was being rejected.
+
+REFUTED on the way here, all measured with spatial filtering minimised so the temporal stage is what
+is being observed: every RelaxSettings knob (`maxAccumulatedFrameNum` 1/30, fast history 2/6/
+disabled, clamp sigma 2/10, `depthThreshold` across 0.003-0.2 i.e. 67x, anti-firefly, history fix,
+pre-pass), the SH variant (which skips `PackRadiance` entirely -- so `PackRadiance` is not the
+cause), and on the input side motion vectors, viewZ, `viewZScale`, the `copyMatrix` transpose,
+normal encoding, `accumulationMode` / `frameIndex` / prev state, and the permanent-pool binding and
+lifetime. The temporal accumulation pass IS scheduled (`NRD4_LOGDISPATCH`).
+
+NOTE the earlier note at `vr_graph.py`'s viewZ selection already recorded "its history never
+accumulates -- which makes every temporal setting inert", measured on the plume. That observation was
+correct and sat in the tree unexplained; this is the same fault.
+
+STILL OPEN: why the reprojection is rejected at 2%. `PackRadiance` also binds only
+`gDiffuseRadianceHitDist` and `gMaxIntensity` on the RelaxDiffuse path while the shader reads and
+writes `gSpecularRadianceHitDist` and reads `gViewZ` / `gNormalRoughness` unconditionally -- harmless
+in practice (null UAV writes are dropped) but worth cleaning up, and worth ruling out properly.
+
+## SUPERSEDED: RELAX's temporal accumulation is inert; REBLUR's is not
 
 CORRECTS the section below, which claimed accumulation was dead for the whole integration. It is
 not. That test compared `maxAccumulatedFrameNum` 1 against 30 with FULL spatial filtering on, and the
