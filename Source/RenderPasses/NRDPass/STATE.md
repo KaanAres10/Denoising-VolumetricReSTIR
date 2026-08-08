@@ -500,7 +500,27 @@ NOTE the earlier note at `vr_graph.py`'s viewZ selection already recorded "its h
 accumulates -- which makes every temporal setting inert", measured on the plume. That observation was
 correct and sat in the tree unexplained; this is the same fault.
 
-STILL OPEN: why the reprojection is rejected at 2%. `PackRadiance` also binds only
+STILL OPEN: why the reprojection is rejected at 2%. The test is
+`planeDist = abs(prevViewZs - prevViewPos.zzz)` against
+`saturate(disocclusionThreshold * slopeScale) * frustumSize`, where `prevViewZs` comes through
+`UnpackViewZ` (which is `abs()`, so always positive) and `prevViewPos.z` comes from the view matrix
+we supply.
+
+REFUTED, view-space Z SIGN. Falcor's view space is right-handed with -Z forward, so `prevViewPos.z`
+is negative while the stored side is positive -- which would give `planeDist ~ 2|z|` everywhere and
+explain the fault exactly. It is not that: `NRD4_FLIPVIEWZ=1` negates the view matrix's Z row and
+measures 0.07567 against 0.07567 unflipped (0.4%, and marginally worse). NRD evidently resolves
+handedness internally. Switch kept, since it is the natural first suspect.
+
+TOP REMAINING CANDIDATE, untested: the THRESHOLD side rather than the distance side.
+`frustumSize = PixelRadiusToWorld(gUnproject, gOrthoMode, 1.0, currentLinearZ) * min(gRectSize.xy)`,
+and `gUnproject` is derived by NRD from the `viewToClipMatrix` we hand over. If that derivation is
+off by ~10x for this projection, the threshold is ~10x too small and everything is rejected -- which
+would explain why the fix needs 10-20x NRD's documented value, and why the size of the correction is
+suspiciously round. Instrumenting `pixelSize` against a hand-computed value at a known depth would
+settle it in one run.
+
+Other loose end: `PackRadiance` also binds only
 `gDiffuseRadianceHitDist` and `gMaxIntensity` on the RelaxDiffuse path while the shader reads and
 writes `gSpecularRadianceHitDist` and reads `gViewZ` / `gNormalRoughness` unconditionally -- harmless
 in practice (null UAV writes are dropped) but worth cleaning up, and worth ruling out properly.

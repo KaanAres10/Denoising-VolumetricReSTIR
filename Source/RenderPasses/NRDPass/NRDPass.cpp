@@ -2122,10 +2122,31 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
         mPrevProjMatrix = projMatrix;
     }
 
+    // NRD4_FLIPVIEWZ=1 negates the view matrix's Z row, making view-space Z POSITIVE in front of the
+    // camera. Reason: RELAX's reprojection validity test compares NRD's stored previous viewZ against
+    // the Z of the reprojected position transformed by this matrix
+    // (RELAX_TemporalAccumulation.cs.hlsl: planeDist = abs(prevViewZs - prevViewPos.zzz)). The stored
+    // side goes through UnpackViewZ, which is abs(), so it is always POSITIVE -- while Falcor's view
+    // space is right-handed and puts -Z forward, making prevViewPos.z NEGATIVE. If those disagree the
+    // plane distance is ~2|z| everywhere and every tap is rejected, which is exactly the observed
+    // fault: history stuck under 2 frames even with a completely static camera.
+    float4x4 nrdViewMatrix = viewMatrix;
+    float4x4 nrdPrevViewMatrix = mPrevViewMatrix;
+    static const bool flipViewZ = []
+    { const char* v = std::getenv("NRD4_FLIPVIEWZ"); return v && std::strtol(v, nullptr, 10) != 0; }();
+    if (flipViewZ)
+    {
+        for (int c = 0; c < 4; c++)
+        {
+            nrdViewMatrix[2][c] = -nrdViewMatrix[2][c];
+            nrdPrevViewMatrix[2][c] = -nrdPrevViewMatrix[2][c];
+        }
+    }
+
     copyMatrix(mCommonSettings.viewToClipMatrix, projMatrix);
     copyMatrix(mCommonSettings.viewToClipMatrixPrev, mPrevProjMatrix);
-    copyMatrix(mCommonSettings.worldToViewMatrix, viewMatrix);
-    copyMatrix(mCommonSettings.worldToViewMatrixPrev, mPrevViewMatrix);
+    copyMatrix(mCommonSettings.worldToViewMatrix, nrdViewMatrix);
+    copyMatrix(mCommonSettings.worldToViewMatrixPrev, nrdPrevViewMatrix);
     // NRD's convention for the jitter is: [-0.5; 0.5] sampleUv = pixelUv + cameraJitter
     mCommonSettings.cameraJitter[0] = -mpScene->getCamera()->getJitterX();
     mCommonSettings.cameraJitter[1] = mpScene->getCamera()->getJitterY();
