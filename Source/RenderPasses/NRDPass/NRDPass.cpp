@@ -316,6 +316,18 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
         envU("NRD4_SVAR", mRelaxSettings.spatialVarianceEstimationHistoryThreshold);
     mDisocclusionThreshold = envF("NRD4_DISOCC", mDisocclusionThreshold);
 
+    // RELAX rejects history on depthThreshold; REBLUR uses planeDistanceSensitivity = 0.02, which is
+    // 6.7x looser. v4 moved RELAX's default from 0.01 to 0.003 and the port deliberately did not
+    // carry the v3.1 override of 0.02 across. That matters here because RELAX's temporal accumulation
+    // is measurably INERT while REBLUR's, through the identical integration and inputs, is not:
+    // matched configuration with spatial filtering minimised, static camera, frame-to-frame
+    // difference for maxAccumulatedFrameNum 1 vs 30 --
+    //     RELAX   0.07348 -> 0.07261   (1.2%, i.e. nothing)
+    //     REBLUR  0.07990 -> 0.01003   (8x)
+    // and RELAX is equally unmoved by fast-history length (2 / 6 / disabled) and clamp sigma.
+    mRelaxSettings.depthThreshold = envF("NRD4_DEPTHTHRESH", mRelaxSettings.depthThreshold);
+    mRelaxSettings.lobeAngleFraction = envF("NRD4_LOBEFRAC", mRelaxSettings.lobeAngleFraction);
+
     // Two RELAX knobs left at NRD's defaults until now, exposed because they target the SPLIT path's
     // specific weakness. Splitting the radiance leaves each half punched through with structural
     // zeros wherever the other half won the reservoir; RELAX's luminance edge-stopping sees a zero
@@ -2148,6 +2160,22 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
     nrd::Result result = nrd::GetComputeDispatches(*mpDenoiser, mCommonSettings, dispatchDescs, dispatchDescNum);
 #endif
     FALCOR_ASSERT(result == nrd::Result::SUCCESS);
+
+    // NRD4_LOGDISPATCH=<frame> lists the passes NRD actually scheduled on that frame. Temporal
+    // accumulation here contributes nothing -- maxAccumulatedFrameNum 1 and 30 measure identical on
+    // a STATIC camera -- and the cheapest way to tell "the pass ran and rejected history" from "the
+    // pass never ran" is to ask NRD what it dispatched. Everything else about that failure has been
+    // checked from the input side and come back clean.
+    {
+        static const long logFrame = []
+        { const char* v = std::getenv("NRD4_LOGDISPATCH"); return v ? std::strtol(v, nullptr, 10) : -1; }();
+        if (logFrame >= 0 && (long)mFrameIndex == logFrame)
+        {
+            logInfo("NRDPass[{}]: frame {} scheduled {} dispatches:", getName(), mFrameIndex, dispatchDescNum);
+            for (uint32_t i = 0; i < dispatchDescNum; i++)
+                logInfo("  [{}] {}", i, dispatchDescs[i].name ? dispatchDescs[i].name : "<unnamed>");
+        }
+    }
 
     for (uint32_t i = 0; i < dispatchDescNum; i++)
     {

@@ -449,7 +449,61 @@ smoke transparent too. If it does not, this explanation is wrong as well.
    whole explanation for `VR_NRD_VOLMV` measuring 1.86e-05, and it blocks the velocity-guided
    temporal work entirely. Fixing it needs the bake tool, the loader, and a re-bake of 100 frames.
 
-## TOP OPEN PROBLEM: NRD's temporal accumulation contributes NOTHING here
+## TOP OPEN PROBLEM: RELAX's temporal accumulation is inert; REBLUR's is not
+
+CORRECTS the section below, which claimed accumulation was dead for the whole integration. It is
+not. That test compared `maxAccumulatedFrameNum` 1 against 30 with FULL spatial filtering on, and the
+a-trous chain smooths enough to hide the temporal difference. Confounded, same class of error as
+using the per-pixel metric for a coarse-scale artifact.
+
+Redone with spatial filtering minimised so the temporal stage is what is being measured. Static
+camera, 8 consecutive frames, frame-to-frame difference d1 (raw ReSTIR is 0.27490):
+
+| denoiser, spatial minimised | accum 1 | accum 30 |
+|---|---|---|
+| RELAX (atrous 2, no history fix, no pre-pass) | 0.07348 | 0.07261 (**1.2%**) |
+| REBLUR (pre-pass 0, maxBlurRadius 0, no history fix) | 0.07990 | **0.01003 (8x)** |
+
+**REBLUR's temporal accumulation works. RELAX's does nothing.** Same integration, same
+CommonSettings, same input textures, same frame. And REBLUR at 0.01003 with essentially NO spatial
+filtering is 7.2x steadier than RELAX at 0.07261 with two a-trous iterations -- so this is not about
+filter strength.
+
+RELAX is inert against every setting reachable, all measured with spatial minimised:
+
+| knob | d1 |
+|---|---|
+| `maxAccumulatedFrameNum` 1 -> 30 | 0.07348 -> 0.07261 |
+| `diffuseMaxFastAccumulatedFrameNum` 2 / 6 / 30 (disabled) | 0.07261 / 0.07260 / 0.07260 |
+| `fastHistoryClampingSigmaScale` 2 -> 10 | 0.07261 -> 0.07260 |
+| `depthThreshold` 0.003 -> 0.02 -> 0.2 (67x looser) | 0.07261 -> 0.07214 -> 0.07207 |
+
+Also refuted from the input and plumbing side: motion vectors (<= 0.25 px static), viewZ (valid,
+`viewZScale` defaults to 1 and `UnpackViewZ` is `abs(z)`), the `copyMatrix` transpose
+(`NRD4_NO_TRANSPOSE=1` changes nothing), normal encoding (the overlay prints NORMALS 2, matching),
+`accumulationMode` / `frameIndex` / prev matrices / prev sizes / prev jitter, the permanent-pool
+binding and lifetime (`reinit()` runs only on compile or explicit recreate), and
+`disocclusionThreshold` (2.0 percent -> 0.02, the top of NRD's recommended [0.01; 0.02]).
+
+The temporal accumulation pass IS being scheduled -- `NRD4_LOGDISPATCH=<frame>` lists what NRD asked
+for, and RELAX_Diffuse schedules 13 passes including "Temporal accumulation", "History fix",
+"History clamping" and 6 a-trous. So the pass runs and its result does not reach the output, or it
+rejects history for a reason none of the above controls.
+
+WHERE I WOULD LOOK NEXT, given REBLUR works through identical plumbing:
+1. Diff the RELAX and REBLUR resource-binding paths in `NRDPass::dispatch` for an input RELAX uses
+   that REBLUR does not, or one bound to the wrong slot for RELAX only.
+2. `mpPackRadiancePassRelax` versus `mpPackRadiancePassReblur` -- the RELAX pack writes only
+   radiance and maxIntensity; check what RELAX_DIFFUSE actually expects in
+   `IN_DIFF_RADIANCE_HITDIST` and whether the hit-distance channel it ignores is nonetheless read by
+   the accumulation pass.
+3. Read `RELAX_TemporalAccumulation.cs.hlsl` end to end for reset paths driven by something not in
+   RelaxSettings at all.
+
+The validation overlay is wired (`VR_NRD_VALIDATION=1`) on both paths and its MV viewport is
+saturated even on a static camera, which is consistent with 1-3 but has not itself been explained.
+
+## SUPERSEDED: "NRD's temporal accumulation contributes NOTHING here"
 
 Established two independent ways, and it invalidates a lot of what is written below it. Every NRD
 result in this project is from a denoiser running with ~1 frame of history, i.e. effectively
