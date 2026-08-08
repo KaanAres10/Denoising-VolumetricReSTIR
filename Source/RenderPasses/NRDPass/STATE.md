@@ -453,23 +453,35 @@ smoke transparent too. If it does not, this explanation is wrong as well.
 
 `CommonSettings::disocclusionThreshold` is what RELAX's reprojection validity test compares against
 (`RELAX_TemporalAccumulation.cs.hlsl`, `isReprojectionTapValid` -> `maxPlaneDistance >
-disocclusionThreshold`). Raising it from 2% to **10%** restores the accumulation. Now the v4 default;
+disocclusionThreshold`). Raising it from 2% to **20%** restores the accumulation. Now the v4 default;
 `NRD4_DISOCC` overrides, and it is re-applied after the property loop so a graph property cannot
 silently win.
 
-Static camera, spatial minimised, frame-to-frame difference d1:
+Measured at 90 frames on the production configuration, instability by spatial scale (x1e-3) with the
+correctness check beside it -- composite against `accumulated_color` of the SAME frame, 1.00 being
+the undenoised image:
 
-| `NRD4_DISOCC` | d1 |
-|---|---|
-| 2 (was) | 0.07261 |
-| 10 (now) | 0.06195 |
-| 50 | 0.02247 |
+| disocc | s=32 | s=128 | whole-frame | sharpness | vs undenoised |
+|---|---|---|---|---|---|
+| 2 (was) | 28.28 | 14.38 | 11.88 | 0.00133 | 0.998 |
+| 10 | 23.46 | 11.72 | 9.27 | 0.00127 | 0.997 |
+| **20 (now)** | **19.49** | **9.94** | **8.08** | 0.00123 | 0.996 |
+| 35 | 17.03 | 8.96 | 7.42 | 0.00125 | 0.996 |
+| REBLUR | 15.92 | 9.14 | 7.72 | 0.00127 | |
+| DLSS RR | 17.70 | 10.05 | 8.43 | 0.00334 | |
 
-Under camera motion, production configuration, 10% against 2%: instability at sigma 32 falls 18%, at
-sigma 128 25%, whole-frame brightness wobble 26%, share of pixels taking a hard jump 13.57% ->
-11.36%, for 3% of sharpness. At 20% it is 37% / 44% / 48% and 9.72%, for 6% of sharpness -- checked
-by eye on the orbit for ghosting and there is none visible, so 20 is available if wanted. 10 is the
-default as the conservative end.
+20 is -31% at sigma 32 and -32% whole-frame against the old 2, for 7.5% of sharpness, and it puts
+RELAX AHEAD of Ray Reconstruction at sigma 128. Every value reproduces the undenoised image to within
+0.4%, so the falling mean brightness in the moving sequences is temporal behaviour over the orbit
+rather than an energy error. Checked by eye at 3x zoom for ghosting: none visible. 35 is better still
+but returns are diminishing and it is 17x NRD's documented maximum.
+
+REBLUR is unaffected by the change (15.92 against 16.03 before), which is consistent with its
+accumulation having worked all along. The gap to REBLUR narrows from 76% to 22% but does not close --
+the remainder is presumably the same unrooted reprojection problem, since fully restoring RELAX's
+accumulation on a static camera needs 50%.
+
+Static camera, spatial minimised, d1: 2% -> 0.07261, 10% -> 0.06195, 50% -> 0.02247.
 
 **This is a workaround, not a root-cause fix.** NRD documents [0.01; 0.02] for this threshold, so
 needing 5x that means the reprojection genuinely does not line up -- which is also what the

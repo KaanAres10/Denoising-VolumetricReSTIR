@@ -332,11 +332,30 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     // the share of pixels taking a hard jump 13.57% -> 11.36%, for 3% of sharpness. Checked by eye
     // at 20% for ghosting on the orbit and there is none visible.
     //
-    // NRD documents [0.01; 0.02] for this, so needing 5x that means the reprojection genuinely does
+    // Settled at 20 rather than 10 after measuring the curve at 90 frames on the production
+    // configuration. Instability by spatial scale (x1e-3) and the correctness check beside it, the
+    // latter being the composite against accumulated_color of the SAME frame where 1.00 is the
+    // undenoised image:
+    //
+    //     disocc      s=32    s=128   whole-frame   sharpness   vs undenoised
+    //        2       28.28    14.38      11.88       0.00133        0.998
+    //       10       23.46    11.72       9.27       0.00127        0.997
+    //       20       19.49     9.94       8.08       0.00123        0.996
+    //       35       17.03     8.96       7.42       0.00125        0.996
+    //     REBLUR     15.92     9.14       7.72       0.00127
+    //     DLSS RR    17.70    10.05       8.43       0.00334
+    //
+    // 20 is -31% at s=32 and -32% whole-frame against the old 2, for 7.5% of sharpness, and it puts
+    // RELAX ahead of Ray Reconstruction at s=128. Every value reproduces the undenoised image to
+    // within 0.4%, so the falling mean brightness in the moving sequences is temporal behaviour over
+    // the orbit rather than an energy error. Checked by eye at 3x zoom for ghosting: none visible.
+    // 35 is better still but returns are diminishing and it is 17x NRD's documented maximum.
+    //
+    // NRD documents [0.01; 0.02] for this, so needing 10x that means the reprojection genuinely does
     // not line up -- which is also what the validation overlay says, its MV viewport being saturated
     // even on a static camera. Raising the gate buys back the accumulation without explaining why it
     // was being rejected. The root cause is still open; see STATE.md.
-    mDisocclusionThreshold = envF("NRD4_DISOCC", 10.f);
+    mDisocclusionThreshold = envF("NRD4_DISOCC", 20.f);
 
     // RELAX rejects history on depthThreshold; REBLUR uses planeDistanceSensitivity = 0.02, which is
     // 6.7x looser. v4 moved RELAX's default from 0.01 to 0.003 and the port deliberately did not
