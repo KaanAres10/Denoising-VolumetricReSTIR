@@ -1,0 +1,87 @@
+# Bistro on the split NRD path, INTERACTIVE, so the denoiser can be judged by moving the camera
+# rather than from a metric.
+#
+# Every measurement in Source/RenderPasses/NRDPass/STATE.md was taken on a fixed orbit; this is the
+# same configuration with the camera left in your hands. Drive it with WASD + mouse. The artifacts
+# worth looking for, in the order they were found:
+#
+#   * the plume going see-through, so the building shows through the smoke  (fixed)
+#   * a halo of the plume's glow spreading past its own silhouette          (fixed)
+#   * hard rectangular seams cutting into the plume's boundary              (fixed)
+#   * whole regions of the image shifting brightness together as you move   (the accumulation fix)
+#   * bulbs and string lights strobing                                      (NOT fixed -- this is
+#     the estimator's stochastic emission, and no denoiser removes it; see STATE.md)
+#
+# Marked outputs, switchable live from Mogwai's Graphs panel (open a second view to compare two at
+# once):
+#
+#   ToneMapper/TAA output       what you would ship
+#   ModulateIllumination.output the composite before tonemap and TAA
+#   accumulated_color           raw ReSTIR, undenoised -- the noise floor to judge against
+#   NRD.validation              NRD's own diagnostic overlay, when VR_NRD_VALIDATION=1
+#
+# Env switches worth knowing (all have measured defaults, see STATE.md):
+#   VR_NRD_METHOD=RelaxDiffuseSh | ReblurDiffuseSh   which denoiser
+#   NRD4_DISOCC=20                                   disocclusion threshold, percent. 2 is NRD's
+#                                                    documented value and is what RELAX ran at while
+#                                                    its temporal accumulation was doing nothing --
+#                                                    set it to 2 to see the before.
+#   VR_NRD_VALIDATION=1                              add NRD's overlay as an output
+#   VR_DENOISER=rr                                   DLSS Ray Reconstruction instead of NRD
+import os
+import sys
+
+_HERE = r"C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts"
+try:
+    _HERE = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    pass
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from falcor import *
+import vr_graph as vr
+
+vr.bind(m)
+
+RENDER = vr.env_size("VR_DISPLAY", (1280, 720))
+MODE = vr.env("VR_DENOISER", "nrd").lower()
+
+g = RenderGraph("bistro_relax")
+scene = vr.load_scene("bistro")
+restir = vr.add_restir(g, scene, render=RENDER, guides=True, mOutputDepth=True,
+                       mMotionVecMode="Deterministic")
+out = vr.add_denoiser(g, MODE, restir + ".accumulated_color", scene, RENDER, RENDER,
+                      restir=restir, guides=True)
+tm = vr.add_tonemapper(g, out, exposure=scene.get("exposure", 0.0))
+if vr.env_bool("VR_TAA_LDR", True):
+    g.addPass(createPass("TAA", vr.taa_props()), "TAA_LDR")
+    g.addEdge(tm, "TAA_LDR.colorIn")
+    g.addEdge("GBufferRaster.mvec", "TAA_LDR.motionVecs")
+    tm = "TAA_LDR.colorOut"
+
+g.markOutput(tm)
+# The undenoised image, so the denoiser is judged against the noise floor rather than from memory.
+g.markOutput(restir + ".accumulated_color")
+if MODE == "nrd":
+    g.markOutput("ModulateIllumination.output")
+
+m.addGraph(g)
+m.resizeSwapChain(RENDER[0], RENDER[1])
+m.ui = True
+
+print("[bistro_relax] denoiser=%s method=%s  disocclusionThreshold=%s%%  split=%s"
+      % (MODE, vr.env("VR_NRD_METHOD", "RelaxDiffuseSh"), vr.env("NRD4_DISOCC", "20 (default)"),
+         vr.env("VR_NRD_SPLIT", "1")))
+print("[bistro_relax] move the camera with WASD + mouse; switch outputs in the Graphs panel")
+sys.stdout.flush()
+
+# VR_EXIT_FRAME=N renders N frames and quits, which is how this script gets smoke-tested headless
+# before being handed over as a working task. Unset leaves it interactive, which is the point of it.
+_EXIT = vr.env_int("VR_EXIT_FRAME", 0)
+if _EXIT > 0:
+    m.clock.exitFrame = _EXIT
+    for _ in range(_EXIT):
+        m.renderFrame()
+    print("[bistro_relax] rendered %d frames and exiting (VR_EXIT_FRAME)" % _EXIT)
+    sys.stdout.flush()
