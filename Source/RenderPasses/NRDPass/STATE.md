@@ -512,13 +512,44 @@ explain the fault exactly. It is not that: `NRD4_FLIPVIEWZ=1` negates the view m
 measures 0.07567 against 0.07567 unflipped (0.4%, and marginally worse). NRD evidently resolves
 handedness internally. Switch kept, since it is the natural first suspect.
 
-TOP REMAINING CANDIDATE, untested: the THRESHOLD side rather than the distance side.
-`frustumSize = PixelRadiusToWorld(gUnproject, gOrthoMode, 1.0, currentLinearZ) * min(gRectSize.xy)`,
-and `gUnproject` is derived by NRD from the `viewToClipMatrix` we hand over. If that derivation is
-off by ~10x for this projection, the threshold is ~10x too small and everything is rejected -- which
-would explain why the fix needs 10-20x NRD's documented value, and why the size of the correction is
-suspiciously round. Instrumenting `pixelSize` against a hand-computed value at a known depth would
-settle it in one run.
+MEASURED with a diagnostic viewport added to `RELAX_Validation.cs.hlsl` (viewport 5, local patch,
+reached only under `VR_NRD_VALIDATION=1`; `readdiag2.py` reads it). Static camera, surface branch:
+
+| quantity | value |
+|---|---|
+| `viewZ` we supply | 21.17 m mean |
+| `prevViewPos.z` NRD derives | 17.42 m mean |
+| **ratio NRD / ours** | **0.791 median, 0.625 at p05, 0.960 at p95** |
+| `frustumSize` | 14.51 m |
+| planeDist / frustumSize | 0.305 -- against a threshold of 0.02 |
+
+So the threshold SCALE is fine (14.5 m is sane) and the rejection is driven by a genuine ~4.4 m
+disagreement between the view Z we hand NRD and the one NRD derives by reconstructing the world
+position. The ratio is ANGULAR -- near 1 at frame centre, 0.63 at the corners -- i.e. a cos(theta)
+relationship, not a constant offset or a scale error.
+
+NRD reconstructs camera-relative: `RELAX_Common.hlsli`'s `GetCurrentWorldPosFromClipSpaceXY` returns
+`viewZ * (gFrustumForward + gFrustumRight*x - gFrustumUp*y)`. The view-space Z of that should be
+`viewZ` exactly, since Right and Up are perpendicular to Forward. It measures `viewZ * cos(theta)`,
+which means the frustum basis NRD derived is not orthogonal to the view matrix's forward axis -- i.e.
+`viewToClipMatrix` and `worldToViewMatrix` are mutually inconsistent in a rotational sense.
+
+REFUTED with positive controls, so these are settled rather than merely untried:
+* The `copyMatrix` transpose is CORRECT. `NRD4_NO_TRANSPOSE=1` collapses `frustumSize` to 0.0 and the
+  plane ratio to 1.0 -- visibly broken, which is the control proving the diagnostic responds.
+* View-space Z sign. `NRD4_FLIPVIEWZ=1` makes the plane ratio WORSE, 0.305 -> 0.520.
+* Camera-relative translation. `NRD4_RELVIEW=1` strips the view matrices' translation and changes
+  nothing at all -- and could not have, since a translation error shifts Z by a constant while the
+  measured ratio is angular. That build was avoidable and is on me.
+
+CAVEAT on the diagnostic: its first incarnation had a round-trip channel that stayed pinned across
+configurations which visibly moved the others, so it was measuring nothing and was replaced. The
+current two channels do respond (the NO_TRANSPOSE control above), but the helpers are being called
+slightly outside the context NRD calls them in, so treat the ABSOLUTE interpretation as provisional.
+What is solid is the relative behaviour and the fact that raising the threshold fixes it.
+
+SUPERSEDED CANDIDATE: the THRESHOLD side rather than the distance side.
+Refuted by the measurement above: `frustumSize` comes out at 14.5 m, which is sane for this scene.
 
 Other loose end: `PackRadiance` also binds only
 `gDiffuseRadianceHitDist` and `gMaxIntensity` on the RelaxDiffuse path while the shader reads and

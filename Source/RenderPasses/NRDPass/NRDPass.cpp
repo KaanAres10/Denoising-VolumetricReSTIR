@@ -2132,6 +2132,26 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
     // fault: history stuck under 2 frames even with a completely static camera.
     float4x4 nrdViewMatrix = viewMatrix;
     float4x4 nrdPrevViewMatrix = mPrevViewMatrix;
+
+    // NRD4_RELVIEW=1 strips the translation from the view matrices.
+    //
+    // NRD reconstructs world positions CAMERA-RELATIVE: RELAX_Common.hlsli's
+    // GetCurrentWorldPosFromClipSpaceXY returns viewZ * (F + R*x - U*y) with no camera origin added.
+    // Falcor's getViewMatrix() carries the camera translation, so transforming one of those
+    // camera-relative points by it picks up a spurious translation term -- which would make the view
+    // Z NRD derives disagree with the IN_VIEWZ we supply, and that disagreement is precisely what
+    // RELAX's reprojection test rejects on. Measured with the diagnostic viewport: NRD's derived
+    // view Z is 0.79x ours on a static camera (0.63 at frame edges, 0.96 near the centre).
+    static const bool relView = []
+    { const char* v = std::getenv("NRD4_RELVIEW"); return v && std::strtol(v, nullptr, 10) != 0; }();
+    if (relView)
+    {
+        for (int r = 0; r < 3; r++)
+        {
+            nrdViewMatrix[r][3] = 0.f;
+            nrdPrevViewMatrix[r][3] = 0.f;
+        }
+    }
     static const bool flipViewZ = []
     { const char* v = std::getenv("NRD4_FLIPVIEWZ"); return v && std::strtol(v, nullptr, 10) != 0; }();
     if (flipViewZ)
