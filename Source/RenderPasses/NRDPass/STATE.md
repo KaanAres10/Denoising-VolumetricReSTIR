@@ -525,22 +525,43 @@ reached only under `VR_NRD_VALIDATION=1`; `readdiag2.py` reads it). Static camer
 
 So the threshold SCALE is fine (14.5 m is sane) and the rejection is driven by a genuine ~4.4 m
 disagreement between the view Z we hand NRD and the one NRD derives by reconstructing the world
-position. The ratio is ANGULAR -- near 1 at frame centre, 0.63 at the corners -- i.e. a cos(theta)
-relationship, not a constant offset or a scale error.
+position. CORRECTION -- I first called this ratio angular and it is NOT. Fitting it properly:
+
+| | value |
+|---|---|
+| ratio at frame CENTRE | 0.8065 |
+| ratio at CORNER | 1.0000 |
+| left / right / top / bottom edges | 0.820 / 0.791 / 1.000 / 0.618 |
+| best cos(theta) fit, mean abs error | 0.129 -- WORSE than a flat model's 0.102 |
+
+cos(theta) predicts 1 at the centre falling outward and radial symmetry. The measurement is the
+opposite at the corner and strongly asymmetric top-to-bottom, so the ray-distance-versus-view-Z
+theory (which would give exactly cos(theta)) is dead.
+
+What it looks like instead is a roughly CONSTANT SCALE near 0.79-0.82 across most of the frame. The
+1.000 at the top is almost certainly SATURATION rather than signal -- the diagnostic encodes viewZ as
+`viewZ/100` in 8 bits, and sky pixels sit near or past 100 m, so both channels clip and the ratio
+comes out 1 by construction. The 0.618 at the bottom is unexplained. **The instrument needs a wider,
+unsaturated range before any more is inferred from it**; that, not another hypothesis, is the next
+step.
 
 NRD reconstructs camera-relative: `RELAX_Common.hlsli`'s `GetCurrentWorldPosFromClipSpaceXY` returns
-`viewZ * (gFrustumForward + gFrustumRight*x - gFrustumUp*y)`. The view-space Z of that should be
-`viewZ` exactly, since Right and Up are perpendicular to Forward. It measures `viewZ * cos(theta)`,
-which means the frustum basis NRD derived is not orthogonal to the view matrix's forward axis -- i.e.
-`viewToClipMatrix` and `worldToViewMatrix` are mutually inconsistent in a rotational sense.
+`viewZ * (gFrustumForward + gFrustumRight*x - gFrustumUp*y)`, whose view-space Z should be `viewZ`
+exactly since Right and Up are perpendicular to Forward. A pure scale error there points at the
+frustum basis NRD derives from `viewToClipMatrix`, not at anything positional -- and note a rotation
+alone can only produce a RATIO, never a depth-dependent offset, which is a useful constraint on any
+future explanation.
 
 REFUTED with positive controls, so these are settled rather than merely untried:
 * The `copyMatrix` transpose is CORRECT. `NRD4_NO_TRANSPOSE=1` collapses `frustumSize` to 0.0 and the
   plane ratio to 1.0 -- visibly broken, which is the control proving the diagnostic responds.
 * View-space Z sign. `NRD4_FLIPVIEWZ=1` makes the plane ratio WORSE, 0.305 -> 0.520.
 * Camera-relative translation. `NRD4_RELVIEW=1` strips the view matrices' translation and changes
-  nothing at all -- and could not have, since a translation error shifts Z by a constant while the
-  measured ratio is angular. That build was avoidable and is on me.
+  nothing. Verified this is a real test and not a broken edit: Falcor's matrix is row-major with
+  `operator[]` returning a ROW, so `m[r][3]` is the translation column for its `mul(M, v)`
+  convention, and NRD's `AffineTransform` is `mul(m, float4(p, 1))`, which does apply translation.
+  The conclusion is that NRD ignores the translation and works rotation-only, rebasing to
+  camera-relative itself -- so the positional part of the handoff is not where the fault is.
 
 CAVEAT on the diagnostic: its first incarnation had a round-trip channel that stayed pinned across
 configurations which visibly moved the others, so it was measuring nothing and was replaced. The
