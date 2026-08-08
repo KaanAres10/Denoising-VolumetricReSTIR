@@ -829,7 +829,30 @@ Two corrections fall out, both against things stated earlier in this file:
 Which is the strongest argument yet that the fix belongs at the source: three different denoisers,
 including a trained one that filters emission directly, all fail to remove it.
 
-THE ACTUAL FIX IS AT THE SOURCE, and it is an estimator change, not a denoiser one: emission should
+CLOSED, for now, BY CONSTRAINT. VolumetricReSTIR's logic is off limits, which rules out the only fix
+that works (below). Every downstream option has now been measured and every one is worse than doing
+nothing:
+
+| route | result |
+|---|---|
+| denoise emission under RELAX, no demodulation | +6.6% flicker |
+| denoise under REBLUR, pre-pass 0, maxBlurRadius 0 | +5.6% (before the accumulation fix) |
+| same, re-tested AFTER the accumulation fix | **+7.9% flicker, hard-jump pixels 9.72% -> 13.03%, sharpness +22%** |
+| TAA alpha 0.02 + colorBoxSigma 8 | total flicker energy up |
+| separate unclamped TAA on the emissive buffer | -23% before the composite TAA, +1.3% after it |
+| DLSS RR, which denoises emission natively | worst emitter tail of the three denoisers |
+
+The re-test matters because the first two verdicts were taken while temporal accumulation was broken,
+so they were stale. They are not any more. The +22% sharpness with the blur radius at ZERO is the
+tell: NRD's anti-firefly and history clamping are suppressing exactly the spikes that ARE this
+signal, so the term comes back altered rather than averaged.
+
+So the current configuration -- emission routed around the denoiser, composite TAA after the
+tonemapper -- is the best of the measured options, and TAA is already doing the heavy lifting
+(emitter share of flicker energy 95.7% before it, 14.9% after). Do not re-try the denoiser routes
+without a reason that is not on this list.
+
+IF the estimator ever opens up, the fix is: emission should
 not be a stochastic reservoir choice. Integrated deterministically along the primary ray during the
 march -- the same shape of change as `opticalThickness`, which already rides that march -- it would
 not strobe at all and would need no filtering, which is also what NVIDIA assumes when they say
