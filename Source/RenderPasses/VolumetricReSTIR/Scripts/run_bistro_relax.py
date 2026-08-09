@@ -8,7 +8,8 @@
 #   * the plume going see-through, so the building shows through the smoke  (fixed)
 #   * a halo of the plume's glow spreading past its own silhouette          (fixed)
 #   * hard rectangular seams cutting into the plume's boundary              (fixed)
-#   * whole regions of the image shifting brightness together as you move   (the accumulation fix)
+#   * whole regions of the image shifting brightness together as you move   (fixed: NRD's matrices
+#     were reaching the shaders transposed, so RELAX rejected every reprojection)
 #   * bulbs and string lights strobing                                      (NOT fixed -- this is
 #     the estimator's stochastic emission, and no denoiser removes it; see STATE.md)
 #
@@ -22,10 +23,16 @@
 #
 # Env switches worth knowing (all have measured defaults, see STATE.md):
 #   VR_NRD_METHOD=RelaxDiffuseSh | ReblurDiffuseSh   which denoiser
-#   NRD4_DISOCC=20                                   disocclusion threshold, percent. 2 is NRD's
-#                                                    documented value and is what RELAX ran at while
-#                                                    its temporal accumulation was doing nothing --
-#                                                    set it to 2 to see the before.
+#   NRD4_RAW_MATRICES=1                              restores the BUG: NRD's matrix constants are read
+#                                                    as they arrive, which is transposed. RELAX's
+#                                                    history collapses from 29.8 frames to 0.05 on a
+#                                                    static camera. This is the real before/after.
+#   NRD4_DISOCC=2                                    disocclusion threshold, percent. 2 is NRD's
+#                                                    documented value and is now the default; it used
+#                                                    to be 35 to work around the bug above.
+#   VR_MARK_DEBUG=1                                  also mark the raw HDR buffers (undenoised, the
+#                                                    two halves, the pre-tonemap composite). They look
+#                                                    BLACK unless you raise exposure in Mogwai.
 #   VR_NRD_VALIDATION=1                              add NRD's overlay as an output
 #   VR_DENOISER=rr                                   DLSS Ray Reconstruction instead of NRD
 import os
@@ -61,14 +68,24 @@ if vr.env_bool("VR_TAA_LDR", True):
     tm = "TAA_LDR.colorOut"
 
 g.markOutput(tm)
-# The undenoised image, so the denoiser is judged against the noise floor rather than from memory.
-g.markOutput(restir + ".accumulated_color")
-if MODE == "nrd":
+
+# Everything below this point is an HDR buffer, and bistro is a night exterior that needs +8 EV
+# (2^8 = 256x) before anything but the emissive lights is visible -- the tonemapper supplies that, and
+# these outputs are BEFORE it. Marking them all by default meant the window could come up on one of
+# them, showing a black frame with a few coloured bulbs and no volume or surfaces, which reads exactly
+# like a broken render and is not one.
+#
+# So they are opt-in now. VR_MARK_DEBUG=1 brings them back for A/B work; switch between them in
+# Mogwai's Graphs panel, and remember they will look black until you raise exposure there.
+if vr.env_bool("VR_MARK_DEBUG", False):
+    # The undenoised image, so the denoiser is judged against the noise floor rather than from memory.
+    g.markOutput(restir + ".accumulated_color")
+if vr.env_bool("VR_MARK_DEBUG", False) and MODE == "nrd":
     g.markOutput("ModulateIllumination.output")
-    # The two halves separately. The surface half is where the remaining flicker lives -- measured at
-    # 17x REBLUR's before the disocclusion fix and ~4x after -- and the composite hides it, because it
-    # mixes in the medium and the raw emissive strobe and then TAA flattens what survives. Switch to
-    # it in the Graphs panel to see the denoiser's own output rather than the blend.
+    # The two halves separately. The surface half is where the flicker lived, and the composite hides
+    # it, because it mixes in the medium and the raw emissive strobe and then TAA flattens what
+    # survives. Switch to it in the Graphs panel to see the denoiser's own output rather than the
+    # blend.
     # Default must MATCH add_denoiser's own (False), or without the env this marks passes the graph
     # never created and the script dies with "Can't find render pass 'NRDSurface'".
     if vr.env_bool("VR_NRD_SPLIT", False):
