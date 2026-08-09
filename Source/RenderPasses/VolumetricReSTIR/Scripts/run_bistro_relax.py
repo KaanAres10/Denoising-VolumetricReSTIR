@@ -21,6 +21,9 @@
 #   accumulated_color           raw ReSTIR, undenoised -- the noise floor to judge against
 #   NRD.validation              NRD's own diagnostic overlay, when VR_NRD_VALIDATION=1
 #
+#   VR_SCENE=bistro|plume                            which scene. plume is the one with NO measurement
+#                                                    against the fixed build yet.
+#
 # Env switches worth knowing (all have measured defaults, see STATE.md):
 #   VR_NRD_METHOD=RelaxDiffuseSh | ReblurDiffuseSh   which denoiser
 #   NRD4_RAW_MATRICES=1                              restores the BUG: NRD's matrix constants are read
@@ -54,8 +57,15 @@ vr.bind(m)
 RENDER = vr.env_size("VR_DISPLAY", (1280, 720))
 MODE = vr.env("VR_DENOISER", "nrd").lower()
 
-g = RenderGraph("bistro_relax")
-scene = vr.load_scene("bistro")
+# VR_SCENE picks the scene. Kept in this script rather than a second copy because everything below --
+# the marked outputs, the exposure, the split -- is identical, and two copies drift.
+#
+# plume is the case that still has NO measurement against the fixed build, and it is the one most
+# likely to disagree with bistro: animated, 1 spp, and genuinely firefly-heavy, which is exactly what
+# the anti-firefly setting was originally tuned for (on plume, before the matrix fix).
+SCENE = vr.env("VR_SCENE", "bistro").lower()
+g = RenderGraph(SCENE + "_relax")
+scene = vr.load_scene(SCENE)
 restir = vr.add_restir(g, scene, render=RENDER, guides=True, mOutputDepth=True,
                        mMotionVecMode="Deterministic")
 out = vr.add_denoiser(g, MODE, restir + ".accumulated_color", scene, RENDER, RENDER,
@@ -99,11 +109,11 @@ m.ui = True
 
 # Deliberately does NOT name the default value: it is set in NRDPass.cpp and has already moved twice
 # (2 -> 20 -> 35), so a number repeated here goes stale silently and misreports what you are looking at.
-print("[bistro_relax] denoiser=%s method=%s  disocclusionThreshold=%s  split=%s"
-      % (MODE, vr.env("VR_NRD_METHOD", "RelaxDiffuseSh"),
+print("[look] scene=%s denoiser=%s method=%s  disocclusionThreshold=%s  split=%s"
+      % (SCENE, MODE, vr.env("VR_NRD_METHOD", "RelaxDiffuseSh"),
          (vr.env("NRD4_DISOCC") + "%") if vr.env("NRD4_DISOCC") else "NRDPass default",
          vr.env("VR_NRD_SPLIT", "1")))
-print("[bistro_relax] move the camera with WASD + mouse; switch outputs in the Graphs panel")
+print("[look] move the camera with WASD + mouse; switch outputs in the Graphs panel")
 sys.stdout.flush()
 
 # VR_EXIT_FRAME=N renders N frames and quits, which is how this script gets smoke-tested headless
@@ -113,5 +123,5 @@ if _EXIT > 0:
     m.clock.exitFrame = _EXIT
     for _ in range(_EXIT):
         m.renderFrame()
-    print("[bistro_relax] rendered %d frames and exiting (VR_EXIT_FRAME)" % _EXIT)
+    print("[look] rendered %d frames and exiting (VR_EXIT_FRAME)" % _EXIT)
     sys.stdout.flush()
