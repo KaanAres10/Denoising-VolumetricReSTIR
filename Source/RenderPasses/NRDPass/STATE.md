@@ -928,6 +928,55 @@ down in "Traps that have already cost time" below, and I walked into it anyway. 
 land in one bucket and hid the additive shape for a full round. When a per-pixel breakdown looks
 degenerate, check the channel before believing the aggregate.
 
+### ROOT CAUSE, PROVEN: every NRD matrix reaches the shader TRANSPOSED
+
+    Geometry::RotateVector(          gWorldToViewPrev , gPrevFrustumForward.xyz ).z  =  0.7984
+    Geometry::RotateVector( transpose(gWorldToViewPrev), gPrevFrustumForward.xyz ).z =  0.9984   <- 1.0
+
+The shader's copy of every NRD `float4x4` is the transpose of what NRD's C++ wrote. `float4`
+constants like `gFrustumForward` are unaffected, and that asymmetry -- correct vectors, transposed
+matrices -- is exactly what produces `(M^2)_33 = 0.8068` and every downstream symptom in the table
+above.
+
+**Why this is our bug and nobody else's.** NRD ships **precompiled shader bytecode**:
+`PipelineDesc` carries `computeShaderDXBC / computeShaderDXIL / computeShaderSPIRV`
+(`NRDDescs.h:441-454`), and the reference integration consumes it --
+`NRDIntegration.hpp:216` picks `nrdPipelineDesc.computeShaderDXIL`. NRD builds those blobs itself with
+ShaderMake/DXC and **no matrix-layout flag**, i.e. HLSL's default column-major
+(`NRD/CMakeLists.txt:334-352`). `shaderIdentifier` is documented as being for "custom integrations".
+
+We are a custom integration: `NRDPass.cpp` ignores the bytecode and recompiles
+`nrd/Shaders/*.cs.hlsl` through Slang, then `memcpy`s NRD's raw constant blob into a D3D12 CBV
+(`:2447-2448`). A raw blob against a differently-packed cbuffer is only correct if the layouts match,
+and for matrices they do not.
+
+**And the layout cannot be steered from our side.** All three attempts leave the denoised output
+**byte-identical** (`max|diff| = 0.000000e+00`), with the shader cache deleted each time:
+
+* `SlangCompilerFlags::MatrixLayoutColumnMajor` on / off -- and Falcor does forward it to Slang
+  (`ProgramManager.cpp:745-746`), so the option is reaching the compiler and being ignored.
+* `#pragma pack_matrix(row_major)` ahead of the includes, where it governs the cbuffer declarations.
+
+An inert knob and a correct setting produce the same null, so each of these had to be checked with the
+byte-difference control before it meant anything. The first of them looked like a clean null purely
+because the shader cache was stale.
+
+**The fix.** Transpose NRD's matrix constants at the point where the shaders read them. Confirmed to
+restore the value exactly. It has to be applied to *every* matrix constant, not just this one -- the
+transposition is a property of the cbuffer, so `gWorldToViewPrev`, `gWorldToClipPrev`,
+`gWorldPrevToWorld` and the REBLUR/SIGMA equivalents are all affected. The contained way to do it is in
+the `*_Config.hlsli` headers: declare each matrix under a raw name and add
+`#define gWorldToViewPrev transpose(gWorldToViewPrev_raw)`, so no call site changes and no pass needs a
+constant it does not declare -- which is what broke the earlier attempt in `RELAX_Common.hlsli`.
+
+Two things to verify while doing it. **REBLUR probably survives by accident**: its reprojection uses
+`RotateVectorInverse`, which transposes internally, so a transposed matrix makes it behave like
+`RotateVector` -- possibly right for its use, which would explain why REBLUR accumulates fine on the
+same broken constants. Fixing the layout may therefore *change* REBLUR, and its numbers must be
+re-measured rather than assumed stable. And `gFrustumRight` / `gFrustumUp` are vectors, so they were
+never transposed -- but they are built on the CPU from `m_WorldToView.Row(0)` and have not been checked
+independently; a lateral error is invisible in every `.z` measurement above.
+
 ### REINSTATED: the frustum-forward basis really is 0.80x, and it is the root cause
 
 The withdrawn "0.8078" section below was **right**. It was withdrawn because the instrument saturated
