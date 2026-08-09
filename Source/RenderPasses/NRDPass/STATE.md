@@ -853,7 +853,39 @@ project added itself for the see-through fix. Captured and measured: confidence 
 the frame** (mean 0.887, median 1.000), so 86.5% of pixels have an unmodified cap of 30 and still show
 zero history. Not the cause.
 
-**Next candidate, RELAX-only and untested:** the backfacing-history rejection at
+### LOCALISED by shader control: it IS the plane-distance threshold, and it fires on a static camera
+
+Three patches to `RELAX_TemporalAccumulation.cs.hlsl`, static camera, `NRD4_DISOCC=1`, surface half:
+
+| patch | history mean | at full cap |
+|---|---|---|
+| none (baseline) | 0.05 | 0.0% |
+| backfacing gate disabled (`dot(N, prevN) < -2.0`) | 0.05 | 0.0% |
+| `smbDisocclusionThreshold = 1e6` **after** the screen test | **29.95** | 100% |
+| `smbDisocclusionThreshold = 1e6` **before** the screen test | **29.95** | 100% |
+| REBLUR, for reference | 24.12 | 64.9% |
+
+The third row is the positive control that makes the second row mean anything: shader edits do reach
+the GPU, so the backfacing gate's null result is a real null and that candidate is dead. The fourth row
+separates the two things the third could not: `IsInScreenBilinear` is not involved, because leaving it
+applied changes nothing. **It is the threshold comparison itself.**
+
+So my "with a static camera mv = 0, therefore the plane distance is zero, therefore no threshold can
+matter" was wrong. The plane distance is NOT zero on a static camera -- `planeDist` genuinely exceeds
+1% of `frustumSize` there, and bypassing that one comparison restores a full 30-frame history.
+
+That partially rehabilitates the withdrawn viewZ-disagreement story, with one thing still unexplained:
+REBLUR's test compares the same two quantities and does not reject. The difference between them is how
+`prevWorldPos` is built -- REBLUR by a pure matrix rotation, RELAX through the frustum basis (see the
+asymmetry section above) -- so the two arrive at different `planeDist` values from the same inputs.
+
+**The next step is now a single well-defined measurement, not a hypothesis:** print
+`planeDist / frustumSize` from RELAX's temporal accumulation on a static camera and see what it
+actually is and how it varies over the frame. `CommonSettings::debug` (`gDebug`) exists for exactly
+this and is already plumbed. If it is a constant, that constant is the bug; if it tracks depth or
+screen position, that shape names the term. Do this before proposing any further cause.
+
+**Ruled out (was the next candidate):** the backfacing-history rejection at
 `RELAX_TemporalAccumulation.cs.hlsl:144-149` -- `if (dot(currentNormal, prevNormalFlat) < 0) { all taps
 invalid }`, comparing IN_NORMAL_ROUGHNESS against RELAX's own `gPrev_Normal_Roughness` history. REBLUR
 has no equivalent gate. It fires unconditionally, before any threshold, which fits "rejects even when
