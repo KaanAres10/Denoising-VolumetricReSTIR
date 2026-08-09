@@ -348,10 +348,31 @@ set(output_dir ${FALCOR_OUTPUT_DIRECTORY})
 file(TO_NATIVE_PATH ${source_dir} source_dir)
 file(TO_NATIVE_PATH ${output_dir} output_dir)
 
+# Re-apply the NRD matrix-layout correction before the shaders are deployed.
+#
+# /external/nrd-4/ is gitignored, so that fix is not in version control and vanishes whenever NRD is
+# re-fetched or rebuilt. It is not optional: without it RELAX rejects every reprojection and holds
+# 0.05 frames of history against a 30-frame cap. The script is idempotent, so this runs on every build
+# like restore_runtime_dlls, and it must come BEFORE deploycommon copies the shaders to the output.
+if(FALCOR_NRD_DIR)
+    add_custom_target(patch_nrd_shaders ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Applying NRD matrix-layout correction (see NRDPass/STATE.md)"
+        # find_package(Python ...) above, so this is Python_EXECUTABLE -- Python3_EXECUTABLE is empty
+        # here and the command silently degrades into running the .py as if it were an executable.
+        COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/build_scripts/patch_nrd_matrix_layout.py
+                ${FALCOR_NRD_DIR}/Shaders
+        VERBATIM
+    )
+    set_target_properties(patch_nrd_shaders PROPERTIES FOLDER "Misc")
+endif()
+
 if(FALCOR_WINDOWS)
     add_custom_target(deploy_dependencies ALL
         COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.bat ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR} ${FALCOR_NRD_DIR}
     )
+    if(TARGET patch_nrd_shaders)
+        add_dependencies(deploy_dependencies patch_nrd_shaders)
+    endif()
 elseif(FALCOR_LINUX)
     add_custom_target(deploy_dependencies ALL
         COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.sh ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR}

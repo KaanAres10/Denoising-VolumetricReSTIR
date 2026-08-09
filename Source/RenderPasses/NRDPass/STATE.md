@@ -1683,3 +1683,27 @@ split path (itself off by default, so the single-denoiser default is unchanged):
 `VR_NRD_MINTR` (default 0.05) is the divisor floor AND the confidence handover point; they are the
 same number on purpose. Do not raise it without re-checking the deep-interior number, and do not
 lower it at all -- see the firefly measurements above.
+
+## The fix is a BUILD STEP, not an edit in external/nrd-4
+
+`/external/nrd-4/` is gitignored (~10 MB of built binaries, fetched per this pass's README), so an
+edit made there is **not in version control** and disappears whenever NRD is re-fetched or rebuilt.
+The matrix correction is not optional polish -- without it RELAX rejects every reprojection and holds
+0.05 frames of history against a 30-frame cap -- so it is reapplied on every build by
+`build_scripts/patch_nrd_matrix_layout.py`, wired as the `patch_nrd_shaders` target that
+`deploy_dependencies` depends on. Same pattern as `restore_runtime_dlls`.
+
+The script is idempotent (it looks for the `NRD_RAW_MATRICES` marker), and it **fails loudly** if a
+future NRD version renames the shared-constants block rather than skipping silently -- a silent skip
+would ship a denoiser whose temporal accumulation does not work, which is the exact failure this whole
+investigation was about.
+
+Verified end to end: delete the fix, build, and it comes back; then a full
+`deploy_dependencies` build with the shader cache cleared reproduces history 29.80 / 99.1% at cap.
+
+**A verification failure worth carrying forward.** Throughout this investigation I checked the
+vendored tree with `git status --porcelain external/`, read the empty output as "pristine", and said
+so several times. The path is *ignored*, so that command returns empty no matter what is in there. It
+could never have detected a leftover diagnostic patch. When a check is supposed to catch a specific
+failure, confirm it can actually see that failure -- `git check-ignore -v <path>` here, or the
+byte-difference control used for the shader switches.
