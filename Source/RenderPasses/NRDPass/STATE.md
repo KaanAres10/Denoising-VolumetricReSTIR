@@ -879,6 +879,55 @@ REBLUR's test compares the same two quantities and does not reject. The differen
 `prevWorldPos` is built -- REBLUR by a pure matrix rotation, RELAX through the frustum basis (see the
 asymmetry section above) -- so the two arrive at different `planeDist` values from the same inputs.
 
+### MEASURED: a constant ~7 m offset in NRD's reconstructed previous view Z, on a static camera
+
+The measurement below was run rather than reasoned about. `planeDist` and the reconstruction ratio were
+routed out of `RELAX_TemporalAccumulation.cs.hlsl` through a shader global into the history-length
+channel -- legitimate because `planeDist` depends only on viewZ, motion and matrices, never on history
+length, so borrowing that channel cannot corrupt the value being measured -- and read back with the
+calibrated viewport-8 decoder.
+
+    planeDist / frustumSize, static camera      median 0.507   (must be ~0)
+      exceeds the 1% threshold                  100.0% of pixels
+      exceeds even 35%                           72.5% of pixels
+
+That last figure is the consistency check worth keeping: 100 - 72.5 = 27.5% of the frame should survive
+at the 35% setting, against the 26.9% at full cap measured independently from the history length. Two
+different instruments, same number.
+
+Then each side of the comparison separately. `prevViewPos.z / currentLinearZ` must be exactly 1.0 when
+the camera cannot move:
+
+| viewZ band | ratio | implied offset in `ratio = 1 - c/viewZ` |
+|---|---|---|
+| 10-20 m | 0.533 | **7.0 m** |
+| 20-30 m | 0.698 | **7.6 m** |
+| 30-50 m | 0.833 | **6.7 m** |
+
+**The error is ADDITIVE, not a scale.** A constant ~7 m is subtracted from the reconstructed previous
+view Z. That is the same phenomenon as the withdrawn "constant 4.2 m offset" (different camera pose),
+and it finally has a shape: a constant offset in `AffineTransform(gWorldToViewPrev, X).z` is a
+TRANSLATION term, which on a static camera should be exactly zero.
+
+NRD builds that translation itself: `InstanceImpl.cpp:398-408` extracts both camera positions, zeroes
+the current translation and sets the previous one to `translationDelta = cameraPositionPrev -
+cameraPosition`. With a camera that does not move that delta must be zero. **So the next thing to check
+is whether `worldToViewMatrixPrev` and `worldToViewMatrix` are actually equal on a static frame** --
+they are both built from `mpScene->getCamera()->getViewMatrix()` with `mPrevViewMatrix` assigned at the
+end of the same function, so they should be, and if they are not the fault is in our code and is
+directly fixable.
+
+Ruled out along the way, each by control rather than argument: the matrix transpose
+(`NRD4_NO_TRANSPOSE` is genuinely wired inside `copyMatrix` and changes this ratio not at all), and
+`GBufferRaster.linearZ`, which despite being computed as `posH.z * posH.w` does come out as view-space
+Z in metres (median 18.8, max 110 on this frame).
+
+**Fourth instrument bug, same file as the trap that documents it:** the first decode of this read EXR
+channel 0, which is empty -- OpenCV reads EXR as BGR so Falcor's `.x` is index **2**. That is written
+down in "Traps that have already cost time" below, and I walked into it anyway. It made every depth
+land in one bucket and hid the additive shape for a full round. When a per-pixel breakdown looks
+degenerate, check the channel before believing the aggregate.
+
 **The next step is now a single well-defined measurement, not a hypothesis:** print
 `planeDist / frustumSize` from RELAX's temporal accumulation on a static camera and see what it
 actually is and how it varies over the frame. `CommonSettings::debug` (`gDebug`) exists for exactly
