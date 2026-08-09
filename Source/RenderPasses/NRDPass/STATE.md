@@ -1747,9 +1747,37 @@ untested.
 | config | s=32 | s=128 | whole-frame | sharpness |
 |---|---|---|---|---|
 | RELAX at session start | 19.52 | 8.19 | 5.87 | 86.3 |
-| RELAX now | **6.69** | **2.30** | **1.244** | **132.4** |
+| RELAX now | **6.68** | **2.30** | **1.241** | **132.1** |
 | REBLUR now | 6.64 | 2.28 | 1.225 | 125.9 |
 | DLSS Ray Reconstruction | 7.92 | 2.72 | 1.515 | 62.0 |
 
 2.9x steadier and 1.5x sharper than where it started. REBLUR keeps a ~1% edge on stability; RELAX is
 now the sharpest of the three.
+
+### RELAX's tuning is converged; the rest are trades
+
+Full re-sweep against the fixed build, bistro's authored orbit. Shipping row 6.69 / 2.30 / 1.2444 /
+132.4 (s=32 / s=128 / whole-frame / sharpness):
+
+| setting | result | verdict |
+|---|---|---|
+| atrousIterationNum 5 (NRD stock) | 6.78 / 2.32 / 1.2465 / 133.5 | sharper, less stable -- a trade |
+| atrousIterationNum 4 | 6.87 / 2.35 / 1.2486 / 134.8 | more of the same trade |
+| diffuseMaxFastAccumulatedFrameNum 6 (stock) | 6.69 / 2.31 / 1.2706 / 134.4 | sharper, worse whole-frame |
+| maxAccumulatedFrameNum 63 | 6.71 / 2.31 / 1.2561 / 132.0 | worse; 30 is right |
+| fastHistoryClampingSigmaScale 3.0 | 6.65 / 2.29 / 1.2483 / 133.5 | +0.6% one axis, -0.3% another |
+| fastHistoryClampingSigmaScale 4.0 / 6.0 | 6.65 / 2.30 / 1.2606, 1.2699 | saturated, whole-frame degrading |
+| spatialVarianceEstimationHistoryThreshold 3 (stock) | 6.68 / 2.30 / 1.2410 / 132.1 | neutral -- **taken** |
+
+Nothing here is an improvement. Every row trades stability against sharpness, and the clamp's gain is
+at the level where taking it would be over-fitting to one scene. The clamp is worth understanding
+though: it saturates at 3.0, and past that sharpness keeps rising while whole-frame degrades, which is
+the fast history escaping clamping altogether -- the same mechanism as the TAA colorBoxSigma result,
+where a tight history box is itself a blur.
+
+`spatialVarianceEstimationHistoryThreshold` went back to NRD's stock 3 on liability grounds rather
+than performance: it measured neutral, and an override that deviates from upstream with no recorded
+justification is a thing that rots silently. `atrousIterationNum 6` and `fastAccum 2` are also v3.1-era
+carryovers, but unlike that one they now have measurements behind them, so they stay.
+
+**Untested still:** plume, on everything above and on the anti-firefly change in particular.

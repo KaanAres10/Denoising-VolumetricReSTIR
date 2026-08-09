@@ -227,10 +227,29 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     // defaults; retune later against measurements if wanted.
     //
     // Only the few overrides that still mean exactly what they used to are kept.
+    // All three were re-swept against the fixed build on bistro's authored orbit, since they were
+    // chosen while the transposed matrices held history at 0.05 frames. Results (s=32 / s=128 /
+    // whole-frame / sharpness), shipping row 6.69 / 2.30 / 1.2444 / 132.4:
+    //
+    //     atrousIterationNum   5 (stock)  6.78 / 2.32 / 1.2465 / 133.5   sharper, less stable
+    //                          4          6.87 / 2.35 / 1.2486 / 134.8   more of the same trade
+    //     fastAccum            6 (stock)  6.69 / 2.31 / 1.2706 / 134.4   sharper, worse whole-frame
+    //     maxAccumulatedFrame  63         6.71 / 2.31 / 1.2561 / 132.0   worse
+    //     fastHistoryClamping  3.0        6.65 / 2.29 / 1.2483 / 133.5   +0.6% one axis, -0.3% another
+    //
+    // Kept as they are: every one of these is a TRADE between stability and sharpness rather than an
+    // improvement, and the clamp's gain is at the level where chasing it is over-fitting to one scene.
+    // (The clamp does saturate at 3.0 -- 4.0 and 6.0 buy sharpness while whole-frame keeps degrading,
+    // which is the fast history escaping clamping altogether.)
     mRelaxSettings.diffuseMaxFastAccumulatedFrameNum = 2;
     mRelaxSettings.specularMaxFastAccumulatedFrameNum = 2;
     mRelaxSettings.atrousIterationNum = 6;
-    mRelaxSettings.spatialVarianceEstimationHistoryThreshold = 4;
+
+    // Back to NRD's stock 3 (was a v3.1-era 4). This is not a performance change -- measured
+    // 6.68 / 2.30 / 1.2410 / 132.1 against 6.69 / 2.30 / 1.2444 / 132.4, i.e. neutral. It is a
+    // liability change: an override that deviates from upstream with no measurement behind it is a
+    // thing that silently rots, and this one had no justification recorded at all.
+    mRelaxSettings.spatialVarianceEstimationHistoryThreshold = 3;
 
     // The pre-pass MUST be off for volumetric input. v4 sizes its kernel as
     //     blurRadius = prepassBlurRadius * saturate(hitDist / frustumSize)     [RELAX_PrePass.cs.hlsl]
