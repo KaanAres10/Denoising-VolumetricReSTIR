@@ -928,7 +928,54 @@ down in "Traps that have already cost time" below, and I walked into it anyway. 
 land in one bucket and hid the additive shape for a full round. When a per-pixel breakdown looks
 degenerate, check the channel before believing the aggregate.
 
-### ROOT CAUSE, PROVEN: every NRD matrix reaches the shader TRANSPOSED
+### FIXED: every NRD matrix reached the shader TRANSPOSED, and correcting it retires the workaround
+
+Shipped in `RELAX_Config.hlsli`: the four matrix constants are declared under `*_raw` names and the
+used names are `#define`d as `transpose( ..._raw )`. Renaming moves nothing in the buffer, so NRD's
+`memcpy`'d blob still lines up byte for byte and only the interpretation changes; every call site is
+untouched, and no pass ends up referencing a constant its own resource block does not declare -- which
+is what broke the earlier attempt in `RELAX_Common.hlsli`.
+
+**Result, static camera, NRD's documented 1% threshold, surface half:**
+
+| | history mean | median | at full cap |
+|---|---|---|---|
+| before | 0.05 | 0.05 | 0.0% |
+| **after** | **29.80** | **29.95** | **99.1%** |
+| REBLUR, untouched | 24.12 | 29.86 | 64.9% |
+
+**Result, bistro's authored orbit, instability by spatial scale (x1e-3):**
+
+| configuration | s=32 | s=128 | whole-frame |
+|---|---|---|---|
+| broken, 2% | 19.52 | 8.19 | 5.87 |
+| broken, 35% (the workaround) | 8.57 | 3.16 | 1.75 |
+| **FIXED, 2%** | **7.41** | **2.74** | **1.51** |
+| FIXED, 35% | 7.29 | 2.68 | 1.49 |
+| REBLUR | 7.01 | 2.51 | 1.33 |
+| Ray Reconstruction | 7.92 | 2.72 | 1.52 |
+
+62% better at the documented threshold, and **the threshold now barely matters** (2% against 35% is
+1.6%) -- which is the signature of a workaround that has stopped doing anything. `NRD4_DISOCC` is
+therefore back to **2**, inside NRD's documented `[0.01; 0.02]`, and it beats the old 35% workaround
+outright. RELAX now edges past Ray Reconstruction at s=32 and sits ~6% behind REBLUR.
+
+**Controls run, because "it must be fine" has been wrong here before:**
+
+* REBLUR before vs after the RELAX-only edit: `max|diff| = 0.000000e+00`. Untouched, so it remains a
+  clean control and its numbers stand.
+* Energy against the undenoised image of the same frame: fixed is 1.5% under raw, REBLUR 1.3% over --
+  same band, so this is not an energy loss.
+* The image is *cleaner*, not just steadier: p99 drops 0.52 -> 0.31 and pixels above 0.5 go 1.4% ->
+  0.9%, which is firefly suppression from accumulation that is finally running.
+
+**Still to do:** `REBLUR_Config.hlsli` and `SIGMA_Config.hlsli` carry the same fault and are NOT fixed.
+REBLUR may be surviving *because* of the transposition -- its reprojection uses `RotateVectorInverse`,
+which transposes internally -- so correcting it could change REBLUR's output either way, and every
+REBLUR number in this file would need re-measuring. Do that as its own piece of work, with the
+byte-difference control first.
+
+### How it was proven, before the fix
 
     Geometry::RotateVector(          gWorldToViewPrev , gPrevFrustumForward.xyz ).z  =  0.7984
     Geometry::RotateVector( transpose(gWorldToViewPrev), gPrevFrustumForward.xyz ).z =  0.9984   <- 1.0

@@ -373,7 +373,27 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     // understood and is why they are not the default -- do not raise this further without explaining
     // that first. Composite against the undenoised image is 0.996 at every value, so the darkening
     // is not a composite energy error, and no ghosting is visible at 3x zoom at 35 or 50.
-    mDisocclusionThreshold = envF("NRD4_DISOCC", 35.f);
+    //
+    // 35 -> 2: THE WORKAROUND IS RETIRED. Everything above was compensating for a real bug, now found
+    // and fixed -- NRD's matrices were reaching the shaders transposed, so RELAX's frustum basis was
+    // 0.80x and its plane distance was ~0.5 of the frustum where it should be ~0, rejecting every
+    // reprojection even on a motionless camera. Fixed in RELAX_Config.hlsli; see STATE.md.
+    //
+    // With the cause gone the threshold barely matters, which is the signature of a workaround that is
+    // no longer doing anything. Bistro's authored orbit, instability by spatial scale (x1e-3):
+    //
+    //     configuration            s=32    s=128   whole-frame
+    //     broken,  2%             19.52     8.19       5.87
+    //     broken, 35%              8.57     3.16       1.75     <- what the workaround bought
+    //     FIXED,   2%              7.41     2.74       1.51     <- better, at NRD's documented value
+    //     FIXED,  35%              7.29     2.68       1.49     <- 1.6% better than 2%, not worth it
+    //     REBLUR                   7.01     2.51       1.33
+    //     Ray Reconstruction       7.92     2.72       1.52
+    //
+    // So 2 is back inside NRD's documented [0.01; 0.02] and beats the old workaround outright. On a
+    // static camera at 1% the surface half now accumulates to 29.80 frames against a 30 cap (99.1% of
+    // the frame at cap), where before the fix it sat at 0.05.
+    mDisocclusionThreshold = envF("NRD4_DISOCC", 2.f);
 
     // RELAX rejects history on depthThreshold; REBLUR uses planeDistanceSensitivity = 0.02, which is
     // 6.7x looser. v4 moved RELAX's default from 0.01 to 0.003 and the port deliberately did not
