@@ -2181,6 +2181,31 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
         }
     }
 
+    // NRD4_LOGMATRIX=1 dumps, once, the matrices and camera parameters handed to NRD. Added because
+    // the validation overlay measures dot(gFrustumForward, viewForward) = 0.8078 -- constant over the
+    // whole frame, where it must be 1.0 by construction. NRD derives its frustum basis from
+    // viewToClipMatrix, so a uniform scale there means the projection we pass is not the one NRD
+    // expects, and that single factor accounts for the plane-distance offset that rejects reprojection.
+    {
+        static bool logged = false;
+        const char* v = std::getenv("NRD4_LOGMATRIX");
+        if (!logged && v && std::strtol(v, nullptr, 10) != 0)
+        {
+            logged = true;
+            const auto& cam = *mpScene->getCamera();
+            logInfo("NRD matrix dump: focalLength={} frameHeight={} aspect={} nearZ={} farZ={}",
+                    cam.getFocalLength(), cam.getFrameHeight(), cam.getAspectRatio(),
+                    cam.getNearPlane(), cam.getFarPlane());
+            for (int r = 0; r < 4; r++)
+                logInfo("  projNoJitter[{}] = {: .6f} {: .6f} {: .6f} {: .6f}", r,
+                        projMatrix[r][0], projMatrix[r][1], projMatrix[r][2], projMatrix[r][3]);
+            for (int r = 0; r < 4; r++)
+                logInfo("  view[{}]         = {: .6f} {: .6f} {: .6f} {: .6f}", r,
+                        viewMatrix[r][0], viewMatrix[r][1], viewMatrix[r][2], viewMatrix[r][3]);
+            logInfo("  screenSize={}x{}  rectSize same", mScreenSize.x, mScreenSize.y);
+        }
+    }
+
     copyMatrix(mCommonSettings.viewToClipMatrix, projMatrix);
     copyMatrix(mCommonSettings.viewToClipMatrixPrev, mPrevProjMatrix);
     copyMatrix(mCommonSettings.worldToViewMatrix, nrdViewMatrix);

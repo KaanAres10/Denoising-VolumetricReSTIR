@@ -719,6 +719,61 @@ suspect.** "NRD's accumulation is saturated because VolumetricReSTIR already acc
 earlier explanation for the same observation, and it was wrong -- accumulation is not saturated, it
 is not running. Retune after this is fixed, not before.
 
+## ROOT CAUSE FOUND: NRD's frustum-forward basis is 0.8078x instead of 1.0
+
+One scalar explains the whole chain. `RELAX_Common.hlsli`:
+
+    GetCurrentWorldPosFromClipSpaceXY(clipXY, viewZ) = viewZ * (F + R*x - U*y)
+
+At the frame CENTRE the R and U terms vanish, so the view-space Z of that reconstruction is exactly
+`viewZ * dot(F, viewForward)`, which must be **1.0 by construction**. Measured with a diagnostic
+viewport added to `RELAX_Validation.cs.hlsl` (`readdiag4.py`):
+
+    dot(gFrustumForward, viewForward) = 0.8078   median = p05 = p95, CONSTANT over the whole frame
+
+No spatial variation, no saturation, no dependence on anything -- a clean uniform scale error.
+
+**It predicts the rest quantitatively**, which is what makes it the root cause rather than another
+correlate:
+
+| step | value |
+|---|---|
+| plane distance = (1 - 0.8078) * viewZ | 0.192 * 18.15 m = **3.49 m** |
+| frustumSize | 14.51 m |
+| threshold needed for history to survive | 3.49 / 14.51 = **24%** |
+| measured: 20% leaves 68.8% of pixels failing, 35% works | **prediction lands between them** |
+
+So: NRD reconstructs world positions 0.808x too short along the view axis -> its derived previous
+view Z disagrees with the `IN_VIEWZ` we supply by 19% -> the plane-distance test rejects history
+everywhere -> RELAX loses temporal accumulation -> the surface half is 3.2x cleaner than its input
+where REBLUR's is 12x -> large-scale surface flicker under camera motion. REBLUR is less affected
+because its plane test is formulated differently and is more tolerant.
+
+The matrices we hand NRD (`NRD4_LOGMATRIX=1` dumps them once):
+
+    projNoJitter  [1.640625 0 0 0][0 2.916667 0 0][0 0 -1.000001 -0.001][0 0 -1 0]
+    nearZ 0.001  farZ 1000  aspect 1.7778  focalLength 35  frameHeight 24
+
+That is a textbook RH D3D projection: `tan(fovY/2) = 1/2.916667 = 0.342857` gives fovY 37.85 deg,
+which matches focalLength 35 / frameHeight 24 exactly, and `P[0][0] = P[1][1]/aspect` checks out.
+Nothing is obviously malformed, so the mismatch is a CONVENTION difference in how NRD derives its
+frustum from it.
+
+REFUTED, each with the diagnostic responding to a positive control:
+* Near plane. 0.001 / 0.1 / 1.0 all give exactly 0.8078, so the 1e6 near:far ratio is not it.
+* The `copyMatrix` transpose. Removing it collapses `frustumSize` to 0.0 -- the transpose is right.
+* View-Z sign (`NRD4_FLIPVIEWZ`) and view translation (`NRD4_RELVIEW`): worse, and no effect.
+
+For reference, a unit-normalised frustum CORNER ray would give
+`1/sqrt(1 + (aspect*t)^2 + t^2) = 0.8195` -- close to 0.8078 but not equal, so "F is normalised
+rather than scaled to unit view-Z" is suggestive and not proven.
+
+NEXT: NRD derives this inside the closed library, so the options are to test projection variants
+against the diagnostic until dot reaches 1.0, or to report it upstream -- NRD's README has a
+"HOW TO REPORT ISSUES" section asking for a repro in their sample. If it can be fixed properly the
+disocclusion threshold should return to NRD's documented 2% and RELAX should close most of the gap
+to REBLUR without the brightness cost that 50%+ carries.
+
 ## RELAX's surface flicker: scored against the INPUT, not against REBLUR
 
 "RELAX flickers on surfaces while REBLUR looks stable" is real, and the composite hid it: the
