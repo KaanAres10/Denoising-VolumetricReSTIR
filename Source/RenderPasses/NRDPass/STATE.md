@@ -784,18 +784,49 @@ off-diagonal terms. The test at `:119` then transforms that reconstruction *back
 the frustum basis is consistent with the projection we hand over.** RELAX is the only one of the two
 that is sensitive to it.
 
-Note before getting excited: the withdrawn "0.8078x frustum basis" and the withdrawn "constant 4.2 m
-viewZ offset" are the *same* number if the diagnostic region sat around viewZ 21.8 m
-(21.8 - 0.8078*21.8 = 4.2). That is suggestive of a scale error in exactly this round trip -- and it is
-also exactly the kind of coincidence that produced three withdrawn claims already.
+The tempting part: the withdrawn "0.8078x frustum basis" and the withdrawn "constant 4.2 m viewZ
+offset" are the *same* number if the diagnostic region sat around viewZ 21.8 m
+(21.8 - 0.8078*21.8 = 4.2), which looks like a scale error in exactly this round trip.
 
-**The control this needs, before it is written up as anything:** the round trip is checkable on its own,
-with no reference to the disocclusion threshold at all. Compute
-`AffineTransform(gWorldToView, GetCurrentWorldPosFromClipSpaceXY(clipXY, viewZ)).z / viewZ` in the
-diagnostic viewport. It must be 1.0 by construction. If it is not, the value is the scale error and
-this is the cause; if it is 1.0, this mechanism is dead too and the frustum basis is fine. Run that
-before believing any of the above. The instrument has saturated once already -- encode it with enough
-range that a value near 1 is not clipped, and verify it responds to `NRD4_PROJ`.
+**It is not. The round trip is exact, and this mechanism is dead too.** Checked in float64 against the
+matrices we actually hand NRD rather than through the diagnostic viewport, which has saturated once
+already: `relax_roundtrip_check.py` beside this file, matrices from `NRD4_LOGMATRIX=1` on bistro.
+
+    round trip  AffineTransform(gWorldToView, reconstruct(clipXY, viewZ)).z / viewZ
+      worst deviation from 1.0 over the frame and 0.5..200 m : 4.495e-07
+      input precision floor (10x the logged orthonormality error): 5.502e-06
+
+and it is exact *structurally*, not numerically-by-luck. The plane test only uses the `.z` of the round
+trip, and `z = dot(row2, viewZ*(F + R*clipx - U*clipy))`. `F` is `row2` itself; `R` and `U` are scalar
+multiples of `row0` and `row1`, which are orthogonal to `row2`. The clipXY terms vanish identically, so
+`z == viewZ` for **any** fov, aspect, or position in the frame. Our projection is exactly symmetric
+(off-diagonal xy terms are 0.000e+00) and the view rotation is orthonormal to 5.5e-07.
+
+Two consequences worth keeping:
+
+* A wrong fov or a misread projection **could not show up in this test at all**, so it is not evidence
+  that the projection is right -- only that the frustum basis cannot be what rejects reprojection.
+* The control I had written up as decisive one commit earlier would have returned 1.0 and proven
+  nothing. Deriving it on paper cost minutes; building the viewport instrument for it would have cost
+  a day and produced a confident wrong answer. Do the algebra first when the quantity is analytic.
+
+**Where that leaves the test.** With the geometry proven exact, the plane test reduces to exactly what
+it is supposed to be:
+
+    planeDist = | storedPrevViewZ(at the reprojected pixel) - depthOfCurrentSurfaceInPrevView |
+
+There is no room left for a matrix or convention bug. It can only fail if the motion vector points at
+the wrong pixel, or if `IN_VIEWZ` is wrong -- and both of those are shared with REBLUR.
+
+**So the next hypothesis is a reframing, and it is cheaper than everything above.** Perhaps REBLUR's
+test rejects just as often, and REBLUR simply does not *flicker* when it does, because its spatial pass
+is Poisson-disc and hit-distance driven while RELAX's is a variance-weighted a-trous that has nothing
+stable to fall back on. That would explain the whole observation without any bug, and it is consistent
+with the earlier finding that RELAX's accumulation was inert while REBLUR's was not. It is directly
+checkable: the validation overlay already reports history length for both, so compare REBLUR's and
+RELAX's accumulated frame count at `NRD4_DISOCC=1` on the same camera path. If REBLUR's history is also
+short, there is nothing wrong with our integration and the 35% threshold is a legitimate tuning choice
+for this content rather than a workaround for a bug.
 
 ### FIXED: camera jitter was passed in UV, NRD wants pixels
 
