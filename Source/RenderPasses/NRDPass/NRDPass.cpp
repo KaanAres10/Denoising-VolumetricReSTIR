@@ -1847,7 +1847,27 @@ void NRDPass::createPipelines()
 
             ProgramDesc programDesc;
             programDesc.addShaderLibrary(shaderFileName).csEntry(entryPoint);
-            programDesc.setCompilerFlags(SlangCompilerFlags::MatrixLayoutColumnMajor);
+            // NRD4_ROWMAJOR=1 compiles NRD's shaders with Falcor's default (row-major) matrix packing
+            // instead of column-major.
+            //
+            // Why this is worth a switch: the measured fault is that NRD's frustum-forward basis
+            // satisfies dot(viewForward, gPrevFrustumForward) = 0.807 where it must be 1.0, and the
+            // arithmetic that reproduces 0.807 exactly is (M^2)_33 -- which is what you get when the
+            // SHADER's copy of the matrix is the transpose of what NRD's C++ wrote, because the
+            // frustum vectors are float4s and are unaffected by matrix packing while the matrices are.
+            // Column-major is the setting NRD documents for its inputs, so this being wrong would be
+            // surprising, but the measurement points here and one run settles it. See STATE.md.
+            //
+            // RESULT: this switch is INERT. With the shader cache deleted, row-major and column-major
+            // produce a BYTE-IDENTICAL denoised output (max|diff| = 0.000000e+00) and leave
+            // dot(viewForward, gPrevFrustumForward) at 0.7984 either way. So the flag does not reach
+            // how these programs read their matrices at all, which makes the packing question
+            // UNTESTED rather than answered -- do not record it as ruled out. Kept, switched off, so
+            // the next attempt does not rebuild it and reach the same dead end.
+            static const bool rowMajor = []
+            { const char* v = std::getenv("NRD4_ROWMAJOR"); return v && std::strtol(v, nullptr, 10) != 0; }();
+            if (!rowMajor)
+                programDesc.setCompilerFlags(SlangCompilerFlags::MatrixLayoutColumnMajor);
             // Disable warning 30056: non-short-circuiting `?:` operator is deprecated, use 'select' instead.
             programDesc.setCompilerArguments({"-Wno-30056"});
             ref<ComputePass> pPass = ComputePass::create(mpDevice, programDesc, defines);

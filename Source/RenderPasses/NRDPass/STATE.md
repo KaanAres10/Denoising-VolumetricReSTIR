@@ -993,9 +993,23 @@ Ruled out this round, each by control rather than argument:
 * **Our transpose choice** -- `(A^2)_33` is invariant to it, and it measurably is.
 * **A spurious camera translation** -- `NRD4_LOGDELTA` reports `max|view - viewPrev| = 0.000000` and
   `cameraDelta = (0,0,0)` on every static frame for both instances.
-* **Shader matrix packing**, the most mundane candidate and the one I expected to be it:
-  `NRDPass.cpp` already sets `SlangCompilerFlags::MatrixLayoutColumnMajor` on every NRD program, which
-  matches what NRD's C++ uploads.
+* **My own instrument's frame ordering and channel** -- see the corrections above; both were real bugs
+  and both are fixed in the tools committed beside this file.
+
+**Shader matrix packing is UNTESTED, not ruled out.** This is the candidate the arithmetic actually
+points at: `(M^2)_33` is exactly what you get when the shader's copy of a matrix is the transpose of
+what NRD's C++ wrote, because the frustum vectors are `float4`s and are unaffected by matrix packing
+while the matrices are. `NRDPass.cpp` does set `SlangCompilerFlags::MatrixLayoutColumnMajor`, and I
+added `NRD4_ROWMAJOR=1` to flip it -- but **the flag is inert**. With the shader cache deleted, the two
+settings produce a byte-identical denoised output (max|diff| = 0.000000e+00) and leave the scalar at
+0.7984 either way, so the flag never reaches how these programs read their matrices. That makes the
+experiment inconclusive; it is not evidence that packing is fine. The switch is kept, off, so the next
+attempt does not rebuild it and hit the same dead end.
+
+To actually test packing, the layout has to be forced in a way that demonstrably changes the shader:
+`#pragma pack_matrix(row_major)` injected into NRD's headers, or a `row_major` qualifier on the
+constant declarations in `RELAX_Config.hlsli`, verified live by the same byte-difference control before
+any conclusion is drawn from it.
 * **My own instrument** -- `ml.hlsli:536` defines `RotateVector(m, v)` as `mul((float3x3)m, v)`, a
   proper column-vector multiply, so the diagnostic means what it says. This mattered: if it had been a
   row-vector multiply, a *correct* NRD would also have produced 0.8068 and the fault would have been
