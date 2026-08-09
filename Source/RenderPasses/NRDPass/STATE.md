@@ -818,15 +818,73 @@ it is supposed to be:
 There is no room left for a matrix or convention bug. It can only fail if the motion vector points at
 the wrong pixel, or if `IN_VIEWZ` is wrong -- and both of those are shared with REBLUR.
 
-**So the next hypothesis is a reframing, and it is cheaper than everything above.** Perhaps REBLUR's
-test rejects just as often, and REBLUR simply does not *flicker* when it does, because its spatial pass
-is Poisson-disc and hit-distance driven while RELAX's is a variance-weighted a-trous that has nothing
-stable to fall back on. That would explain the whole observation without any bug, and it is consistent
-with the earlier finding that RELAX's accumulation was inert while REBLUR's was not. It is directly
-checkable: the validation overlay already reports history length for both, so compare REBLUR's and
-RELAX's accumulated frame count at `NRD4_DISOCC=1` on the same camera path. If REBLUR's history is also
-short, there is nothing wrong with our integration and the 35% threshold is a legitimate tuning choice
-for this content rather than a workaround for a bug.
+**A reframing was the next hypothesis, and it is now REFUTED.** The idea was that REBLUR's test rejects
+just as often and REBLUR merely does not *flicker* when it does, its Poisson-disc hit-distance spatial
+pass having something stable to fall back on where RELAX's variance-weighted a-trous does not. Measured
+from the validation overlay's DIFF FRAMES viewport, `NRD4_MAXACCUM=NRD4_R_MAXACCUM=30`, bistro,
+surface half:
+
+| configuration | history mean | median | at full cap |
+|---|---|---|---|
+| REBLUR, static camera, disocc 1% | **24.12** | 29.86 | 64.9% |
+| RELAX, static camera, disocc 1%  | **0.05**  | 0.05  | 0.0%  |
+| RELAX, static camera, disocc 35% | 8.15      | 0.05  | 26.9% |
+| REBLUR / RELAX, orbiting, disocc 1% | 0.05 / 0.11 | | 0.0% |
+
+REBLUR does not reject as often. On a static camera it reaches full history while RELAX reaches zero,
+so there is a real denoiser-specific fault and the reframing is wrong.
+
+### The static camera is the important part, and it moves the whole problem
+
+With a static camera `mv = 0`, so `prevWorldPos == currentWorldPos` and the plane distance is
+identically zero. **No disocclusion threshold can matter, yet RELAX still rejects.** Whatever kills
+RELAX's history is therefore *not* the plane test at all -- which means the 35% threshold has been
+treating a symptom, and it also explains why raising it only ever recovered part of the frame
+(26.9% at full cap, median still 0.05).
+
+Note this does not undo the shipped fix: 2% -> 35% is still measurably better by eye and by metric.
+It just is not addressing the cause.
+
+**Ruled out by measurement, not by argument:** `IN_DIFF_CONFIDENCE`. RELAX multiplies its accumulation
+*cap* by confidence (`RELAX_TemporalAccumulation.cs.hlsl:598`) while REBLUR only lerps its accumulation
+*speed* toward 1.0 (`REBLUR_TemporalAccumulation.cs.hlsl:368`), so a near-zero confidence would kill
+RELAX's history and barely touch REBLUR's -- exactly the observed asymmetry, and it is an input this
+project added itself for the see-through fix. Captured and measured: confidence is **1.0 over 86.5% of
+the frame** (mean 0.887, median 1.000), so 86.5% of pixels have an unmodified cap of 30 and still show
+zero history. Not the cause.
+
+**Next candidate, RELAX-only and untested:** the backfacing-history rejection at
+`RELAX_TemporalAccumulation.cs.hlsl:144-149` -- `if (dot(currentNormal, prevNormalFlat) < 0) { all taps
+invalid }`, comparing IN_NORMAL_ROUGHNESS against RELAX's own `gPrev_Normal_Roughness` history. REBLUR
+has no equivalent gate. It fires unconditionally, before any threshold, which fits "rejects even when
+the camera cannot move". Both halves take their normals from the same adapter output that REBLUR reads,
+so the normals themselves are probably fine and the suspicion falls on RELAX's previous-normal history
+being unwritten or misread. One run with the normal test neutered settles it.
+
+### Two instrument bugs, and why `histlen.py` must not be used again
+
+The first read of this measurement produced three near-identical rows, medians of exactly 7.5 for every
+configuration -- the "identical rows mean the knob is not wired" trap from the list below. Both bugs
+were in the reader, not the data:
+
+1. `f == 0.75` is the shader's **"history under 2 frames" marker**, not a value. Decoding it literally
+   gives `(1 - 0.75) * 30 = 7.5`, which is where every 7.5 came from. The marker is drawn on one phase
+   of a static 4x4-block checkerboard, so the other phase is clean.
+2. `f == 0` is **not sky**, it is a FULL history (`f = 1 - hl/cap`). Treating it as sky and dropping it
+   discarded the most-accumulated pixels -- which is why one fixed camera reported "sky" fractions of
+   0%, 65% and 27% across three runs. Sky is masked from `linearZ` instead.
+
+`nrd_history_length.py` beside this file is the corrected reader. It decodes both checkerboard phases
+and prints both, so a contaminated read announces itself instead of being trusted. `histlen.py` in the
+scratchpad is wrong; do not reuse it.
+
+### Viewing captures: bistro is EV+8 or it looks broken
+
+`vr_graph.load_bistro` sets `exposure: 8.0` with the comment "Night exterior lit only by emissive
+geometry: without this the frame is 256x too dark". Tonemapping a raw HDR capture without applying it
+leaves only the emissive lights visible against black, which reads exactly like the volume and surfaces
+having failed to render. This wasted a round trip. `look_at_captures.py` beside this file applies it;
+`LOOK_EV` overrides.
 
 ### FIXED: camera jitter was passed in UV, NRD wants pixels
 
