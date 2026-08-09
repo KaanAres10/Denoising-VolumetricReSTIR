@@ -65,13 +65,26 @@ g.markOutput(tm)
 g.markOutput(restir + ".accumulated_color")
 if MODE == "nrd":
     g.markOutput("ModulateIllumination.output")
+    # The two halves separately. The surface half is where the remaining flicker lives -- measured at
+    # 17x REBLUR's before the disocclusion fix and ~4x after -- and the composite hides it, because it
+    # mixes in the medium and the raw emissive strobe and then TAA flattens what survives. Switch to
+    # it in the Graphs panel to see the denoiser's own output rather than the blend.
+    # Default must MATCH add_denoiser's own (False), or without the env this marks passes the graph
+    # never created and the script dies with "Can't find render pass 'NRDSurface'".
+    if vr.env_bool("VR_NRD_SPLIT", False):
+        g.markOutput("NRDSurface.filteredDiffuseRadianceHitDist")
+        g.markOutput("NRDVolume.filteredDiffuseRadianceHitDist")
+        g.markOutput(restir + ".surfaceColor")
 
 m.addGraph(g)
 m.resizeSwapChain(RENDER[0], RENDER[1])
 m.ui = True
 
-print("[bistro_relax] denoiser=%s method=%s  disocclusionThreshold=%s%%  split=%s"
-      % (MODE, vr.env("VR_NRD_METHOD", "RelaxDiffuseSh"), vr.env("NRD4_DISOCC", "20 (default)"),
+# Deliberately does NOT name the default value: it is set in NRDPass.cpp and has already moved twice
+# (2 -> 20 -> 35), so a number repeated here goes stale silently and misreports what you are looking at.
+print("[bistro_relax] denoiser=%s method=%s  disocclusionThreshold=%s  split=%s"
+      % (MODE, vr.env("VR_NRD_METHOD", "RelaxDiffuseSh"),
+         (vr.env("NRD4_DISOCC") + "%") if vr.env("NRD4_DISOCC") else "NRDPass default",
          vr.env("VR_NRD_SPLIT", "1")))
 print("[bistro_relax] move the camera with WASD + mouse; switch outputs in the Graphs panel")
 sys.stdout.flush()
