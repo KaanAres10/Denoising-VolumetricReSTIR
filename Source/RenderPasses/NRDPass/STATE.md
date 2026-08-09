@@ -970,12 +970,49 @@ Also ruled out by measurement this round: a spurious camera translation. `NRD4_L
 with the camera position matching bistro's authored pose exactly. So `gCameraDelta` contributes nothing
 and the offset is entirely the basis.
 
-**The next scalar, and it should finish this:** measure `length(RotateVector(gWorldToViewPrev,
-float3(1,0,0)))` from the same instrumentation slot. It must be 1.0. If it comes out ~0.893 the matrix
-reaching NRD carries a scale, and the only place that can happen is `copyMatrix` or the Falcor
-`getViewMatrix()` we feed it -- both ours, both one-line fixes. Note that the shipped Falcor view
-matrix logged by `NRD4_LOGMATRIX` *is* orthonormal to 5.5e-07, so the scale is introduced between there
-and NRD, not by the camera.
+**The two models, and the one that survived.** `dot(viewForward, F) = 0.807` is explained either by
+(a) a transposed multiply somewhere in the basis construction, or (b) a uniform scale `s` on the 3x3
+with `s^2 = 0.807`, i.e. `s = 0.898`. They differ in one measurable:
+
+    length(RotateVector(gWorldToViewPrev, float3(1,0,0)))   measured 0.9984   (1.0 within 1/30 quantisation)
+
+**The matrix is orthonormal, so model (b) is dead and (a) is what is happening.** The arithmetic
+closes exactly: with the logged view matrix, `(M^2)_33 = 0.8068`, matching the earlier independent
+0.8078 to three decimals and inside the quantisation band of the 0.7984 measured on the GPU. Computed
+without NRD's RH->LH negation the same model gives 0.6497, so the handedness conversion is confirmed to
+be happening correctly and is not the fault.
+
+Corroboration, four independent ways: the GPU scalar, the CPU arithmetic on the logged matrix, the
+earlier 0.8078, and the model's prediction that the value is invariant to transposing our input --
+which it measurably is, with a control proving the switch is live (`NRD4_NO_TRANSPOSE` changes the
+denoised output by max 51.1 while leaving the scalar at 0.7984).
+
+Ruled out this round, each by control rather than argument:
+
+* **A scale on the matrix** -- the basis measures orthonormal at 0.9984.
+* **Our transpose choice** -- `(A^2)_33` is invariant to it, and it measurably is.
+* **A spurious camera translation** -- `NRD4_LOGDELTA` reports `max|view - viewPrev| = 0.000000` and
+  `cameraDelta = (0,0,0)` on every static frame for both instances.
+* **Shader matrix packing**, the most mundane candidate and the one I expected to be it:
+  `NRDPass.cpp` already sets `SlangCompilerFlags::MatrixLayoutColumnMajor` on every NRD program, which
+  matches what NRD's C++ uploads.
+* **My own instrument** -- `ml.hlsli:536` defines `RotateVector(m, v)` as `mul((float3x3)m, v)`, a
+  proper column-vector multiply, so the diagnostic means what it says. This mattered: if it had been a
+  row-vector multiply, a *correct* NRD would also have produced 0.8068 and the fault would have been
+  mine.
+
+**Attempted fix, and why it is not in the tree.** Rebuilding the forward from the matrix --
+`RotateVectorInverse(gWorldToViewPrev, float3(0,0,1))`, whose view-space z is 1.0 by construction --
+substituted into `RELAX_Common.hlsli` does not compile: that header is included by every RELAX pass,
+and passes like `RELAX_HitDistReconstruction` do not declare `gWorldToViewPrev`. A working version has
+to be guarded per pass, or confined to the two reconstruction functions the temporal accumulation pass
+actually calls. That is the next piece of work and it is mechanical rather than investigative.
+
+Two cautions for whoever does it. First, `gFrustumRight` and `gFrustumUp` are built from the same
+matrix on the CPU (`Relax.cpp:68-70`) and have **not** been checked -- a lateral error is invisible in
+the `.z` measurements above, so verify them before assuming only the forward is wrong. Second, RELAX
+declares no `gWorldToView`, only `gWorldToViewPrev`; substituting one for the other is valid only while
+the camera is static, which is a test, not a fix.
 
 **Method note.** Three of the four "withdrawn" characterisations in this file were withdrawn on
 instrument grounds, and this one should not have been. A saturating instrument invalidates the
