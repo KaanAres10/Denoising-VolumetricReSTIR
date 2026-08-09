@@ -374,21 +374,49 @@ DENOISERS = ["none", "oidn", "oidncpu", "optix", "sr", "rr", "nrd"]
 
 
 def taa_props():
-    """TAA's two controls, exposed because they are the ONLY effective stability lever left here.
+    """TAA's two controls.
 
-    Measured on bistro's orbit with the split: NRD's own temporal settings are inert on this content.
-    Going from maxAccumulatedFrameNum 30 to 1 -- thirty frames of accumulation down to one -- moves
-    flicker 0.3%, and fast-history length, clamp sigma, antilag reset and disocclusion threshold are
-    all the same story. That is not a bug: VolumetricReSTIR does its OWN temporal reuse, so NRD is
-    handed an already-accumulated signal and has little left to accumulate. What survives is aliasing
-    on sub-pixel geometry, which is a sampling problem, and TAA is the pass that addresses it.
+    WITHDRAWN, and it is worth knowing why: this used to say NRD's own temporal settings were inert on
+    this content, because maxAccumulatedFrameNum 30 against 1 moved flicker 0.3%, and concluded that
+    TAA was the only lever left. That was true only because NRD's matrices were reaching the shaders
+    transposed, so RELAX rejected every reprojection and had no history to lose. With that fixed
+    (RELAX_Config.hlsli), the same test on bistro's orbit moves instability at sigma=32 from 7.41 to
+    10.57 -- 43%, not 0.3%. NRD's accumulation is doing real work now.
+
+    So treat every "NRD setting X does nothing here" note in this project as measured against a broken
+    denoiser until it has been re-run.
 
     alpha is the weight of the CURRENT frame: lower = longer history = steadier, at the cost of
     ghosting. colorBoxSigma is how far history may stray from the local neighbourhood before it is
     clamped: higher = steadier, at the cost of smearing.
+
+    colorBoxSigma 1.0 -> 2.0, measured on bistro's authored orbit after the matrix fix. It is not the
+    trade the line above predicts -- it improves BOTH axes at once:
+
+        colorBoxSigma   s=32   s=128   whole-frame   sharpness
+            1.0         7.41    2.74      1.509         75.9
+            2.0         6.84    2.36      1.272        119.8
+            3.0         6.59    2.20      1.161        148.3
+        REBLUR 1.0      7.01    2.51      1.328         92.2
+        REBLUR 2.0      6.67    2.30      1.227        126.2
+
+    The reason it is not a trade: with a tight box the clamp drags history toward the local mean every
+    frame, and that IS a blur. Widening it lets the converged history survive. Checked for ghosting
+    rather than assumed -- frame-to-frame change in the fastest-moving crop RISES with sigma (3.16 ->
+    3.30 -> 3.47), where smeared history would make it fall, and there are no trails at 2x zoom.
+
+    Stopped at 2.0 even though 3.0 measures better on every number, because by eye 3.0 puts stippling
+    back on the pavement and a crunchy texture in the plume: TAA has stopped clamping enough and noise
+    is coming through, which the Laplacian reads as "sharpness". Metrics and eye disagree there, and
+    the eye wins.
+
+    alpha is NOT a lever here: 0.1 -> 0.05 moves s=32 by 0.3%.
+
+    This is a TAA change, so it helps REBLUR too (7.01 -> 6.67) and is not a RELAX-specific win. Any
+    RELAX-vs-REBLUR comparison must hold it fixed; at a matched 2.0 REBLUR is still 2.5% ahead.
     """
     return {"alpha": env_float("VR_TAA_ALPHA", 0.1),
-            "colorBoxSigma": env_float("VR_TAA_SIGMA", 1.0)}
+            "colorBoxSigma": env_float("VR_TAA_SIGMA", 2.0)}
 
 
 def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True, emission=False):
