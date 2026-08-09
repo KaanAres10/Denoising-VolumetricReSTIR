@@ -1817,6 +1817,16 @@ void NRDPass::createPipelines()
             // silently compile with no signal selected.
             defines.add("NRD_INTERNAL");
 
+            // NRD4_RAW_MATRICES=1 restores the pre-fix behaviour: NRD's matrix constants are read
+            // exactly as they arrive, which is TRANSPOSED (see RELAX_Config.hlsli and STATE.md). It
+            // exists so the fault can be shown side by side instead of taken on trust -- with it set,
+            // RELAX's surface half drops from a 29.80-frame history back to 0.05 on a static camera.
+            // Leave it unset for normal use.
+            static const bool rawMatrices = []
+            { const char* v = std::getenv("NRD4_RAW_MATRICES"); return v && std::strtol(v, nullptr, 10) != 0; }();
+            if (rawMatrices)
+                defines.add("NRD_RAW_MATRICES");
+
             // v4 RENAMED the encoding macros. NRD_USE_OCT_NORMAL_ENCODING / NRD_USE_MATERIAL_ID are
             // simply ignored by v4's shaders, which read NRD_NORMAL_ENCODING / NRD_ROUGHNESS_ENCODING
             // from NRDConfig.hlsli instead. Setting them here rather than inheriting that header's
