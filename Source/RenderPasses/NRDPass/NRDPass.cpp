@@ -355,7 +355,25 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     // not line up -- which is also what the validation overlay says, its MV viewport being saturated
     // even on a static camera. Raising the gate buys back the accumulation without explaining why it
     // was being rejected. The root cause is still open; see STATE.md.
-    mDisocclusionThreshold = envF("NRD4_DISOCC", 20.f);
+    // 20 -> 35 after measuring the SURFACE HALF on its own rather than the composite. The composite
+    // mixes the medium, the surface half and the raw emissive strobe, and TAA flattens what is left,
+    // so it understated this badly. Surface half only, on the 78.6% of the frame with no medium and
+    // no emitter, instability by spatial scale (x1e-3):
+    //
+    //     disocc      s=8     s=32    s=128     shipping image s=32 / s=128 / mean
+    //       20      195.6    111.1     79.5          18.72 / 7.86 / 0.0874
+    //       35      115.7     42.4     18.5          14.80 / 5.56 / 0.0851
+    //       50       88.7     27.2     14.9          11.87 / 4.28 / 0.0795
+    //      100       76.0     19.9     11.8          10.46 / 3.48 / 0.0772
+    //     REBLUR     59.3     11.3      4.7           9.20 / 2.56 / 0.0893
+    //
+    // RELAX's surface half was 17x less stable than REBLUR's at s=128, which is what "RELAX flickers
+    // on surfaces while REBLUR looks stable" actually is. 35 recovers 4.3x of that for 2.6% of mean
+    // brightness. 50 and 100 are better still but darken the image 9% and 12%, which is NOT
+    // understood and is why they are not the default -- do not raise this further without explaining
+    // that first. Composite against the undenoised image is 0.996 at every value, so the darkening
+    // is not a composite energy error, and no ghosting is visible at 3x zoom at 35 or 50.
+    mDisocclusionThreshold = envF("NRD4_DISOCC", 35.f);
 
     // RELAX rejects history on depthThreshold; REBLUR uses planeDistanceSensitivity = 0.02, which is
     // 6.7x looser. v4 moved RELAX's default from 0.01 to 0.003 and the port deliberately did not
