@@ -878,6 +878,55 @@ were in the reader, not the data:
 and prints both, so a contaminated read announces itself instead of being trusted. `histlen.py` in the
 scratchpad is wrong; do not reuse it.
 
+### CORRECTION: the published instability table is inflated ~2.2x, and one claim in it is reversed
+
+`scale.py` loaded frames with `sorted(glob("fl.*.png"))`. The capture range is frames 40..129 and the
+names are not zero-padded, so that sorts **100,101,...,129,40,41,...,99** -- and the metric is a SECOND
+temporal difference, which is meaningless on a scrambled order. Measured both ways on the same
+sequences:
+
+| REBLUR, authored orbit | sigma=32 | sigma=128 |
+|---|---|---|
+| published artifact table | 15.92 | 9.14 |
+| reproduced with the scrambled order | 15.43 | 8.90 |
+| **correct numeric order** | **7.01** | **2.51** |
+
+REBLUR's configuration has not changed since publication and its published numbers reproduce the
+scrambled order to within 3%, so the published table was produced with the bug. Corrected, on the same
+90-frame orbit at 1280x720:
+
+| config | s=0 | s=8 | s=32 | s=128 |
+|---|---|---|---|---|
+| RELAX, disocc 20% (the artifact's row) | 259.86 | 50.94 | 10.97 | 4.16 |
+| RELAX, disocc 35% (today's default)    | 261.55 | 47.29 | 8.57  | 3.16 |
+| REBLUR                                  | 272.56 | 44.65 | 7.01  | 2.51 |
+| DLSS Ray Reconstruction                 | 259.94 | 48.74 | 7.92  | 2.72 |
+
+What survives and what does not:
+
+* **Survives:** raising the disocclusion threshold helps, and by more than was claimed -- 20% -> 35%
+  takes sigma=32 from 10.97 to 8.57 (-22%) and sigma=128 from 4.16 to 3.16 (-24%). The ranking
+  RELAX-worse-than-REBLUR at sigma=32 survives, and the ratios there are almost unchanged (published
+  1.224, corrected 1.222).
+* **Reversed:** the artifact's claim that the fix "puts RELAX *ahead of* Ray Reconstruction at
+  sigma=128". At the artifact's own 20% setting RELAX is 4.16 against RR's 2.72 -- 53% **worse**, not
+  ahead. The bug inflated sigma=128 unevenly (2.8x for RELAX against 3.7x for REBLUR and RR) because
+  scrambling hurts a smooth sequence more than a jumpy one, and that uneven inflation is what
+  manufactured the win.
+
+`nrd_instability_by_scale.py` beside this file is the corrected metric; it prints both orderings so the
+size of the error stays visible. `scale.py` in the scratchpad is wrong -- same class of bug as
+`histlen.py`, and the third instrument fault in this investigation.
+
+**And the answer to "does RELAX still flicker": yes.** At today's default it is 22% worse than REBLUR
+at sigma=32 and 26% worse at sigma=128, and worse than RR at both. The remaining gap is real, it is
+much smaller than it was, and it is consistent with RELAX's temporal accumulation still being mostly
+dead (history 0.05 frames on a static camera, above).
+
+`make_orbit_video.py` builds videos of the authored orbit for eye judgement -- same path as the
+published page, numeric frame order, crf 14 so the encoder does not smooth away the artifact being
+judged.
+
 ### Viewing captures: bistro is EV+8 or it looks broken
 
 `vr_graph.load_bistro` sets `exposure: 8.0` with the comment "Night exterior lit only by emissive
