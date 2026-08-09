@@ -18,6 +18,9 @@
  # Packing here would apply it twice.
  **************************************************************************/
 import Utils.Math.MathHelpers;
+// For luminance(), used by the intensity clamp below. PackRadiance.cs.slang imports the same thing
+// for the same reason on the non-SH paths.
+import Utils.Color.ColorHelpers;
 
 cbuffer CB
 {
@@ -122,6 +125,18 @@ cbuffer CB
     bool  gDemodulateTransmittance;
     float gMinTransmittance;      // divisor floor, same role as gMinReflectance
     bool  gWriteHistoryConfidence;
+
+    // Luminance ceiling on what NRD is handed. NRD's own guidance is that "HDR color inputs need to
+    // be in a sane range [0; 250]", and RELAX in particular "tracks second moments of the input
+    // signal" -- its a-trous weights come from a variance estimate, so a heavy tail makes that
+    // estimate jump frame to frame and the filter strength jumps with it over the whole footprint.
+    //
+    // NRDPass has a maxIntensity that does this, but it lives in the PackRadiance pass, and the SH
+    // methods SKIP PackRadiance entirely (NRDPass.cpp: RelaxDiffuseSh / ReblurDiffuseSh only call
+    // SetDenoiserSettings). So on the SH path -- which is the one this project uses -- nothing was
+    // clamping. Measured on the surface half after demodulation: mean 0.73, p99.9 46.8, max 100.8,
+    // i.e. a 64x tail over the mean.
+    float gMaxIntensity;
 }
 
 // Inputs.
@@ -273,7 +288,15 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     }
 
     const float3 divisor = albedo * structure * selection * transmittance;
-    const float3 demodulated = radiance / divisor;
+    float3 demodulated = radiance / divisor;
+
+    // Clamped by LUMINANCE rather than per channel, so the hue of a bright pixel is preserved
+    // instead of being pulled toward white -- same rule PackRadiance applies on the non-SH paths.
+    {
+        const float l = luminance(demodulated);
+        if (l > gMaxIntensity)
+            demodulated *= gMaxIntensity / l;
+    }
 
     // What gets multiplied back downstream is NOT the whole divisor: `selection` is deliberately
     // excluded. It is a CORRECTION for the split's structural zeros, not a demodulation -- the

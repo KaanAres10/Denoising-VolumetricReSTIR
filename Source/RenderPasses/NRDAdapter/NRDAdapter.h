@@ -71,6 +71,11 @@ private:
     bool mDemodulateTransmittance = false;
     /// Floor on the transmittance term, same role as mMinReflectance.
     float mMinTransmittance = 0.05f;
+
+    /// Luminance ceiling on what NRD receives. NRD asks for HDR inputs in [0; 250] and RELAX
+    /// tracks second moments, so an unclamped tail destabilises its variance estimate. NRDPass's
+    /// own maxIntensity does not apply on the SH paths, which skip PackRadiance.
+    float mMaxIntensity = 250.f;
 #if FALCOR_HAS_NRD4
     /// Emit the SH0/SH1 pair for NRD v4's RELAX_DIFFUSE_SH instead of packed radiance+hitDist.
     /// Changes what reflect() declares, so toggling it needs a graph recompile.

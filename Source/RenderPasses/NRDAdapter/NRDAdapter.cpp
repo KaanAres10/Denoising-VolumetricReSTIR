@@ -27,6 +27,7 @@ const char kMissHitDistance[] = "missHitDistance";
 const char kDemodulateVolume[] = "demodulateVolume";
 const char kDemodulateTransmittance[] = "demodulateTransmittance";
 const char kMinTransmittance[] = "minTransmittance";
+const char kMaxIntensity[] = "maxIntensity";
 const char kNormalizeBySelection[] = "normalizeBySelection";
 const char kSelectionBlur[] = "selectionBlur";
 const char kSelectionFloor[] = "selectionFloor";
@@ -65,6 +66,8 @@ NRDAdapter::NRDAdapter(ref<Device> pDevice, const Properties& props) : RenderPas
             mDemodulateTransmittance = value;
         else if (key == kMinTransmittance)
             mMinTransmittance = value;
+        else if (key == kMaxIntensity)
+            mMaxIntensity = value;
         else if (key == kNormalizeBySelection)
             mNormalizeBySelection = value;
         else if (key == kSelectionBlur)
@@ -121,6 +124,7 @@ Properties NRDAdapter::getProperties() const
     props[kDemodulateVolume] = mDemodulateVolume;
     props[kDemodulateTransmittance] = mDemodulateTransmittance;
     props[kMinTransmittance] = mMinTransmittance;
+    props[kMaxIntensity] = mMaxIntensity;
     props[kNormalizeBySelection] = mNormalizeBySelection;
     props[kSelectionBlur] = mSelectionBlur;
     props[kSelectionFloor] = mSelectionFloor;
@@ -310,6 +314,7 @@ void NRDAdapter::execute(RenderContext* pRenderContext, const RenderData& render
     var["gOutHistoryConfidence"] = pConfidence ? pConfidence : renderData.getTexture(kDiffuseRadianceHitDistOutput);
     var["CB"]["gDemodulateTransmittance"] = demodTr;
     var["CB"]["gMinTransmittance"] = mMinTransmittance;
+    var["CB"]["gMaxIntensity"] = mMaxIntensity;
     // Any bound texture will do when the feature is off; the shader never reads it.
     var["gTransmittance"] = pTransmittance ? pTransmittance : renderData.getTexture(kDiffuseAlbedoInput);
     var["CB"]["gVolumeStructureBlur"] = mVolumeStructureBlur;

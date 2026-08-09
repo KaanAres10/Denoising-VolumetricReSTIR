@@ -458,7 +458,11 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
                  # historyFixFrameNum made the flicker worse rather than better.
                  "normalizeBySelection": env_bool("VR_NRD_SELNORM", False),
                  "selectionBlur": env_int("VR_NRD_SELBLUR", 5),
-                 "selectionFloor": env_float("VR_NRD_SELFLOOR", 0.1)}
+                 "selectionFloor": env_float("VR_NRD_SELFLOOR", 0.1),
+                 # Luminance ceiling on what NRD is handed. NRDPass's own maxIntensity lives in
+                 # PackRadiance, which the SH methods skip entirely, so on this path nothing clamped
+                 # -- and NRD asks for HDR inputs in [0; 250] because RELAX tracks second moments.
+                 "maxIntensity": env_float("VR_NRD_ADAPT_MAXINT", 250.0)}
         if not demodulate:
             props["minReflectance"] = 1.0
         if transmittance_src:
