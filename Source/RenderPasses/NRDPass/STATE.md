@@ -719,6 +719,104 @@ suspect.** "NRD's accumulation is saturated because VolumetricReSTIR already acc
 earlier explanation for the same observation, and it was wrong -- accumulation is not saturated, it
 is not running. Retune after this is fixed, not before.
 
+## Read against NVIDIA's own integration and NRD's own C++ -- four questions closed, one mechanism found
+
+No render cycles, no repro app: NRD-Sample and NRD are both public, so a known-good integration can be
+diffed against ours field by field. Both are shallow sparse clones, `Source/` only:
+
+    git clone --depth 1 --filter=blob:none --sparse https://github.com/NVIDIA-RTX/NRD-Sample.git
+    git clone --depth 1 --filter=blob:none --sparse https://github.com/NVIDIA-RTX/NRD.git
+
+`NRDSample.cpp:3835-3869` is the whole `CommonSettings` block, and `NRD/Source/InstanceImpl.cpp:356-437`
+is everything NRD does to those matrices before the shaders see them. That is the reference this
+project never had.
+
+### CLOSED: `NRD4_RELVIEW` and `NRD4_FLIPVIEWZ` are dead ends, and RELVIEW would do harm
+
+Both switches exist because I reasoned about what NRD *must* need. NRD does both itself:
+
+* **Handedness.** `InstanceImpl.cpp:375` runs `DecomposeProjection` on `viewToClipMatrix` to detect
+  handedness, and if the projection is not left-handed it negates `viewToClip`'s Z column and
+  `worldToView`'s Z row (`:377-389`). Handing NRD a right-handed pair is the supported case, so
+  FLIPVIEWZ is redundant.
+* **Camera-relative matrices.** `InstanceImpl.cpp:398-408`, commented *"this part is mandatory needed to
+  preserve precision by making matrices camera relative"*, reads the camera position out of the inverted
+  matrix, zeroes the current translation, and sets the previous translation to the camera **delta**. So
+  NRD wants the translation left in. Stripping it first is not neutral: both extracted camera positions
+  become zero, `translationDelta` and therefore `m_CameraDelta` come out zero, and RELAX adds
+  `gCameraDelta` to every reprojected position (`RELAX_TemporalAccumulation.cs.hlsl:413`). RELVIEW=1
+  would break reprojection under camera motion -- the one case this project is about.
+
+Both still default off, which is why neither ever did damage. Comments in `NRDPass.cpp` corrected.
+
+### CLOSED: the constant-viewZ-offset theory, refuted by REBLUR working
+
+The standing story was that our `IN_VIEWZ` disagrees with NRD's reconstruction by a constant, and that
+the disagreement is what the plane test rejects on. **REBLUR's test is structurally identical to
+RELAX's** and REBLUR accumulates fine on the *same* `CommonSettings` object:
+
+    REBLUR_TemporalAccumulation.cs.hlsl:272   Xvprev = AffineTransform(gWorldToViewPrev, Xprev)
+                                       :273   smbPlaneDist0 = abs(prevViewZ0 - Xvprev.z)
+    RELAX_TemporalAccumulation.cs.hlsl:119    prevViewPos = AffineTransform(gWorldToViewPrev, prevWorldPos)
+                                       :120   planeDist0 = abs(prevViewZs00.yzw - prevViewPos.zzz)
+
+`frustumSize` is the same quantity in both (`min(rect) * gUnproject * viewZ`), and the threshold curves
+differ by at most ~1.4x across the NoV range, nowhere near the 35x we need. Anything wrong in
+`CommonSettings`, in `IN_VIEWZ`, or in the shared threshold maths would break both. So the fault is not
+there, and every "our viewZ is off by X" reading -- the 0.8078, the 4.2 m -- cannot be the cause even
+if the numbers themselves are real.
+
+### THE ASYMMETRY: RELAX round-trips through the previous projection; REBLUR does not
+
+This is the first mechanism that predicts "REBLUR fine, RELAX broken" rather than assuming it. With 2D
+motion vectors (`gMvScale.z == 0`, our case -- `motionVectorScale[2] = 0`), the two build `prevWorldPos`
+by different routes:
+
+    REBLUR :171  Xprev = RotateVectorInverse(gWorldToViewPrev, Xvprevlocal) + gCameraDelta
+    RELAX  :413  prevWorldPos = GetPreviousWorldPosFromClipSpaceXY(prevUV*2-1, currentLinearZ + mv.z)
+                              + gCameraDelta
+
+REBLUR's route is a pure matrix rotation. RELAX's goes through `gPrevFrustumForward/Right/Up`, and those
+are built (`NRD/Source/Relax.cpp:52-77`) from `m_ViewToClipPrev.a00`, `.a11`, `m_WorldToViewPrev` and
+`m_FrustumPrev` -- where `m_FrustumPrev` comes from `DecomposeProjection` reading our projection's
+off-diagonal terms. The test at `:119` then transforms that reconstruction *back* by
+`gWorldToViewPrev`. **That round trip must return the depth it started from, and it is exact only if
+the frustum basis is consistent with the projection we hand over.** RELAX is the only one of the two
+that is sensitive to it.
+
+Note before getting excited: the withdrawn "0.8078x frustum basis" and the withdrawn "constant 4.2 m
+viewZ offset" are the *same* number if the diagnostic region sat around viewZ 21.8 m
+(21.8 - 0.8078*21.8 = 4.2). That is suggestive of a scale error in exactly this round trip -- and it is
+also exactly the kind of coincidence that produced three withdrawn claims already.
+
+**The control this needs, before it is written up as anything:** the round trip is checkable on its own,
+with no reference to the disocclusion threshold at all. Compute
+`AffineTransform(gWorldToView, GetCurrentWorldPosFromClipSpaceXY(clipXY, viewZ)).z / viewZ` in the
+diagnostic viewport. It must be 1.0 by construction. If it is not, the value is the scale error and
+this is the cause; if it is 1.0, this mechanism is dead too and the frustum basis is fine. Run that
+before believing any of the above. The instrument has saturated once already -- encode it with enough
+range that a value near 1 is not clipped, and verify it responds to `NRD4_PROJ`.
+
+### FIXED: camera jitter was passed in UV, NRD wants pixels
+
+`NRDSample.cpp:3657` computes its own shader-side jitter as `viewportJitter / rectSize` and hands the
+**undivided** `viewportJitter` to `commonSettings.cameraJitter` (`:3843`). So NRD's jitter is in pixels,
+and the header's "[-0.5; 0.5] sampleUv = pixelUv + cameraJitter" is describing a pixel magnitude.
+Falcor's `getJitterX()` is documented as "subpixel offset along X axis divided by screen width" -- UV.
+We passed it straight through, so NRD was told the camera jitter was ~1/1280 of its real value.
+
+Inert at the default (`VR_NRD_JITTER` is off), but it **invalidates the measurement recorded beside that
+default** in `vr_graph.py`: "jitter on 6.93e-4, jitter off 6.50e-4 -- 6% worse with it". That was a
+denoiser told about the jitter versus a denoiser told nothing about it, not evidence that jitter hurts.
+Re-measure before trusting it. Fixed in `NRDPass.cpp`.
+
+### Noted, not yet chased
+
+`denoisingRange` is a hardcoded `kNRDDepthRange = 10000`; the sample uses `4 * sceneAABBradius`
+(`NRDSample.cpp:360`). NRD's header says pixels with `viewZ < denoisingRange` are valid and that sky
+should be pushed *above* it. At 10000 nothing in bistro is ever excluded, so sky may be being denoised
+as geometry. Cheap to check, unknown whether it matters.
+
 ## WITHDRAWN: "root cause found -- frustum-forward basis is 0.8078x"
 
 Read this before trusting the section below it. **The 0.8078 measurement is not what I claimed and

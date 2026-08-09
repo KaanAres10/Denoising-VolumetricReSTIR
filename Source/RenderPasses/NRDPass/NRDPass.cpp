@@ -2140,26 +2140,32 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
         mPrevProjMatrix = projMatrix;
     }
 
-    // NRD4_FLIPVIEWZ=1 negates the view matrix's Z row, making view-space Z POSITIVE in front of the
-    // camera. Reason: RELAX's reprojection validity test compares NRD's stored previous viewZ against
-    // the Z of the reprojected position transformed by this matrix
-    // (RELAX_TemporalAccumulation.cs.hlsl: planeDist = abs(prevViewZs - prevViewPos.zzz)). The stored
-    // side goes through UnpackViewZ, which is abs(), so it is always POSITIVE -- while Falcor's view
-    // space is right-handed and puts -Z forward, making prevViewPos.z NEGATIVE. If those disagree the
-    // plane distance is ~2|z| everywhere and every tap is rejected, which is exactly the observed
-    // fault: history stuck under 2 frames even with a completely static camera.
+    // NRD4_FLIPVIEWZ and NRD4_RELVIEW are both DEAD ENDS. They are kept only because the reasoning
+    // that produced them is easy to re-derive, and the answer is not obvious until you read NRD's own
+    // C++ (github.com/NVIDIA-RTX/NRD, Source/InstanceImpl.cpp). Both default off; leave them off.
+    //
+    // NRD4_FLIPVIEWZ=1 negates the view matrix's Z row to make view-space Z positive in front of the
+    // camera, on the theory that Falcor's right-handed view space fights UnpackViewZ's abs(). NRD
+    // already does this itself: InstanceImpl.cpp:375 runs DecomposeProjection on viewToClipMatrix to
+    // detect handedness, and if the projection is not left-handed it negates viewToClip's Z column and
+    // worldToView's Z row (:377-389). Handing it a right-handed pair is the supported case.
+    //
+    // NRD4_RELVIEW=1 strips the translation from the view matrices, on the theory that NRD's
+    // camera-relative world positions (RELAX_Common.hlsli's GetCurrentWorldPosFromClipSpaceXY returns
+    // viewZ * (F + R*x - U*y), no camera origin) must not be hit with a translation-carrying matrix.
+    // NRD also does this itself, and comments it "mandatory needed to preserve precision":
+    // InstanceImpl.cpp:398-408 reads the camera position out of the inverted matrix, zeroes the
+    // current translation, and sets the previous one to the camera DELTA. Stripping the translation
+    // before handing it over is therefore not neutral -- it makes both extracted camera positions
+    // zero, so translationDelta and m_CameraDelta come out zero, and RELAX adds gCameraDelta to every
+    // reprojected position (RELAX_TemporalAccumulation.cs.hlsl:413). Enabling it would break exactly
+    // the case this project cares about, reprojection while the camera moves.
+    //
+    // The "NRD's derived view Z is 0.79x ours" measurement that motivated RELVIEW came from the
+    // diagnostic viewport while it was still saturating, and is withdrawn; see STATE.md.
     float4x4 nrdViewMatrix = viewMatrix;
     float4x4 nrdPrevViewMatrix = mPrevViewMatrix;
 
-    // NRD4_RELVIEW=1 strips the translation from the view matrices.
-    //
-    // NRD reconstructs world positions CAMERA-RELATIVE: RELAX_Common.hlsli's
-    // GetCurrentWorldPosFromClipSpaceXY returns viewZ * (F + R*x - U*y) with no camera origin added.
-    // Falcor's getViewMatrix() carries the camera translation, so transforming one of those
-    // camera-relative points by it picks up a spurious translation term -- which would make the view
-    // Z NRD derives disagree with the IN_VIEWZ we supply, and that disagreement is precisely what
-    // RELAX's reprojection test rejects on. Measured with the diagnostic viewport: NRD's derived
-    // view Z is 0.79x ours on a static camera (0.63 at frame edges, 0.96 near the centre).
     static const bool relView = []
     { const char* v = std::getenv("NRD4_RELVIEW"); return v && std::strtol(v, nullptr, 10) != 0; }();
     if (relView)
@@ -2228,9 +2234,22 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
     copyMatrix(mCommonSettings.viewToClipMatrixPrev, projVariant == 0 ? mPrevProjMatrix : nrdProjMatrix);
     copyMatrix(mCommonSettings.worldToViewMatrix, nrdViewMatrix);
     copyMatrix(mCommonSettings.worldToViewMatrixPrev, nrdPrevViewMatrix);
-    // NRD's convention for the jitter is: [-0.5; 0.5] sampleUv = pixelUv + cameraJitter
-    mCommonSettings.cameraJitter[0] = -mpScene->getCamera()->getJitterX();
-    mCommonSettings.cameraJitter[1] = mpScene->getCamera()->getJitterY();
+    // NRD's jitter is in PIXELS, range [-0.5; 0.5]. The header's "sampleUv = pixelUv + cameraJitter"
+    // reads like UV and is what this used to pass, but NRD-Sample settles it: it computes its own
+    // shader-side UV jitter as "viewportJitter / rectSize" (NRDSample.cpp:3657) and hands the
+    // UNDIVIDED "viewportJitter" to commonSettings.cameraJitter (:3843). So the value is pixels.
+    //
+    // Falcor's getJitterX() is documented as "subpixel offset along X axis divided by screen width",
+    // i.e. already UV -- so what we passed was ~1/width of what NRD wanted, and NRD was effectively
+    // told the camera was not jittering while the G-buffer was.
+    //
+    // This is inert at the default (add_denoiser takes jitter=VR_NRD_JITTER, default off) but it does
+    // invalidate the note recorded next to that default in vr_graph.py: "jitter on 6.93e-4, jitter off
+    // 6.50e-4 -- 6% worse with it". That comparison was between a denoiser told about the jitter and a
+    // denoiser told nothing about it, so it is not evidence that jitter hurts. Re-measure before
+    // trusting it.
+    mCommonSettings.cameraJitter[0] = -mpScene->getCamera()->getJitterX() * float(mScreenSize.x);
+    mCommonSettings.cameraJitter[1] = mpScene->getCamera()->getJitterY() * float(mScreenSize.y);
     mCommonSettings.denoisingRange = kNRDDepthRange;
     mCommonSettings.disocclusionThreshold = mDisocclusionThreshold * 0.01f;
     mCommonSettings.frameIndex = mFrameIndex;

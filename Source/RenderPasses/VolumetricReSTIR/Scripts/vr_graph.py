@@ -802,6 +802,11 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         # supersampling over the accumulated history, so which way it lands is an empirical question.
         # Measured on the plume: jitter on 6.93e-4, jitter off 6.50e-4 -- 6% worse with it, so off
         # by default. (Ray Reconstruction is the opposite: it upscales, so it needs jitter.)
+        #
+        # WARNING: that measurement is INVALID and the default is now only a default, not a result.
+        # NRDPass passed cameraJitter in UV while NRD wants pixels, so the "jitter on" run was a
+        # denoiser told the camera was jittering by 1/1280 of its actual amount -- i.e. told nothing.
+        # Of course it scored worse. The units are fixed now; re-measure before quoting the 6%.
         gbuffer = gbuffer or add_gbuffer(g, render, jitter=env_bool("VR_NRD_JITTER", False),
                                          upscale=upscaling, ratio=upscale_ratio)
         # The albedo guide is the demodulation divisor. Reusing DLSSDGuides means the medium-blended
