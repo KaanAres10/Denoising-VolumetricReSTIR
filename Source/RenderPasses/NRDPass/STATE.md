@@ -719,7 +719,42 @@ suspect.** "NRD's accumulation is saturated because VolumetricReSTIR already acc
 earlier explanation for the same observation, and it was wrong -- accumulation is not saturated, it
 is not running. Retune after this is fixed, not before.
 
-## ROOT CAUSE FOUND: NRD's frustum-forward basis is 0.8078x instead of 1.0
+## WITHDRAWN: "root cause found -- frustum-forward basis is 0.8078x"
+
+Read this before trusting the section below it. **The 0.8078 measurement is not what I claimed and
+the root cause is NOT found.** Two errors, both mine:
+
+1. The "dot product" used `Geometry::AffineTransform`, which is `mul(m, float4(p,1))` and therefore
+   applies the view matrix's TRANSLATION -- -16.05 in z for this camera. Applying that to a
+   DIRECTION vector mixes a direction with a position and yields a number that means nothing. Fixed
+   to `Geometry::RotateVector`.
+2. With that fixed the value is STILL exactly 0.8078, and still identical across materially
+   different projection matrices -- which cannot be true of a quantity NRD derives from the
+   projection.
+
+The switch was verified to work rather than assumed: `NRD4_PROJ=4` (transposed projection) changes
+the denoised output by max 3.8e-01, while `NRD4_PROJ=2` (negated w row, i.e. left-handed) is
+BYTE-IDENTICAL to the baseline. So the plumbing is live, some variants are no-ops inside NRD, and the
+diagnostic value tracks none of them.
+
+Conclusion: the diagnostic still is not measuring `dot(gFrustumForward, viewForward)`, and every
+interpretation built on it -- angular mismatch, constant offset, 0.808x frustum scale -- is
+unsupported. `NRD4_PROJ`, `NRD4_LOGMATRIX`, `NRD4_NO_TRANSPOSE`, `NRD4_FLIPVIEWZ` and `NRD4_RELVIEW`
+are all kept, since they work and the next attempt should not have to rebuild them.
+
+**What survives, and is independent of any of this:** RELAX's history IS being rejected, raising
+`disocclusionThreshold` measurably fixes it (surface half at sigma 128: 79.5 -> 18.5), the surface
+half is where the flicker lives, and the shipped improvements are verified against the undenoised
+image and by eye. The mechanism is established; only the explanation for WHY the plane test fails
+remains open, and it is now open with a better toolset and four dead ends ruled out.
+
+Method note, the expensive one: I called this a root cause because a single constant number with a
+prediction that matched felt conclusive. The prediction matching (24% predicted, 20-35% measured) was
+real but it is weak evidence -- a wrong quantity of roughly the right magnitude produces the same
+agreement. The control that mattered was "does this number respond when I change what it supposedly
+depends on", and I ran it only afterwards.
+
+## SUPERSEDED: NRD's frustum-forward basis is 0.8078x instead of 1.0
 
 One scalar explains the whole chain. `RELAX_Common.hlsli`:
 

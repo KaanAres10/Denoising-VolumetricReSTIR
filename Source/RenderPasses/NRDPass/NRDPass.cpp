@@ -2206,8 +2206,26 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
         }
     }
 
-    copyMatrix(mCommonSettings.viewToClipMatrix, projMatrix);
-    copyMatrix(mCommonSettings.viewToClipMatrixPrev, mPrevProjMatrix);
+    // NRD4_PROJ selects a projection-convention variant, to search for the one that makes NRD's
+    // derived frustum agree with our view matrix. The diagnostic viewport reports
+    // dot(gFrustumForward, viewForward), which must be 1.0 and measures 0.8078 as shipped; whichever
+    // variant drives it to 1.0 is the convention NRD actually expects. Falcor is right-handed with
+    // clip.w = -view.z; NRD documents "LH / RH ... with non-swizzled rows", so a handedness or row
+    // sign difference is the plausible family.
+    float4x4 nrdProjMatrix = projMatrix;
+    static const long projVariant = []
+    { const char* v = std::getenv("NRD4_PROJ"); return v ? std::strtol(v, nullptr, 10) : 0; }();
+    if (projVariant == 1) // negate the depth row: clip.z flips
+        for (int c = 0; c < 4; c++) nrdProjMatrix[2][c] = -nrdProjMatrix[2][c];
+    else if (projVariant == 2) // negate the w row: clip.w = +view.z, i.e. left-handed
+        for (int c = 0; c < 4; c++) nrdProjMatrix[3][c] = -nrdProjMatrix[3][c];
+    else if (projVariant == 3) // both
+        for (int c = 0; c < 4; c++) { nrdProjMatrix[2][c] = -nrdProjMatrix[2][c]; nrdProjMatrix[3][c] = -nrdProjMatrix[3][c]; }
+    else if (projVariant == 4) // hand NRD the untransposed projection while the view stays transposed
+        nrdProjMatrix = transpose(projMatrix);
+
+    copyMatrix(mCommonSettings.viewToClipMatrix, nrdProjMatrix);
+    copyMatrix(mCommonSettings.viewToClipMatrixPrev, projVariant == 0 ? mPrevProjMatrix : nrdProjMatrix);
     copyMatrix(mCommonSettings.worldToViewMatrix, nrdViewMatrix);
     copyMatrix(mCommonSettings.worldToViewMatrixPrev, nrdPrevViewMatrix);
     // NRD's convention for the jitter is: [-0.5; 0.5] sampleUv = pixelUv + cameraJitter
