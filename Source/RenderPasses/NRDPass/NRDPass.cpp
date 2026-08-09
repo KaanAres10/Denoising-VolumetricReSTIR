@@ -259,7 +259,28 @@ NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDev
     // New in v4 for RELAX (v3.1 exposed antifirefly on REBLUR only). Our input is 1-spp volumetric
     // radiance, which is exactly the firefly-heavy case it exists for. Small but consistent win:
     // 1.072e-03 -> 1.059e-03 on plume.
-    mRelaxSettings.enableAntiFirefly = true;
+    //
+    // TURNED OFF, back to NRD's own default of false. That plume measurement was taken while the
+    // transposed matrices held RELAX's history at 0.05 frames -- with no temporal accumulation to
+    // suppress fireflies, a spatial firefly filter was the only thing doing the job. With
+    // accumulation running at 30 frames it is now a net loss, measured on bistro's authored orbit:
+    //
+    //                        s=32    s=128   whole-frame   sharpness
+    //     antiFirefly on     6.84     2.36      1.2716        119.8
+    //     antiFirefly off    6.69     2.30      1.2444        132.4
+    //     REBLUR             6.64     2.28      1.2247        125.9
+    //
+    // Better on BOTH axes, and it is what closes most of the sharpness gap to REBLUR -- 119.8 -> 132.4
+    // actually overtakes it. Checked for the artifact it is named after rather than assumed: isolated
+    // bright outliers over 90 frames go 50460 -> 54564, an 8% rise on a median-based measure that
+    // cannot tell a firefly from genuine detail, and at 2x zoom the plume gains internal structure
+    // with no visible speckle.
+    //
+    // SCOPE LIMIT, stated because the original justification was on the other scene: plume has NOT
+    // been re-measured since the matrix fix. It is animated, 1-spp and genuinely firefly-heavy, so it
+    // is the case most likely to still want this. Re-run plume before treating this as settled;
+    // NRD4_ANTIFIREFLY=1 restores it.
+    mRelaxSettings.enableAntiFirefly = false;
 
     // History reconstruction off, for the same reason as the pre-pass. It exists to invent a signal
     // for pixels that have NO temporal history yet (post-disocclusion), by blurring across a 5x5

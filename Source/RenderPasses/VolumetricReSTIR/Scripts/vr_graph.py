@@ -609,6 +609,13 @@ def add_nrd_split(g, color, scene, render, gbuffer, gd, restir, nrd_enabled=True
     # top). The adapter instead emits saturate(T / minTransmittance): 1 while the divisor still tracks
     # T, ramping to 0 as it floors out, so each mechanism covers exactly the regime the other cannot
     # and the handover sits at one number rather than two that could drift apart.
+                   # VR_NRD_SURF_BLUR sets maxBlurRadius on the surface half. INERT under RELAX:
+                   # NRDPass maps the maxBlurRadius property onto mReblurSettings only
+                   # (NRDPass.cpp, kMaxBlurRadius), so it does nothing unless this half is running a
+                   # Reblur* method. Verified the hard way -- 30, 15 and 8 produced instability
+                   # identical to four decimals, which is this project's standing signature for a
+                   # knob that is not wired. RELAX's spatial extent is atrousIterationNum, not this.
+                   max_blur=(env_float("VR_NRD_SURF_BLUR", 0.0) or None),
                    confidence_src=((a_s + ".historyConfidence") if surf_demod_tr
                                    else (restir + ".mediumTransmittance"
                                          if env_bool("VR_NRD_SURFCONF", True) else None)))

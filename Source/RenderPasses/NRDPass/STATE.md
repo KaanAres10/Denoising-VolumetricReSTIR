@@ -1707,3 +1707,49 @@ so several times. The path is *ignored*, so that command returns empty no matter
 could never have detected a leftover diagnostic patch. When a check is supposed to catch a specific
 failure, confirm it can actually see that failure -- `git check-ignore -v <path>` here, or the
 byte-difference control used for the shader switches.
+
+## Re-tuning after the fix: what moved and what did not
+
+Every RELAX setting in this project was chosen while the transposed matrices held history at 0.05
+frames, i.e. while the spatial filter was doing the work accumulation should have been doing. Re-run
+on bistro's authored orbit against the fixed build:
+
+| change | s=32 | s=128 | whole-frame | sharpness | verdict |
+|---|---|---|---|---|---|
+| shipping at the time | 6.84 | 2.36 | 1.2716 | 119.8 | baseline |
+| prepassBlurRadius 30 (NRD stock) | 7.52 | 2.84 | 1.6443 | - | worse, keep 0 |
+| diffusePhiLuminance 1.0 | 7.41 | 2.72 | 1.4904 | - | neutral |
+| emitters through the denoiser | 8.17 | 3.03 | 1.7470 | - | worse, keep routing round |
+| historyFixFrameNum 0 | 6.88 | 2.45 | 1.4318 | 114.9 | worse, keep 3 |
+| **enableAntiFirefly false** | **6.69** | **2.30** | **1.2444** | **132.4** | **shipped** |
+
+**Anti-firefly was the one that had inverted.** We set it true against NRD's own RELAX default of
+false, on a plume measurement of 1.072e-03 -> 1.059e-03 taken before the matrix fix -- with no
+temporal accumulation, a spatial firefly filter was the only thing suppressing fireflies. With
+accumulation running it is a net loss, and turning it off is what closes the sharpness gap to REBLUR
+(119.8 -> 132.4, overtaking REBLUR's 125.9).
+
+Checked for the artifact it is named after rather than assumed: isolated bright outliers over 90
+frames go 50460 -> 54564, an 8% rise on a median-based measure that cannot tell a firefly from real
+detail, and at 2x zoom the plume gains internal structure with no visible speckle.
+
+**Scope limit:** plume has NOT been re-measured since the fix, and the original justification was on
+plume. It is animated, 1-spp and genuinely firefly-heavy -- the case most likely to still want this.
+Re-run plume before treating it as settled. `NRD4_ANTIFIREFLY=1` restores.
+
+**A knob that is not a knob:** `maxBlurRadius` is REBLUR-only. `NRDPass.cpp` maps the property onto
+`mReblurSettings` alone, so setting it on a RELAX instance does nothing -- 30, 15 and 8 produced
+instability identical to four decimals. RELAX's spatial extent is `atrousIterationNum`, which is still
+untested.
+
+### Where the session ends up, bistro's authored orbit
+
+| config | s=32 | s=128 | whole-frame | sharpness |
+|---|---|---|---|---|
+| RELAX at session start | 19.52 | 8.19 | 5.87 | 86.3 |
+| RELAX now | **6.69** | **2.30** | **1.244** | **132.4** |
+| REBLUR now | 6.64 | 2.28 | 1.225 | 125.9 |
+| DLSS Ray Reconstruction | 7.92 | 2.72 | 1.515 | 62.0 |
+
+2.9x steadier and 1.5x sharper than where it started. REBLUR keeps a ~1% edge on stability; RELAX is
+now the sharpest of the three.
