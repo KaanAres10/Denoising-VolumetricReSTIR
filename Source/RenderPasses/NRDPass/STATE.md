@@ -719,6 +719,53 @@ suspect.** "NRD's accumulation is saturated because VolumetricReSTIR already acc
 earlier explanation for the same observation, and it was wrong -- accumulation is not saturated, it
 is not running. Retune after this is fixed, not before.
 
+## RELAX's surface flicker: scored against the INPUT, not against REBLUR
+
+"RELAX flickers on surfaces while REBLUR looks stable" is real, and the composite hid it: the
+composite mixes the medium, the surface half and the raw emissive strobe, and TAA flattens what
+survives, so it showed a 2x difference where the underlying buffer is far worse. Measured on the
+SURFACE HALF alone, under motion, scored only on the 78.6% of the frame with no medium and no
+emitter (`surfflick.py`), instability by spatial scale, x1e-3:
+
+| | s=0 | s=8 | s=32 | s=128 |
+|---|---|---|---|---|
+| **raw surfaceColor (the input)** | 3448.8 | 396.1 | 135.9 | 62.7 |
+| RELAX SH (shipping) | 461.5 | 115.7 | 42.4 | 18.5 |
+| RELAX non-SH | 502.1 | 120.8 | 43.3 | 19.9 |
+| REBLUR non-SH | 429.9 | 68.0 | 19.3 | 11.0 |
+| REBLUR SH | 412.6 | 59.3 | **11.3** | **4.7** |
+
+**RELAX is not adding instability** -- it removes 3.2x of the input's large-scale variation. REBLUR
+removes 12x. Both work; one works far better, and the difference is temporal accumulation.
+
+WITHDRAWN: "RELAX is the wrong tool because NVIDIA say it wants RTXDI-clean signals". That was too
+convenient. VolumetricReSTIR IS a ReSTIR estimator, and the adapter's own table shows the split's
+structural zeros exist ONLY where the medium is -- outside it the surface half has 0.0% holes. So on
+exactly the pixels measured above, the input is the RTXDI-shaped signal RELAX is built for. The one
+qualification that survives is that the raw input is still unstable at coarse scales (135.9 at s=32),
+so it is not as clean as RTXDI's output and some of the difficulty is genuine.
+
+REFUTED against this metric, so do not re-try them:
+* SH mode -- RELAX SH 42.4 against non-SH 43.3.
+* `diffuseMinLuminanceWeight` 0.5 (164.8, WORSE), `diffusePhiLuminance` 32 (139.2, WORSE),
+  `spatialVarianceEstimationHistoryThreshold` and `luminanceEdgeStoppingRelaxation` (no change).
+* Input intensity clamping -- see the section on the SH path having no clamp. Even a clamp of 1 moves
+  s=32 by 5%.
+
+WHAT DOES MOVE IT is the disocclusion threshold, i.e. temporal accumulation again:
+
+| disocc | s=8 | s=32 | s=128 | shipping image s=32 / s=128 / mean |
+|---|---|---|---|---|
+| 20 | 195.6 | 111.1 | 79.5 | 18.72 / 7.86 / 0.0874 |
+| **35 (now)** | 115.7 | 42.4 | 18.5 | 14.80 / 5.56 / 0.0851 |
+| 50 | 88.7 | 27.2 | 14.9 | 11.87 / 4.28 / 0.0795 |
+| 100 | 76.0 | 19.9 | 11.8 | 10.46 / 3.48 / 0.0772 |
+
+So the surface flicker traces back to the SAME unresolved reprojection mismatch as everything else --
+RELAX rejects history the plane test says is invalid, REBLUR's test is more tolerant, and the ~4.2 m
+plane-distance offset that causes it is still unexplained. 50 and 100 close more of the gap but
+darken the image 9% and 12%, which is not understood either, so 35 is the default.
+
 ## MEASURE FLICKER BY SPATIAL SCALE -- the per-pixel metric misses what people see
 
 The second temporal difference used everywhere in this file is a HIGH-PASS measure: it is dominated
