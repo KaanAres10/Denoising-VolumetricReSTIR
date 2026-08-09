@@ -928,7 +928,62 @@ down in "Traps that have already cost time" below, and I walked into it anyway. 
 land in one bucket and hid the additive shape for a full round. When a per-pixel breakdown looks
 degenerate, check the channel before believing the aggregate.
 
-**The next step is now a single well-defined measurement, not a hypothesis:** print
+### REINSTATED: the frustum-forward basis really is 0.80x, and it is the root cause
+
+The withdrawn "0.8078" section below was **right**. It was withdrawn because the instrument saturated
+and looked unresponsive to `NRD4_PROJ`; the number itself was never wrong. Re-measured cleanly, the
+value is a hard constant over the entire frame:
+
+    dot(viewForward, gPrevFrustumForward)   median 0.7984   p05 0.7984   p95 0.7984
+
+**This must be exactly 1.0 by construction.** NRD's own comment in `Relax.cpp:56` says the vector is
+deliberately left unnormalised so that its view-space z is 1.0 -- that is what makes
+`GetPreviousWorldPosFromClipSpaceXY`'s `viewZ * (F + R*x - U*y)` reconstruct a point at depth `viewZ`.
+The encoding quantises to 1/30 = 0.033, so 0.7984 and the earlier 0.8078 are **the same number**.
+
+The chain, all measured on a static camera where every one of these must be exact:
+
+| quantity | must be | measured |
+|---|---|---|
+| `dot(viewForward, gPrevFrustumForward)` | 1.0 | **0.798** (constant) |
+| `(currentLinearZ + mv.z) / currentLinearZ` | 1.0 | 0.73-0.90 (~ -4 m) |
+| `prevViewPos.z / currentLinearZ` | 1.0 | 0.63 (~ -7 m) |
+| `planeDist / frustumSize` | ~0 | 0.507 |
+
+The error compounds down the chain because the basis is used twice. The "constant 4.2 m offset" of
+commit 17a4b86 was also real -- it is this same 0.8 expressed at that camera's depths.
+
+**What the constant tells us.** `frustumForwardView.z` is the literal constant 1.0, so the lateral
+frustum terms cannot affect this; the round trip `RotateVector(worldToView, viewToWorld * (a,b,1,0)).z`
+is 1.0 for *any* fov, aspect or frustum asymmetry, and fails only if `viewToWorld` and `worldToView`
+are not exact inverses. NRD derives one from the other with `InvertOrtho` (`InstanceImpl.cpp:392-408`),
+which is an involution **only when the 3x3 is orthonormal**. So the 3x3 NRD ends up with is not
+orthonormal, by a factor whose square is ~0.80, i.e. a scale of ~0.893 on the basis.
+
+Ruled out by control: the matrix transpose. `NRD4_NO_TRANSPOSE` moves this scalar not at all (0.7984
+both ways), which makes sense -- transposing flips the basis and the transform together and the dot is
+invariant to it. So this is NOT the layout question that the old section assumed, and `NRD4_PROJ`'s
+unresponsiveness was never evidence against the number.
+
+Also ruled out by measurement this round: a spurious camera translation. `NRD4_LOGDELTA` logs
+`max|view - viewPrev| = 0.000000` and `cameraDelta = (0,0,0)` on every static frame for both instances,
+with the camera position matching bistro's authored pose exactly. So `gCameraDelta` contributes nothing
+and the offset is entirely the basis.
+
+**The next scalar, and it should finish this:** measure `length(RotateVector(gWorldToViewPrev,
+float3(1,0,0)))` from the same instrumentation slot. It must be 1.0. If it comes out ~0.893 the matrix
+reaching NRD carries a scale, and the only place that can happen is `copyMatrix` or the Falcor
+`getViewMatrix()` we feed it -- both ours, both one-line fixes. Note that the shipped Falcor view
+matrix logged by `NRD4_LOGMATRIX` *is* orthonormal to 5.5e-07, so the scale is introduced between there
+and NRD, not by the camera.
+
+**Method note.** Three of the four "withdrawn" characterisations in this file were withdrawn on
+instrument grounds, and this one should not have been. A saturating instrument invalidates the
+measurement, not the hypothesis -- the right response was to rebuild the instrument, which is what
+finally worked here (float-derived encoding, self-calibrating decoder, positive control that the edit
+reaches the GPU).
+
+**The step after that is now a single well-defined measurement, not a hypothesis:** print
 `planeDist / frustumSize` from RELAX's temporal accumulation on a static camera and see what it
 actually is and how it varies over the frame. `CommonSettings::debug` (`gDebug`) exists for exactly
 this and is already plumbed. If it is a constant, that constant is the bug; if it tracks depth or

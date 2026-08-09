@@ -2305,6 +2305,48 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
     mPrevCameraJitter = float2(mCommonSettings.cameraJitter[0], mCommonSettings.cameraJitter[1]);
 #endif
 
+    // NRD4_LOGDELTA=N logs, for the first N frames, how far the previous view matrix is from the
+    // current one and what camera translation NRD will therefore derive from the pair.
+    //
+    // This is the check the ~7 m offset points at. RELAX adds "gCameraDelta" to every reprojected
+    // position (RELAX_TemporalAccumulation.cs.hlsl:413), and NRD builds that delta itself as
+    // "cameraPositionPrev - cameraPosition", extracted from these two matrices
+    // (InstanceImpl.cpp:398-408). A constant offset in the reconstructed previous view Z is exactly
+    // "dot(viewForward, cameraDelta)", so on a camera that cannot move this must be zero. Measured
+    // on a static camera the reconstruction is short by ~7 m, so either the pair disagrees or the
+    // offset comes from somewhere else -- and this says which without guessing.
+    {
+        static const long logDelta = []
+        { const char* v = std::getenv("NRD4_LOGDELTA"); return v ? std::strtol(v, nullptr, 10) : 0; }();
+        if (logDelta > 0 && mFrameIndex < uint32_t(logDelta))
+        {
+            // Both are camera-to-world translations recovered the way NRD recovers them: for an
+            // orthonormal view matrix the camera position is -R^T * t, and the row-major layout here
+            // means row r holds axis r and t[r] = viewMatrix[r][3].
+            auto camPos = [](const float4x4& v)
+            {
+                float3 t(v[0][3], v[1][3], v[2][3]);
+                return float3(-(v[0][0] * t.x + v[1][0] * t.y + v[2][0] * t.z),
+                              -(v[0][1] * t.x + v[1][1] * t.y + v[2][1] * t.z),
+                              -(v[0][2] * t.x + v[1][2] * t.y + v[2][2] * t.z));
+            };
+            float maxDiff = 0.f;
+            for (int r = 0; r < 4; r++)
+                for (int c = 0; c < 4; c++)
+                    maxDiff = std::max(maxDiff, std::abs(viewMatrix[r][c] - mPrevViewMatrix[r][c]));
+            float3 p = camPos(viewMatrix), pPrev = camPos(mPrevViewMatrix);
+            float3 delta = pPrev - p;
+            // The term that lands in the reconstructed depth: NRD's forward is -viewToWorld[2],
+            // i.e. row 2 of the view matrix negated for the RH->LH conversion it applies.
+            float alongForward = -(viewMatrix[2][0] * delta.x + viewMatrix[2][1] * delta.y +
+                                   viewMatrix[2][2] * delta.z);
+            logInfo("NRD delta[{}] {}: max|view-viewPrev|={:.6f}  camPos=({:.4f},{:.4f},{:.4f})  "
+                    "cameraDelta=({:.4f},{:.4f},{:.4f}) |d|={:.4f}  alongForward={:.4f}",
+                    mFrameIndex, getName(), maxDiff, p.x, p.y, p.z, delta.x, delta.y, delta.z,
+                    length(delta), alongForward);
+        }
+    }
+
     mPrevViewMatrix = viewMatrix;
     mPrevProjMatrix = projMatrix;
     mFrameIndex++;
