@@ -53,3 +53,7 @@
 # Rendered captures, references and sweep output. ~1 GB of EXR/PNG that a single `git add -A`
 # would otherwise commit; the references in particular are regenerable from the reference tasks.
 /shots/
+
+# 1080p orbit captures and encodes: ~1.8 GB of PNG per run, regenerate with
+# Source/RenderPasses/VolumetricReSTIR/Scripts/capture_orbit.py
+/outputs/
