@@ -50,13 +50,23 @@ g = RenderGraph(SCENE + "_orbit")
 scene = vr.load_scene(SCENE)
 restir = vr.add_restir(g, scene, render=RENDER, guides=True, mOutputDepth=True,
                        mMotionVecMode="Deterministic")
+# Build the G-buffer up front and hand it to the denoiser, rather than letting each mode decide.
+# add_denoiser only creates one when it is not given (`gbuffer or add_gbuffer(...)`), and the
+# single-pass denoisers -- OIDN especially -- create none at all, so wiring TAA's motion vectors to
+# GBufferRaster afterwards died with "Can't find render pass 'GBufferRaster'". Doing it here means
+# every mode gets the same G-buffer at the same size, and none of them gets two.
+#
+# jitter=False matches every measurement in this project: NRD does not upscale, and NRDPass was
+# passing cameraJitter in UV where NRD wants pixels until recently, so no jitter measurement here is
+# trustworthy yet.
+gbuf = vr.add_gbuffer(g, RENDER, jitter=False)
 out = vr.add_denoiser(g, MODE, restir + ".accumulated_color", scene, RENDER, RENDER,
-                      restir=restir, guides=True)
+                      restir=restir, gbuffer=gbuf, guides=True)
 tm = vr.add_tonemapper(g, out, exposure=scene.get("exposure", 0.0))
 if vr.env_bool("VR_TAA_LDR", True):
     g.addPass(createPass("TAA", vr.taa_props()), "TAA_LDR")
     g.addEdge(tm, "TAA_LDR.colorIn")
-    g.addEdge("GBufferRaster.mvec", "TAA_LDR.motionVecs")
+    g.addEdge(gbuf + ".mvec", "TAA_LDR.motionVecs")
     tm = "TAA_LDR.colorOut"
 
 # Only the shipped image is marked. Marking the raw HDR buffers as well means the capture can pick one
