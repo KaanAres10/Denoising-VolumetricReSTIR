@@ -57,3 +57,7 @@
 # 1080p orbit captures and encodes: ~1.8 GB of PNG per run, regenerate with
 # Source/RenderPasses/VolumetricReSTIR/Scripts/capture_orbit.py
 /outputs/
+
+# Worktree of the falcor4-legacy branch (Falcor 4.x), for reproducing the pre-port OptiX/OIDN
+# videos. Its own build tree and packman deps live here; never tracked by the v8 repo.
+/legacy/
