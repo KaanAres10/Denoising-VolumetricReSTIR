@@ -50,18 +50,21 @@ g = RenderGraph(SCENE + "_orbit")
 scene = vr.load_scene(SCENE)
 restir = vr.add_restir(g, scene, render=RENDER, guides=True, mOutputDepth=True,
                        mMotionVecMode="Deterministic")
-# Build the G-buffer up front and hand it to the denoiser, rather than letting each mode decide.
-# add_denoiser only creates one when it is not given (`gbuffer or add_gbuffer(...)`), and the
-# single-pass denoisers -- OIDN especially -- create none at all, so wiring TAA's motion vectors to
-# GBufferRaster afterwards died with "Can't find render pass 'GBufferRaster'". Doing it here means
-# every mode gets the same G-buffer at the same size, and none of them gets two.
+# Only the SINGLE-PASS denoisers get a G-buffer built here. OIDN creates none at all, so wiring TAA's
+# motion vectors to GBufferRaster died with "Can't find render pass 'GBufferRaster'".
 #
-# jitter=False matches every measurement in this project: NRD does not upscale, and NRDPass was
-# passing cameraJitter in UV where NRD wants pixels until recently, so no jitter measurement here is
-# trustworthy yet.
-gbuf = vr.add_gbuffer(g, RENDER, jitter=False)
+# Everything else must build its own, because add_denoiser picks the jitter each denoiser needs and
+# `gbuffer or add_gbuffer(...)` means passing one in silently overrides that choice. Ray
+# Reconstruction asks for jitter=True -- it reconstructs sub-pixel detail and needs the camera to
+# jitter -- while the NRD path asks for jitter=False. Handing every mode one non-jittered G-buffer
+# quietly denied RR its jitter and made it a different configuration from every earlier RR run in
+# this project. Fixed by only pre-building where nothing else will.
+_NEEDS_GBUFFER = ("oidn", "oidncpu", "none")
+gbuf = vr.add_gbuffer(g, RENDER, jitter=False) if MODE in _NEEDS_GBUFFER else None
 out = vr.add_denoiser(g, MODE, restir + ".accumulated_color", scene, RENDER, RENDER,
                       restir=restir, gbuffer=gbuf, guides=True)
+# Whoever built it, the pass is named GBufferRaster; TAA's motion vectors come from there.
+gbuf = gbuf or "GBufferRaster"
 tm = vr.add_tonemapper(g, out, exposure=scene.get("exposure", 0.0))
 if vr.env_bool("VR_TAA_LDR", True):
     g.addPass(createPass("TAA", vr.taa_props()), "TAA_LDR")
