@@ -792,10 +792,17 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         g.addPass(createPass(name), "Denoiser")
         g.addEdge(color, "Denoiser." + cin)
         if mode == "optix":
+            gbuffer = gbuffer or add_gbuffer(g, render, jitter=False)
+        if mode == "optix" and env_bool("VR_OPTIX_MV", True):
             # Motion vectors switch OptiX to its TEMPORAL model; without them it denoises each frame
             # independently. The pass negates them itself (OptiX points forward in time, Falcor
             # points current -> previous).
-            gbuffer = gbuffer or add_gbuffer(g, render, jitter=False)
+            #
+            # VR_OPTIX_MV=0 removes them, which is exactly what the falcor4-legacy branch did --
+            # Scripts/run_bistro_optix_video.py wires only colour in. Worth having as a switch rather
+            # than an assumption: a temporal denoiser fed bad reprojection is WORSE than one with
+            # none, which is precisely what the NRD matrix bug turned out to be, so "we added the
+            # temporal path" is not automatically an improvement and has to be measured.
             g.addEdge(gbuffer + ".mvec", "Denoiser.mvec")
         return "Denoiser." + cout
 
