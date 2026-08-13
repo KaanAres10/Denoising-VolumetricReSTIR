@@ -218,3 +218,33 @@ The plume renders on both v8 paths and on neither legacy run, so the fault is in
 GVDB *runtime*, not its data. The remaining suspect is CUDA: `.packman/CUDA_13.0` is a junction to the
 installed **12.8**, and GVDB builds its VDB structure on the GPU from PTX at runtime -- a mismatch
 there would load the file and then produce nothing, exactly what is observed.
+
+## GVDB / CUDA 12.8 is NOT the cause
+
+Tested directly rather than assumed. The nested `Denoising-VolumetricReSTIR/gvdb-voxel-src/build_gvdb/`
+is where v8's GVDB comes from -- its `gvdb.dll` and PTX are byte-identical to v8's build output -- and
+it was built on this machine against CUDA 12.8, so it is a known-working matched pair here.
+
+Swapped that pair (dll + both PTX) into the legacy build in place of its vendored prebuilt
+`gvdb.dll` + the `GVDBConverter` PTX. **No change**: the plume still does not render, structural
+correlation against v8 stays at 0.7597, legacy mean 0.00301 against v8 0.00287. Originals restored
+from `legacy/_gvdb_backup/`.
+
+Rebuilding legacy's own `gvdb-voxel-src` would be pointless: its `CMakeLists.txt` is byte-identical to
+the nested tree's, so it would produce the same binaries already tested.
+
+So the CUDA-version hypothesis is dead, and with it the last suspect I had. Ruled out so far:
+
+| candidate | verdict |
+|---|---|
+| GVDB PTX missing | copied in, no change |
+| GVDB dll/PTX mismatched, CUDA 12.8 vs 13.0 | known-working 12.8 pair swapped in, no change |
+| volume data path (baked .bin vs vbx) | v8 forced onto legacy's vbx, output identical |
+| volume file resolution | stdout shows both mip0 vbx files loading in legacy |
+| media search path | the scene itself loads through it |
+| camera / field of view | identical in both: focal 35, frameHeight 24, aspect 1.7778 |
+
+The legacy build reads the volume and renders nothing from it, and none of the runtime plumbing
+explains it. What has NOT been examined is the legacy `VolumetricReSTIR` pass itself -- whether it
+needs a parameter or define to sample the medium that the v8 port defaults differently. That is where
+I would look next, not at the build.
