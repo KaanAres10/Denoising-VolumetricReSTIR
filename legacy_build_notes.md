@@ -248,3 +248,27 @@ The legacy build reads the volume and renders nothing from it, and none of the r
 explains it. What has NOT been examined is the legacy `VolumetricReSTIR` pass itself -- whether it
 needs a parameter or define to sample the medium that the v8 port defaults differently. That is where
 I would look next, not at the build.
+
+## The legacy build DOES render volumes -- the bistro case specifically does not
+
+Ran one of legacy's own volume-only scenes (`Scripts/run_plume.py`: `default.obj` + the fire115
+volume). It renders a large, fully detailed plume. So in this build, on CUDA 12.8:
+
+* GVDB initialises and builds its structure on the GPU,
+* the vendored `gvdb.dll` + `GVDBConverter` PTX are a working pair,
+* the `VolumetricReSTIR` pass samples the medium correctly.
+
+All of which retires the entire CUDA/PTX/GVDB line above -- it was never the problem. The fault is
+specific to the **bistro** configuration, whose differences from the plume scene are:
+
+* `m.loadScene("Bistro_5_1/BistroExterior.fbx")` rather than `default.obj`,
+* `mUseSurfaceScene=True` (the combined surface+volume path),
+* an env map set then zeroed,
+* a volume placed inside a large loaded scene rather than at the origin.
+
+Note the legacy capture API differs from v8's and from what I first assumed: it is the global `fc`
+(`fc.outputDir`, `fc.baseFilename`, `fc.capture()`) plus `t.pause()` / `t.frame`, not
+`m.frameCapture`. The reference orbit script uses exactly that.
+
+Next step is to find where bistro's volume ends up in the legacy build -- whether it is absent,
+mis-placed or mis-scaled -- rather than anything to do with the build environment.
