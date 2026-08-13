@@ -191,3 +191,30 @@ build that sits directly under GVDB.
 I compared two builds for six rounds without ever checking that they were rendering the same image.
 A single frame-0 sanity check -- the one I eventually ran -- would have caught it immediately. Before
 comparing any metric between two builds, verify they agree on a frame where they should be identical.
+
+## Chasing the missing volume: what it is NOT
+
+The legacy build **loads** the volume and still renders none. Captured Mogwai's stdout with
+`Start-Process -RedirectStandardOutput` -- GVDB and the loader print there, not to the Falcor log,
+which is why the log had zero GVDB mentions and the failure looked silent:
+
+    C:/.../VolumetricReSTIRData/smoke-plume-2/smoke-plume-2_mip0.vbx
+    C:/.../VolumetricReSTIRData/smoke-plume-2/smoke-plume-2_mip0c.vbx
+
+So the files resolve and are read. Ruled out:
+
+* **Missing GVDB PTX.** `cuda_gvdb_module.ptx` / `cuda_gvdb_copydata.ptx` were genuinely absent next to
+  the legacy binary while v8's output has them; copied in from `legacy/GVDBConverter/`. No change.
+* **Path resolution.** The script's bare `dataFile="smoke-plume-2"` resolves fine through
+  `FALCOR_MEDIA_FOLDERS`; substituting a full path changed nothing.
+* **Baked vs vbx volume data.** v8 prefers a baked `<vbxFile>.bin` when present
+  (`SceneGVDB.cpp:237-242`) -- `smoke-plume-2.bin`, `numMips=4, maxDensity=0.5` -- while legacy has no
+  such path and reads the vbx. Hiding the .bin makes v8 fall back to the same vbx files as legacy, and
+  the output is **unchanged**: structural correlation against legacy stays at 0.7597 either way and
+  the frames are visually identical. Worth keeping as a positive result about v8's bake tool: the
+  baked volume and the original vbx render the same.
+
+The plume renders on both v8 paths and on neither legacy run, so the fault is in the legacy build's
+GVDB *runtime*, not its data. The remaining suspect is CUDA: `.packman/CUDA_13.0` is a junction to the
+installed **12.8**, and GVDB builds its VDB structure on the GPU from PTX at runtime -- a mismatch
+there would load the file and then produce nothing, exactly what is observed.
