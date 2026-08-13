@@ -68,3 +68,34 @@ whole-frame row as if it were clean.
 next test is to compare the UNDENOISED `accumulated_color` sequence from both builds: if legacy's raw
 input is already cleaner, this is the estimator and not the denoiser at all -- which was the standing
 hypothesis before this build existed.
+
+## The like-for-like control (added after the first pass)
+
+The first comparison was not apples to apples: legacy runs no TAA, while both v8 rows had TAA. Rerun
+with v8 matched to legacy -- colour only, TAA off:
+
+| config | s=32 | s=128 | whole-frame | sharpness |
+|---|---|---|---|---|
+| **LEGACY OptiX** (colour only, no TAA) | **18.42** | **8.89** | **7.27** | 167.5 |
+| v8 OptiX (colour only, NO TAA) | 61.01 | 45.97 | 41.97 | 129.1 |
+| v8 OIDN (colour only, NO TAA) | 75.51 | 61.66 | 58.66 | 131.5 |
+| v8 OptiX (colour only, +TAA) | 35.40 | 22.94 | 20.45 | 79.0 |
+| v8 OptiX (mvec, +TAA) | 30.05 | 18.61 | 16.39 | 92.2 |
+
+**Matched, the gap gets BIGGER, not smaller: 3.3x at s=32 and 5.2x at s=128.** Legacy with no TAA
+still beats v8 *with* TAA (18.42 against 30.05). So the post chain is not the explanation -- it was
+masking the difference, and removing it exposes more of it.
+
+That leaves two candidates, and only two:
+
+1. the OptiX pass itself -- `OptixDenoiserRecent` (legacy) against `OptixDenoiser` (v8);
+2. the ESTIMATOR's output, i.e. v8's `accumulated_color` is noisier than legacy's.
+
+(2) is the stronger hypothesis on the evidence: v8 OIDN and v8 OptiX are both ~3-5x worse than legacy
+OptiX and are close to EACH OTHER (75.5 and 61.0), which is what a common upstream cause looks like.
+Two independent denoisers from different vendors do not degrade together unless what they are being
+fed changed. It also explains why RELAX and REBLUR barely notice: they accumulate temporally and are
+robust to a noisier input, while single-frame denoisers are not.
+
+**Decisive next test:** capture the UNDENOISED `accumulated_color` orbit from both builds and compare
+instability directly. That separates (1) from (2) with no denoiser in the path at all.
