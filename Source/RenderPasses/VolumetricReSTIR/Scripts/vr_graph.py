@@ -1080,7 +1080,14 @@ def add_tonemapper(g, src, exposure=0.0, name="ToneMapper"):
     # these images exist to show. Exposure compensation still applies, so a night exterior is
     # viewable; the mapping above it is just a straight scale.
     op = env("VR_TONEMAP_OP", "Linear")
-    g.addPass(createPass("ToneMapper", {"autoExposure": False, "exposureCompensation": exposure,
+    # VR_TONEMAP_AUTOEXP=1 turns on per-frame auto-exposure, which the falcor4-legacy scripts used.
+    # It is NOT cosmetic for these measurements: auto-exposure renormalises the frame's brightness
+    # every frame, and the instability metric measures exactly that, so it suppresses the score
+    # without the renderer being any steadier. Kept off by default so the metric reports the
+    # renderer; switch it on only to reproduce a legacy comparison.
+    auto = env_bool("VR_TONEMAP_AUTOEXP", False)
+    g.addPass(createPass("ToneMapper", {"autoExposure": auto,
+                                        "exposureCompensation": 0.0 if auto else exposure,
                                         "operator": op}), name)
     g.addEdge(src, name + ".src")
     return name + ".dst"

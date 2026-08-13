@@ -99,3 +99,56 @@ robust to a noisier input, while single-frame denoisers are not.
 
 **Decisive next test:** capture the UNDENOISED `accumulated_color` orbit from both builds and compare
 instability directly. That separates (1) from (2) with no denoiser in the path at all.
+
+## Where the difference actually lives: the OptiX pass, not the estimator
+
+Chain of controls, each removing one stage. Same orbit, 300 frames, 1920x1080.
+
+**1. The estimator is identical.** Undenoised `accumulated_color`, HDR, no denoiser/tonemapper/TAA:
+
+| | s=32 | s=128 | per-pixel | mean |
+|---|---|---|---|---|
+| LEGACY | 111.80 | 23.38 | **739.07** | 0.00450 |
+| v8 | 114.01 | 26.17 | **739.63** | 0.00438 |
+
+Per-pixel noise differs by 0.08%. This kills the standing hypothesis that v8's estimator got noisier --
+it did not, and that hypothesis had been the leading explanation for three rounds.
+
+**2. The OptiX passes differ, on that identical input.** Denoiser HDR output from both builds, with the
+SAME fixed tonemap applied to each (+8 EV then Reinhard), so no tonemapper difference and no
+firefly domination:
+
+| | s=32 | s=128 | per-pixel | mean |
+|---|---|---|---|---|
+| LEGACY OptiX | **35.46** | **9.60** | 347.52 | 0.0542 |
+| v8 OptiX | 74.16 | 39.54 | 381.55 | 0.0395 |
+
+2.1x at s=32 and 4.1x at s=128, from the same input. That is the answer to "why is legacy more
+stable": it is the pass.
+
+**Ruled out as the cause, each checked in the source rather than assumed:**
+
+* Estimator output -- identical, above.
+* TAA -- legacy has none, and matching v8 to that made the gap *wider* (61.01 against 35.40).
+* Tonemapper auto-exposure -- legacy uses `autoExposure=True`, v8 a fixed +8 EV. Matching it moves
+  v8 only 61.01 -> 56.39, nowhere near legacy's 18.42. `VR_TONEMAP_AUTOEXP` added for this test.
+* Denoiser model -- both fall back from TEMPORAL to HDR when no motion vectors are wired
+  (`OptixDenoiser.cpp:289`, `OptixDenoiserRecent.cpp:244`), so both run the single-frame HDR model.
+* `blendFactor` -- 0.0 in both (v8 explicit, legacy zero-initialised).
+* `denoiseAlpha` -- COPY in both.
+* `hdrIntensity` -- both compute it per frame via `optixDenoiserComputeIntensity`.
+* `AccumulatePass` in legacy's graph -- a genuine passthrough when disabled; it blits and returns.
+
+**Still open:** what inside the pass differs. Remaining suspects are implementation-level -- the
+texture-to-buffer conversion and pixel format, and the OptiX headers each was built against (v8 uses
+packman's optix, this legacy build was linked against the installed OptiX SDK 9.1.0). Both use the
+driver's OptiX runtime.
+
+### A metric lesson worth keeping
+
+Measuring the HDR buffers directly said the two OptiX outputs were IDENTICAL (per-pixel 714.47 vs
+713.62, 0.1% apart) and I reported that. It was wrong: on data with this dynamic range, a
+mean-normalised absolute difference is dominated by a handful of firefly pixels and is blind to the
+bulk of the image. Applying the same fixed tonemap to both before measuring exposed a 2-4x gap.
+**Do not measure temporal stability on raw HDR** -- compress it first, identically for every
+configuration being compared.

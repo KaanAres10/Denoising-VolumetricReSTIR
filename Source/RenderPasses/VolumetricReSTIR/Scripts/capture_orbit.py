@@ -75,6 +75,17 @@ if vr.env_bool("VR_TAA_LDR", True):
 # Only the shipped image is marked. Marking the raw HDR buffers as well means the capture can pick one
 # of them, and bistro is a night exterior needing the tonemapper's +8 EV -- an HDR buffer written
 # straight out looks black with a few coloured bulbs, which reads as a broken render and is not one.
+# VR_CAPTURE_RAW=1 captures the estimator's UNDENOISED HDR output instead of the shipped image,
+# with no denoiser, tonemapper or TAA in the path. That is what isolates the estimator when comparing
+# two builds: everything downstream is removed, and the instability metric normalises by mean
+# brightness, so the two builds' different exposure handling cancels.
+if vr.env_bool("VR_CAPTURE_RAW", False):
+    tm = restir + ".accumulated_color"
+# VR_CAPTURE_DENOISED=1 captures the DENOISER's HDR output, before the tonemapper and TAA.
+# Needed to compare against another build whose tonemapper differs: the LDR metric otherwise
+# measures the transfer curve (Linear + autoExposure vs a fixed +8 EV) as much as the denoiser.
+if vr.env_bool("VR_CAPTURE_DENOISED", False):
+    tm = out
 g.markOutput(tm)
 m.addGraph(g)
 m.resizeSwapChain(RENDER[0], RENDER[1])
