@@ -152,3 +152,42 @@ mean-normalised absolute difference is dominated by a handful of firefly pixels 
 bulk of the image. Applying the same fixed tonemap to both before measuring exposed a 2-4x gap.
 **Do not measure temporal stability on raw HDR** -- compress it first, identically for every
 configuration being compared.
+
+## RETRACTION: every legacy-vs-v8 number above is INVALID
+
+The legacy build renders bistro but **not the GVDB smoke plume**. Confirmed by eye and by structural
+correlation against the v8 raw capture at the same orbit frame: 0.7597, with the plume simply absent
+from the legacy image while it dominates v8's.
+
+That invalidates the comparisons, and explains them in exactly the wrong direction:
+
+* "legacy is 2-4x more stable" -- the noisiest, most temporally unstable element in the scene was
+  missing from its frames;
+* "legacy is 82% sharper" -- no large soft blurry plume covering a third of the frame;
+* "the difference is in the OptiX pass" -- the two passes were being fed different scenes;
+* the framing that looked shifted was the plume covering different regions, not a camera difference.
+  The cameras are in fact identical: focalLength 35, frameHeight 24, aspect 1.7778 in both, verified
+  by printing them from the legacy build.
+
+The only surviving result is that the two estimators produce statistically identical noise
+(per-pixel 739.07 vs 739.63) -- and even that was measured on scenes whose volumes differ, so it
+should be re-run once the volume works.
+
+### What was tried, and did not fix it
+
+* `gvdb.dll` is present next to the legacy binary.
+* The GVDB **PTX kernels** were missing (`cuda_gvdb_module.ptx`, `cuda_gvdb_copydata.ptx`), which v8's
+  output has. Copied them in from `legacy/GVDBConverter/`. No change.
+* The legacy script passes a bare `dataFile="smoke-plume-2"` resolved through the media path, while v8
+  passes a full path. Substituting the full path changed nothing.
+* The log contains **zero** GVDB mentions -- not an error, nothing at all -- so the failure is silent.
+
+Most likely remaining cause is the CUDA version: `.packman/CUDA_13.0` is a junction to the installed
+CUDA **12.8**, and GVDB is a CUDA library loading PTX at runtime. That is the one deviation in this
+build that sits directly under GVDB.
+
+### The lesson, which cost the most here
+
+I compared two builds for six rounds without ever checking that they were rendering the same image.
+A single frame-0 sanity check -- the one I eventually ran -- would have caught it immediately. Before
+comparing any metric between two builds, verify they agree on a frame where they should be identical.
