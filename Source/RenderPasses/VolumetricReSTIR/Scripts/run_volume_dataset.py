@@ -20,8 +20,9 @@ NAME = os.environ.get("VR_DATASET", "firePlume")
 
 ds = vp.get_dataset(NAME)
 if os.environ.get("VR_NUM_FRAMES"):
-    ds = dict(ds, num_frames=int(os.environ["VR_NUM_FRAMES"]))
-frames = vp.frame_numbers(ds)
+    # A true override: also drops any playback_frames cap, so the VRAM ceiling can be probed.
+    ds = dict(ds, num_frames=int(os.environ["VR_NUM_FRAMES"]), playback_frames=None)
+frames = vp.playback_frame_numbers(ds)
 out_dir = DATA_DIR / NAME
 prefix = ds["file_pattern"].split("{")[0]
 

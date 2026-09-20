@@ -131,6 +131,27 @@ class TestPlacement(unittest.TestCase):
         self.assertEqual(vp.placement_frame([100]), 100)
 
 
+class TestPlaybackFrames(unittest.TestCase):
+    """addGVDBVolumeSequence uploads every frame up front, so a window that ingests fine can
+    still exceed VRAM at playback. Measured on an 8 GB RTX 5070: dustShockwave at 677 MB/frame
+    plays 16 frames and dies with DXGI_ERROR_DEVICE_REMOVED at 24."""
+
+    def test_playback_cap_limits_the_window(self):
+        ds = dict(vp.get_dataset("dustShockwave"), playback_frames=16)
+        frames = vp.playback_frame_numbers(ds)
+        self.assertEqual(len(frames), 16)
+        self.assertEqual(frames[0], ds["start_frame"])
+
+    def test_without_a_cap_playback_uses_the_whole_window(self):
+        ds = vp.get_dataset("firePlume")
+        self.assertEqual(len(vp.playback_frame_numbers(ds)), len(vp.frame_numbers(ds)))
+
+    def test_ingest_is_unaffected_by_the_playback_cap(self):
+        """The cap is a GPU limit, not an ingest limit: all 32 frames still get baked."""
+        ds = dict(vp.get_dataset("dustShockwave"), playback_frames=16)
+        self.assertEqual(len(vp.frame_numbers(ds)), 32)
+
+
 class TestEncodeVideo(unittest.TestCase):
     def setUp(self):
         import encode_video

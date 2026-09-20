@@ -73,6 +73,20 @@ def frame_numbers(dataset) -> list:
     return list(range(start, start + dataset["num_frames"]))
 
 
+def playback_frame_numbers(dataset) -> list:
+    """Frames to PLAY, which can be fewer than the frames ingested.
+
+    addGVDBVolumeSequence uploads every frame's GPU resources up front, so a window that bakes
+    fine can still exceed VRAM at playback. Measured on an 8 GB RTX 5070 Laptop: dustShockwave
+    at 677 MB/frame plays 16 frames and dies with DXGI_ERROR_DEVICE_REMOVED at 24, while
+    firePlume at 334 MB/frame plays all 32. An optional "playback_frames" key caps playback
+    without touching the ingest window, so the extra bakes stay on disk for a larger GPU.
+    """
+    frames = frame_numbers(dataset)
+    cap = dataset.get("playback_frames")
+    return frames[:cap] if cap else frames
+
+
 def source_frame_path(dataset, frame, repo_root) -> Path:
     name = dataset["file_pattern"].format(frame=frame)
     return Path(repo_root) / dataset["source_dir"] / name
