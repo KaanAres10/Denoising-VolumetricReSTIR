@@ -445,11 +445,15 @@ int main(int argc, char** argv)
 
 - [ ] **Step 2: Build it**
 
-Run from a Visual Studio x64 developer prompt at the repo root:
+`cl` is not on PATH, but VS2022 Community is installed, so invoke it through `vcvars64.bat`.
+Run from the repo root:
 
+```bash
+cmd //c '"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" && cl /std:c++17 /EHsc /MD /I external\packman\deps\include Source\Tools\VDBPrep\VDBPrep.cpp /link /OUT:Denoising-VolumetricReSTIR\GVDBConverter\VDBPrep.exe external\packman\deps\lib\openvdb.lib'
 ```
-cl /std:c++17 /EHsc /MD /I external\packman\deps\include Source\Tools\VDBPrep\VDBPrep.cpp external\packman\deps\lib\openvdb.lib /Fe:Denoising-VolumetricReSTIR\GVDBConverter\VDBPrep.exe
-```
+
+If the link fails on unresolved OpenVDB symbols, the deps build may need `/DOPENVDB_DLL`; add it
+to the compile flags and retry before changing anything else.
 
 Expected: `VDBPrep.exe` appears next to `GVDBBake.exe`, where `openvdb.dll` is already resolvable.
 
