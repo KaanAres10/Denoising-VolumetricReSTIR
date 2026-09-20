@@ -50,6 +50,53 @@ Mogwai.exe --script Source/RenderPasses/VolumetricReSTIR/Scripts/run_bunny_cloud
 
 Edit `DATA_DIR` in the script to point at your scene data.
 
+## Adding a new volume dataset
+
+External VDB sequences (e.g. the CC0 JangaFX EmberGen packs) are ingested through a
+manifest-driven pipeline rather than by hand. Add an entry to
+[`Scripts/datasets.json`](Scripts/datasets.json), then:
+
+```
+python Scripts/ingest_vdb_sequence.py <dataset>          # VDBPrep -> gImportVDB -> GVDBBake
+VR_DATASET=<dataset> Mogwai.exe --script Scripts/run_volume_dataset.py       # play it back
+VR_DATASET=<dataset> Mogwai.exe --script Scripts/capture_sequence.py         # capture PNGs
+python -c "import encode_video; encode_video.encode('shots/<dataset>', 'shots/<dataset>.mp4')"
+```
+
+Ingest is resumable: it bakes to `<frame>.bin.part` and renames on success, so an interrupted
+run never leaves a truncated `.bin` that a later run would skip as finished. It deletes the
+`.vbx` intermediates (reproducible from source) and writes the measured `baked` values back into
+the manifest. Derived cost is roughly **7.7x** the source frame, so budget accordingly.
+
+Derivable values are not hand-tuned. [`Scripts/vdb_pipeline.py`](Scripts/vdb_pipeline.py) parses
+the bake header and computes placement and density; it is unit tested against the bakes already
+on disk (`python -m unittest discover -s Scripts/tests`).
+
+Five things that are easy to get wrong, all learned the hard way:
+
+- **`gImportVDB` resolves both its CUDA module and its output folder against the working
+  directory.** Those pull in opposite directions, so it must run from its own directory and have
+  its output moved.
+- **`VDBPrep.exe` must live in Falcor's `bin/Release`, never beside `GVDBBake.exe`.** That folder
+  ships the 2021 GVDB-era `openvdb.dll`, and Windows searches the executable's own directory
+  first — it would load exactly the OpenVDB whose ABI conflict the prebake design avoids.
+- **`worldTranslation` is the volume's CENTRE, not its min corner.** The scene matrix alone reads
+  as a min corner, but GVDB's per-volume `xform` already centres the grid and the two compose.
+- **`densityScale` cannot be copied between datasets.** Optical thickness is
+  `densityScale / worldScaling`, and it also scales with the grid's own density values, so a
+  dataset whose max density differs from the reference needs `density_scale_ref` adjusted too.
+- **The emission channel needs a rename.** EmberGen calls it `flames`, and GVDB's loader skips a
+  `flames` grid that is not first in the file; `VDBPrep` renames it to `temperature`. Values are
+  untouched — the Kelvin mapping is a runtime affine transform, so fire colour is tunable in the
+  manifest without re-baking.
+
+**Known limitations of these datasets.** Neither EmberGen pack ships velocity grids, so they run
+with `hasVelocity=false` and get no velocity-based temporal reprojection — unlike `fire115`.
+Treat that as a confound when comparing denoiser results across these scenes and that one. Also
+see the open emission defect in
+[the design spec](../../../docs/superpowers/specs/2026-09-20-volumetric-dataset-pipeline-design.md):
+final radiance is near-invariant to `LeScale`, so the fire does not yet read as fire.
+
 ## Denoisers
 
 The three research denoisers are ported and build/run against Falcor 8.0. Chain any of them after
@@ -183,6 +230,47 @@ Everything above is **estimator-neutral except camera jitter**:
   reservoirs were generated on jittered rays); and on Bistro the fixed and unfixed configurations
   converge to *different* images (difference asymptotes rather than decaying with sample count),
   which is the signature of one of them being biased.
+- **Temporal reuse is biased while the camera moves**, at thin medium. `TemporalReuse.cs.slang` picks
+  last frame's pixel from the canonical sample's own depth when that sample scattered in the medium,
+  so the temporal neighbour depends on the sample, and the Talbot weights (which assume it does not)
+  stop summing to one. A still camera maps every choice to the same pixel, so a static bias test
+  cannot see it; under motion, parallax sends medium and surface to different pixels. Bistro,
+  stop-and-go path, scene animation frozen, 8 seeds against a 256-frame temporal-reuse-off truth at
+  the same pose -- the medium's own light (`volumeColor`):
+
+  | | thin medium (1-30% coverage) | silhouette (30-90%) | deep |
+  |---|---|---|---|
+  | moving, as shipped | **0.60** | **0.80** | 0.99 |
+  | still | 0.99 | 1.01 | 1.00 |
+  | moving, `mTemporalReprojectIndependent` | 0.99 | 1.00 | 1.00 |
+  | still, `mTemporalReprojectIndependent` | 1.01 | 1.02 | 1.00 |
+
+  That reference (temporal reuse off, 256 frames at the same pose) is itself within 1% of brute-force
+  volumetric path tracing there -- thin 1.009, edge 0.994, deep 1.027 against `mUseReference`, 256
+  frames x 4 spp. The repo's static bias tests cannot see any of this: with a still camera every depth
+  reprojects to the same pixel, so the dependence disappears.
+
+  `mTemporalReprojectIndependent` (default **off**; `VR_TR_INDEPENDENT=1` in `vr_graph`) draws the
+  point from the pixel alone -- the surface with probability T, else a point by density, as the
+  surface-sample branch already did. Off is byte-identical to before. Cost: +0.06 ms (temporal reuse,
+  960x540; +0.28 ms at 1080p), and ~1.7-2x the per-pixel noise at a moving silhouette, where the
+  history now matches less often; still frames and deep medium are unchanged.
+
+  `mTemporalReprojectByLightShare` (`VR_TR_LIGHT_SHARE=1`, needs the switch above) follows the surface
+  with its share of the pixel's LIGHT instead of T -- the guides' light-share statistics, read from last
+  frame, so the neighbour still does not depend on this frame's sample. It buys back part of that noise
+  (medium light at a moving silhouette 1.08 -> 0.89 of the true light, thin medium 1.76 -> 1.62, against
+  0.65 / 0.90 as shipped; in the TOTAL light, edge 0.90 -> 0.84 and thin 0.72 -> 0.70, against
+  0.82 / 0.68) and keeps the correction (moving 1.03 thin / 1.00 edge). The statistics pass, which
+  otherwise only runs for the guides, then runs whenever this is on. With no reprojection at all (another
+  neighbour that cannot depend on the sample) the loss also mostly goes -- 0.98 / 0.98 moving with
+  `mTemporalReprojectionMode = kReprojectionNone`, which is a shipped setting and needs no code change
+  at all. That pins the cause on the dependence rather than on temporal reuse as such, and it is a
+  usable fallback: it blotches less on screen than either switch, at the price of deep medium, which
+  loses motion compensation entirely (noise 0.73 against 0.53 of the true light). Beware that an orbit
+  centred on the medium flatters it -- the medium barely moves on screen there, so "the same pixel" is
+  nearly right for it; a pan is untested. Shortening the history cap instead (10x -> 2x) only halves the
+  loss (0.77 / 0.92) and costs noise in every frame, still ones included.
 
 ### Note on the previous-frame matrices (transpose)
 
