@@ -230,47 +230,6 @@ Everything above is **estimator-neutral except camera jitter**:
   reservoirs were generated on jittered rays); and on Bistro the fixed and unfixed configurations
   converge to *different* images (difference asymptotes rather than decaying with sample count),
   which is the signature of one of them being biased.
-- **Temporal reuse is biased while the camera moves**, at thin medium. `TemporalReuse.cs.slang` picks
-  last frame's pixel from the canonical sample's own depth when that sample scattered in the medium,
-  so the temporal neighbour depends on the sample, and the Talbot weights (which assume it does not)
-  stop summing to one. A still camera maps every choice to the same pixel, so a static bias test
-  cannot see it; under motion, parallax sends medium and surface to different pixels. Bistro,
-  stop-and-go path, scene animation frozen, 8 seeds against a 256-frame temporal-reuse-off truth at
-  the same pose -- the medium's own light (`volumeColor`):
-
-  | | thin medium (1-30% coverage) | silhouette (30-90%) | deep |
-  |---|---|---|---|
-  | moving, as shipped | **0.60** | **0.80** | 0.99 |
-  | still | 0.99 | 1.01 | 1.00 |
-  | moving, `mTemporalReprojectIndependent` | 0.99 | 1.00 | 1.00 |
-  | still, `mTemporalReprojectIndependent` | 1.01 | 1.02 | 1.00 |
-
-  That reference (temporal reuse off, 256 frames at the same pose) is itself within 1% of brute-force
-  volumetric path tracing there -- thin 1.009, edge 0.994, deep 1.027 against `mUseReference`, 256
-  frames x 4 spp. The repo's static bias tests cannot see any of this: with a still camera every depth
-  reprojects to the same pixel, so the dependence disappears.
-
-  `mTemporalReprojectIndependent` (default **off**; `VR_TR_INDEPENDENT=1` in `vr_graph`) draws the
-  point from the pixel alone -- the surface with probability T, else a point by density, as the
-  surface-sample branch already did. Off is byte-identical to before. Cost: +0.06 ms (temporal reuse,
-  960x540; +0.28 ms at 1080p), and ~1.7-2x the per-pixel noise at a moving silhouette, where the
-  history now matches less often; still frames and deep medium are unchanged.
-
-  `mTemporalReprojectByLightShare` (`VR_TR_LIGHT_SHARE=1`, needs the switch above) follows the surface
-  with its share of the pixel's LIGHT instead of T -- the guides' light-share statistics, read from last
-  frame, so the neighbour still does not depend on this frame's sample. It buys back part of that noise
-  (medium light at a moving silhouette 1.08 -> 0.89 of the true light, thin medium 1.76 -> 1.62, against
-  0.65 / 0.90 as shipped; in the TOTAL light, edge 0.90 -> 0.84 and thin 0.72 -> 0.70, against
-  0.82 / 0.68) and keeps the correction (moving 1.03 thin / 1.00 edge). The statistics pass, which
-  otherwise only runs for the guides, then runs whenever this is on. With no reprojection at all (another
-  neighbour that cannot depend on the sample) the loss also mostly goes -- 0.98 / 0.98 moving with
-  `mTemporalReprojectionMode = kReprojectionNone`, which is a shipped setting and needs no code change
-  at all. That pins the cause on the dependence rather than on temporal reuse as such, and it is a
-  usable fallback: it blotches less on screen than either switch, at the price of deep medium, which
-  loses motion compensation entirely (noise 0.73 against 0.53 of the true light). Beware that an orbit
-  centred on the medium flatters it -- the medium barely moves on screen there, so "the same pixel" is
-  nearly right for it; a pan is untested. Shortening the history cap instead (10x -> 2x) only halves the
-  loss (0.77 / 0.92) and costs noise in every frame, still ones included.
 
 ### Note on the previous-frame matrices (transpose)
 
