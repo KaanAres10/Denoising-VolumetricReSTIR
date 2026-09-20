@@ -31,7 +31,7 @@
     "has_emission": false,
     "medium": {
       "sigma_a": [4, 4, 4], "sigma_s": [16, 16, 16], "g": 0.0,
-      "density_scale_ref": 0.1,
+      "density_scale_ref": 0.45,
       "le_scale": 1.0, "temperature_cutoff": 0.0, "temperature_scale": 0.0
     },
     "placement": { "centre": [0.77, 2.43, 0.67], "target_height": 1.5 },

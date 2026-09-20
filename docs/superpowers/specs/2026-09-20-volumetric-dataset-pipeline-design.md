@@ -245,6 +245,45 @@ after an hour of baking.
 files at the repo root; a stray `git add -A` would attempt to commit them. Both are added to
 `.gitignore` as the first task of implementation.
 
+## Verification results
+
+### V1 — per-frame rebasing (R1): partially confirmed, mitigated, not a stop
+
+Measured on dustShockwave frames 60 and 91, imported at 4 mips and baked:
+
+| Frame | `bmin` | `bmax` | extent | max density |
+|---|---|---|---|---|
+| 0060 | (0, 0, 0) | (801, 796, 140) | 801 x 796 x 140 | 0.099976 |
+| 0091 | (0, 0, 0) | (949, 934, 137) | 949 x 934 x 137 | 0.099976 |
+
+Two findings, and they point in opposite directions.
+
+**The extents do grow** — about 18% in X and Y over 31 frames, flat in Z, which is exactly the
+radially expanding ground shockwave the source implies. GVDB does not clamp every frame to one
+box, so R1 as originally stated is dismissed and the sequence will visibly expand.
+
+**But `bmin` is rebased to the origin on every frame.** Each frame's local space starts at the
+corner of its own active bounding box, and `addGVDBVolumeSequence` accepts a single
+`worldTranslation` for the whole sequence (`SceneGVDB.cpp:1001`), which the transform treats as
+the min corner. A fixed translation therefore anchors the growing disc at one corner: it expands
+toward +X/+Y rather than symmetrically about its centre.
+
+The drift is bounded and small. Deriving placement from the **middle** frame of the window rather
+than the first splits the error either side of centre, leaving roughly +/-4.5% of the volume's
+own width across the 32-frame window — around 0.13 world units on a volume about 1.5 units
+across. Visible only if looked for, and the genuine expansion still reads correctly. Removing it
+entirely would need a per-frame transform in Falcor, which is out of proportion to the benefit.
+
+**Decision: proceed.** Placement is derived from the middle frame of the window.
+
+### Density: the dust dataset is much thinner than the reference
+
+`max_density` is 0.099976 on both dust frames, against 0.4590 for fire115 and 0.7192 for
+firePlume. Deriving `densityScale` from world scaling alone would leave the dust nearly
+invisible, because optical depth scales with the density values themselves as well as with
+`densityScale / worldScaling`. Its `density_scale_ref` is therefore set relative to the reference
+distribution (`0.1 x 0.459 / 0.0999 ~= 0.45`) and confirmed against a render in Task 7.
+
 ## Out of scope
 
 - The scene-parameterised denoiser comparison matrix. `compare_denoisers_plume.py` stays
