@@ -131,5 +131,33 @@ class TestPlacement(unittest.TestCase):
         self.assertEqual(vp.placement_frame([100]), 100)
 
 
+class TestEncodeVideo(unittest.TestCase):
+    def setUp(self):
+        import encode_video
+        self.ev = encode_video
+
+    def test_orders_frames_by_trailing_index_not_lexically(self):
+        """Mogwai writes <base>.<pass>.<output>.<frame>.png with STRIDED frame numbers, so a
+        printf pattern cannot address them and a lexical sort puts .128. before .32."""
+        names = ["frame.ToneMapper.dst.128.png", "frame.ToneMapper.dst.32.png",
+                 "frame.ToneMapper.dst.64.png"]
+        self.assertEqual([Path(p).name for p in self.ev.sort_frames(names)],
+                         ["frame.ToneMapper.dst.32.png", "frame.ToneMapper.dst.64.png",
+                          "frame.ToneMapper.dst.128.png"])
+
+    def test_missing_ffmpeg_raises_rather_than_silently_doing_nothing(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "frame.ToneMapper.dst.1.png").write_bytes(b"x")
+            with self.assertRaises(RuntimeError):
+                self.ev.encode(d, Path(d) / "out.mp4", 24, ffmpeg="definitely_not_ffmpeg")
+
+    def test_no_frames_raises(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError):
+                self.ev.encode(d, Path(d) / "out.mp4", 24)
+
+
 if __name__ == "__main__":
     unittest.main()
