@@ -38,10 +38,16 @@
 
 /VolumetricReSTIRData/
 
+# Source VDB sequences (JangaFX EmberGen, CC0). Multi-GB, kept locally only.
+/FirePlumeVDB/
+/DustShockwaveVDB/
+
 # Manually vendored DLSS SDK (github.com/NVIDIA/DLSS v310.7.0) -- the only source of Ray
 # Reconstruction, since packman ships Super Resolution only. ~106 MB of binaries, so not tracked.
 # See Source/RenderPasses/DLSSPass/README.md for the exact fetch command.
 /external/dlss-310/
+# 310.9.1, same layout and fetch as dlss-310 with --branch v310.9.1. Ships RR2 (render preset F). ~111 MB.
+/external/dlss-310.9.1/
 # NRD v4, built from source (see Source/RenderPasses/NRDPass/README.md). ~10 MB of binaries.
 /external/nrd-4/
 /external/dlss-legacy-37/

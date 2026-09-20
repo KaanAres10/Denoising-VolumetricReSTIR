@@ -1,0 +1,44 @@
+{
+  "firePlume": {
+    "source_dir": "FirePlumeVDB/fire_plume/fire_plume_VDB",
+    "file_pattern": "firePlume_{frame:04d}.vdb",
+    "start_frame": 100,
+    "num_frames": 32,
+    "num_mips": 4,
+    "grid_renames": { "flames": "temperature" },
+    "has_velocity": false,
+    "has_emission": true,
+    "medium": {
+      "sigma_a": [6, 6, 6], "sigma_s": [14, 14, 14], "g": 0.0,
+      "density_scale_ref": 0.1,
+      "le_scale": 1.0, "temperature_cutoff": 0.05, "temperature_scale": 2800.0
+    },
+    "placement": { "centre": [0.77, 2.43, 0.67], "target_height": 1.5 },
+    "provenance": {
+      "source": "JangaFX EmberGen free VDB animations",
+      "url": "https://jangafx.com/software/embergen/download/free-vdb-animations/",
+      "licence": "CC0-1.0"
+    }
+  },
+  "dustShockwave": {
+    "source_dir": "DustShockwaveVDB/DustShockwave/DustShockwaveVDB",
+    "file_pattern": "dustshockwave_{frame:04d}.vdb",
+    "start_frame": 60,
+    "num_frames": 32,
+    "num_mips": 4,
+    "grid_renames": {},
+    "has_velocity": false,
+    "has_emission": false,
+    "medium": {
+      "sigma_a": [4, 4, 4], "sigma_s": [16, 16, 16], "g": 0.0,
+      "density_scale_ref": 0.1,
+      "le_scale": 1.0, "temperature_cutoff": 0.0, "temperature_scale": 0.0
+    },
+    "placement": { "centre": [0.77, 2.43, 0.67], "target_height": 1.5 },
+    "provenance": {
+      "source": "JangaFX EmberGen free VDB animations",
+      "url": "https://jangafx.com/software/embergen/download/free-vdb-animations/",
+      "licence": "CC0-1.0"
+    }
+  }
+}
