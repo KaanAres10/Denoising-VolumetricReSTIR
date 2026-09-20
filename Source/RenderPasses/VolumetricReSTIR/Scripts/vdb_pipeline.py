@@ -89,6 +89,42 @@ def estimate_window_bytes(dataset, repo_root) -> int:
     return int(sum(sizes) / len(sizes) * len(frames) * DERIVED_BYTES_PER_SOURCE_BYTE)
 
 
+REFERENCE_WORLD_SCALING = 0.013     # fire115, the tuned reference
+
+
+def derive_placement(extent, centre, target_height):
+    """Return (worldScaling, worldTranslation) to put a volume of `extent` voxels at `centre`.
+
+    worldTranslation behaves as the volume's CENTRE, not its min corner. Reading
+    computeVolumeExternalModelToWorldMatrix (SceneGVDB.cpp:219) alone suggests min corner -- it is
+    T*R*S over local coords starting at the origin -- but GVDB's own per-volume xform already
+    centres the grid, so the two compose to a centre. Measured at runtime: passing
+    translation (0.0153, 1.68, 0.538) for an 801x796x140 volume at scale 0.0018844 makes Falcor
+    log worldBB min(-0.735, 0.958, 0.360), i.e. translation minus half the scaled extent.
+
+    Only the scale is derived here; the translation passes straight through.
+    """
+    scale = target_height / extent[1]
+    return scale, tuple(float(c) for c in centre)
+
+
+def derive_density_scale(density_scale_ref, scale, reference_scale=REFERENCE_WORLD_SCALING):
+    """Optical thickness is densityScale/worldScaling (SceneGVDB.cpp:624), so a volume placed at a
+    different world scale needs densityScale rescaled or it changes thickness."""
+    return density_scale_ref * (scale / reference_scale)
+
+
+def placement_frame(frames):
+    """Which frame's bake to derive placement from.
+
+    V1 measured that GVDB rebases every frame's local origin to (0,0,0) while its extent grows,
+    and addGVDBVolumeSequence takes a single worldTranslation, which the transform treats as the
+    min corner. Anchoring on the first frame therefore makes a growing volume expand away from
+    one corner; centring on the middle frame splits that error either side of centre.
+    """
+    return frames[len(frames) // 2]
+
+
 def write_baked_back(name, header, path=None) -> None:
     """Record measured bake results under the dataset's "baked" key. Derived data: the spec makes
     the ingest script the only writer of this key, so nobody hand-maintains it."""

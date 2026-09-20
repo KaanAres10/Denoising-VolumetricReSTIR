@@ -95,5 +95,41 @@ class TestManifest(unittest.TestCase):
             self.assertTrue(written["has_emission"])
 
 
+class TestPlacement(unittest.TestCase):
+    def test_translation_is_the_centre_not_the_min_corner(self):
+        """Pinned to observed runtime output, not to a derivation.
+
+        Passing translation (0.0153, 1.68, 0.538) for an 801x796x140 volume at scale 0.0018844
+        made Falcor log worldBB min(-0.735, 0.958, 0.360) -- translation minus HALF the scaled
+        extent. So worldTranslation is the centre and must pass through untouched.
+        """
+        extent = (801.0, 796.0, 140.0)
+        centre = (0.0, 1.686, 0.0)
+        scale, trans = vp.derive_placement(extent, centre, 1.5)
+        self.assertEqual(trans, centre)
+        observed_min = tuple(trans[i] - extent[i] * scale * 0.5 for i in range(3))
+        self.assertAlmostEqual(observed_min[0], -0.7547, places=3)
+
+    def test_scale_reproduces_the_fire115_world_scaling(self):
+        """fire115 is 114 voxels tall and was hand-tuned to worldScaling 0.013."""
+        scale, _ = vp.derive_placement((119.0, 114.0, 103.0), (0, 0, 0), 114.0 * 0.013)
+        self.assertAlmostEqual(scale, 0.013, places=6)
+
+    def test_scale_sets_the_target_height(self):
+        scale, _ = vp.derive_placement((202.0, 679.0, 456.0), (0, 0, 0), 1.5)
+        self.assertAlmostEqual(679.0 * scale, 1.5, places=6)
+
+    def test_density_scale_preserves_reference_thickness(self):
+        """densityScale/worldScaling is what the shader uses, so the ratio must be held."""
+        self.assertAlmostEqual(vp.derive_density_scale(0.1, 0.013), 0.1, places=6)
+        self.assertAlmostEqual(vp.derive_density_scale(0.1, 1.5 / 679.0), 0.017, places=3)
+
+    def test_middle_frame_is_used_for_placement(self):
+        """V1 found GVDB rebases every frame's origin, so a growing volume anchored on frame 0
+        drifts. Centring on the middle frame halves that error."""
+        self.assertEqual(vp.placement_frame([60, 61, 62, 63]), 62)
+        self.assertEqual(vp.placement_frame([100]), 100)
+
+
 if __name__ == "__main__":
     unittest.main()
