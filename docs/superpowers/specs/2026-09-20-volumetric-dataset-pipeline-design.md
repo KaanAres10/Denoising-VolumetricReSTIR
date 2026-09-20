@@ -276,6 +276,38 @@ entirely would need a per-frame transform in Falcor, which is out of proportion 
 
 **Decision: proceed.** Placement is derived from the middle frame of the window.
 
+### V2 — emission through a renamed grid (R2): dismissed, with a new defect found
+
+The rename route works, proven positively at every stage:
+
+| Check | Result |
+|---|---|
+| 2021 OpenVDB reads a file written by Falcor's modern OpenVDB | yes — grids enumerate normally |
+| `gImportVDB` produces `firePlume_0100_prepped_temperature.vbx` | yes |
+| `has_emission` round-trips through `GVDBBake` into the header | yes |
+| Slot 16 holds a real temperature field | 160x160x180 atlas, 58.1% non-zero, max 4.07, p90 0.394, p99 1.70 |
+| Emission reaches the image and lights the scene | yes — forcing every voxel above the LUT knee (`cutoff=-10, scale=1000`) shifts the plume and its surroundings by mean RGB `[81, 92, 116]` |
+
+**R2 is dismissed.** `VDBPrep` does what it was built to do.
+
+**But a separate defect surfaced, and success criterion 3 is not yet met.** No parameter set was
+found that makes the plume read as fire, because the final radiance does not scale with
+`LeScale`: holding `temperature_cutoff` and `temperature_scale` fixed and raising `LeScale` from
+1.0 to 10.0 changes the image by a mean of `[-3.02, -0.26, 0.32]` out of 255 — noise, and
+slightly negative in red. Only the LUT query mapping (`cutoff`/`scale`) visibly changes anything.
+
+The likely locus is the RIS step in `ComputeInitialSample.slang:271`, which *selects between*
+emission and in-scattering with
+`emissionRatio = lum(one_minus_albedo * Le) / (lum(one_minus_albedo * Le) + lum(albedo * Ld))`
+and then weights the chosen sample by `p_y = pathPHat * lum(sigma_a * Le)`. A uniform scale on
+`Le` appears in both the selection probability and the target function, so it can cancel — which
+matches the measurement exactly. Whether that cancellation is correct RIS behaviour or a bug in
+this fork's emission path is not established, and settling it means reading the estimator
+properly rather than turning knobs.
+
+This blocks only the *appearance* of fire. The channel is present, baked and bound, and the rest
+of the pipeline is independent of it.
+
 ### Density: the dust dataset is much thinner than the reference
 
 `max_density` is 0.099976 on both dust frames, against 0.4590 for fire115 and 0.7192 for
