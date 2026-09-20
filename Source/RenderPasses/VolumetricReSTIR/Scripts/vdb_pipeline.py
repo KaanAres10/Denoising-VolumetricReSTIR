@@ -49,3 +49,56 @@ def is_bin_complete(path) -> bool:
         return True
     except (OSError, ValueError):
         return False
+
+
+SCRIPTS_DIR = Path(__file__).resolve().parent
+MANIFEST_PATH = SCRIPTS_DIR / "datasets.json"
+DERIVED_BYTES_PER_SOURCE_BYTE = 7.7   # measured: 41 MB source -> 317 MB .bin
+
+
+def load_manifest(path=None) -> dict:
+    with open(Path(path) if path else MANIFEST_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def get_dataset(name, manifest=None) -> dict:
+    m = manifest if manifest is not None else load_manifest()
+    if name not in m:
+        raise KeyError(f"unknown dataset {name!r}; manifest has: {', '.join(sorted(m))}")
+    return m[name]
+
+
+def frame_numbers(dataset) -> list:
+    start = dataset["start_frame"]
+    return list(range(start, start + dataset["num_frames"]))
+
+
+def source_frame_path(dataset, frame, repo_root) -> Path:
+    name = dataset["file_pattern"].format(frame=frame)
+    return Path(repo_root) / dataset["source_dir"] / name
+
+
+def estimate_window_bytes(dataset, repo_root) -> int:
+    """Estimate derived cost by sampling real source frames in the window."""
+    frames = frame_numbers(dataset)
+    sample = [frames[0], frames[len(frames) // 2], frames[-1]]
+    sizes = [source_frame_path(dataset, f, repo_root).stat().st_size
+             for f in sample if source_frame_path(dataset, f, repo_root).exists()]
+    if not sizes:
+        return 0
+    return int(sum(sizes) / len(sizes) * len(frames) * DERIVED_BYTES_PER_SOURCE_BYTE)
+
+
+def write_baked_back(name, header, path=None) -> None:
+    """Record measured bake results under the dataset's "baked" key. Derived data: the spec makes
+    the ingest script the only writer of this key, so nobody hand-maintains it."""
+    p = Path(path) if path else MANIFEST_PATH
+    manifest = load_manifest(p)
+    manifest[name]["baked"] = {
+        "extent": list(header.extent),
+        "max_density": header.max_density,
+        "has_emission": header.has_emission,
+    }
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")

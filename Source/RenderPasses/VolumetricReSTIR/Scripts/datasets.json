@@ -79,6 +79,15 @@
       "source": "JangaFX EmberGen free VDB animations",
       "url": "https://jangafx.com/software/embergen/download/free-vdb-animations/",
       "licence": "CC0-1.0"
+    },
+    "baked": {
+      "extent": [
+        801.0,
+        796.0,
+        140.0
+      ],
+      "max_density": 0.0999755859375,
+      "has_emission": false
     }
   }
 }
