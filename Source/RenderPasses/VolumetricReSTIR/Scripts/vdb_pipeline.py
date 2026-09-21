@@ -4,6 +4,7 @@ Everything derivable lives here so it can be unit tested without running gImport
 GVDBBake or Mogwai. See docs/superpowers/specs/2026-09-20-volumetric-dataset-pipeline-design.md
 """
 import json
+import re
 import struct
 from pathlib import Path
 from typing import NamedTuple
@@ -153,6 +154,50 @@ def estimate_window_bytes(dataset, repo_root) -> int:
     return int(sum(sizes) / len(sizes) * len(frames) * DERIVED_BYTES_PER_SOURCE_BYTE)
 
 
+_RES_LINE = re.compile(r"^res:\s+(\d+)\s+(\d+)\s+(\d+)\s*$", re.MULTILINE)
+
+
+def parse_import_res(stdout) -> tuple:
+    """The mip0 voxel resolution from gImportVDB's stdout, or None if it printed none.
+
+    With no bake there is no .bin header to read, so this is where placement metadata comes from.
+    gImportVDB prints `res: X Y Z` once per mip as it converts; the first is mip0, and it equals
+    the bake header's bmax-bmin (verified against dustShockwave frame 60: 801 796 140 both ways).
+    """
+    m = _RES_LINE.search(str(stdout))
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3))) if m else None
+
+
+def expected_vbx_names(stem, num_mips) -> list:
+    """Every .vbx gImportVDB writes for one frame: each mip in both the normal family and the
+    conservative one ("c" suffix), which SceneGVDB loads into slots N and N+kNumMaxMips."""
+    return [f"{stem}_mip{m}{suffix}.vbx" for m in range(num_mips) for suffix in ("", "c")]
+
+
+def vbx_complete(vbx_dir, stem, num_mips) -> bool:
+    """The integrity gate for a resumable import, replacing is_bin_complete.
+
+    A frame counts as done only when every expected .vbx exists and is non-empty. An import killed
+    part way leaves some of them absent, and without this a later run would skip the frame as
+    finished -- the same trap the baked pipeline had.
+    """
+    vbx_dir = Path(vbx_dir)
+    for name in expected_vbx_names(stem, num_mips):
+        p = vbx_dir / name
+        if not p.exists() or p.stat().st_size == 0:
+            return False
+    return True
+
+
+def imported_extent(dataset) -> tuple:
+    """The mip0 extent recorded by ingest. Raises if the dataset was never ingested."""
+    imported = dataset.get("imported")
+    if not imported or "extent" not in imported:
+        raise KeyError(
+            "dataset has no 'imported' metadata; run ingest_vdb_sequence.py for it first")
+    return tuple(float(v) for v in imported["extent"])
+
+
 REFERENCE_WORLD_SCALING = 0.013     # fire115, the tuned reference
 
 
@@ -189,18 +234,17 @@ def placement_frame(frames):
     return frames[len(frames) // 2]
 
 
-def write_baked_back(name, header, path=None) -> None:
-    """Record measured bake results under the dataset's "baked" key. Derived data: the spec makes
-    the ingest script the only writer of this key, so nobody hand-maintains it."""
+def write_imported_back(name, extent, path=None) -> None:
+    """Record the mip0 extent measured during import under the dataset's "imported" key.
+
+    Derived data: ingest is the only writer, so nobody hand-maintains it. Replaces the old
+    "baked" key, which was read out of a .bin header that no longer exists.
+    """
     p = Path(path) if path else MANIFEST_PATH
     manifest = load_manifest(p)
-    manifest[name]["baked"] = {
-        "extent": list(header.extent),
-        "max_density": header.max_density,
-        "has_emission": header.has_emission,
-    }
+    manifest[name]["imported"] = {"extent": [float(v) for v in extent]}
     # Write-then-replace: datasets.json is tracked, and truncating it in place means a Ctrl-C at
-    # the end of an hour-long ingest can leave it empty.
+    # the end of a long ingest can leave it empty.
     tmp = p.with_suffix(".json.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

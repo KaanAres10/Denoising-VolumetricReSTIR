@@ -40,14 +40,12 @@
       "url": "https://jangafx.com/software/embergen/download/free-vdb-animations/",
       "licence": "CC0-1.0"
     },
-    "baked": {
+    "imported": {
       "extent": [
         204.0,
-        701.0,
-        463.0
-      ],
-      "max_density": 0.7783203125,
-      "has_emission": true
+        703.0,
+        462.0
+      ]
     }
   },
   "dustShockwave": {
@@ -89,15 +87,13 @@
       "url": "https://jangafx.com/software/embergen/download/free-vdb-animations/",
       "licence": "CC0-1.0"
     },
-    "baked": {
+    "playback_frames": 16,
+    "imported": {
       "extent": [
+        808.0,
         801.0,
-        796.0,
         140.0
-      ],
-      "max_density": 0.0999755859375,
-      "has_emission": false
-    },
-    "playback_frames": 16
+      ]
+    }
   }
 }

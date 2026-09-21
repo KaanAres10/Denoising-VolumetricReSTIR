@@ -26,16 +26,16 @@ frames = vp.playback_frame_numbers(ds)
 out_dir = DATA_DIR / NAME
 prefix = ds["file_pattern"].split("{")[0]
 
-# Placement is derived from the middle frame, not the first: V1 measured that GVDB rebases every
-# frame's origin to zero while the extent grows, so anchoring on frame 0 makes a growing volume
-# expand away from one corner.
-pframe = vp.placement_frame(frames)
-header = vp.read_baked_header(out_dir / f"{prefix}{pframe:04d}.bin")
-scale, trans = vp.derive_placement(header.extent, ds["placement"]["centre"],
+# Extent comes from the manifest, recorded by ingest from gImportVDB's own output -- there is no
+# .bin header to read any more. Ingest records the frame playback derives placement from (the
+# middle of the window), because V1 measured that GVDB rebases every frame's origin to zero while
+# the extent grows, so anchoring on frame 0 makes a growing volume expand away from one corner.
+extent = vp.imported_extent(ds)
+scale, trans = vp.derive_placement(extent, ds["placement"]["centre"],
                                    ds["placement"]["target_height"])
 density = vp.derive_density_scale(ds["medium"]["density_scale_ref"], scale)
-print(f"[{NAME}] placement frame={pframe} extent={header.extent} scale={scale:.6g} "
-      f"density={density:.6g} emission={header.has_emission} frames={len(frames)}")
+print(f"[{NAME}] extent={extent} scale={scale:.6g} "
+      f"density={density:.6g} emission={ds['has_emission']} frames={len(frames)}")
 
 m.loadScene(str(DATA_DIR / "default.obj"))
 m.scene.setEnvMap(str(DATA_DIR / "hansaplatz_8k.hdr"))

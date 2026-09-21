@@ -109,18 +109,63 @@ class TestManifest(unittest.TestCase):
         d_full = vp.estimate_window_bytes(dict(dust, num_frames=32), REPO)
         self.assertGreater(d_full / d_half, 2.0)
 
-    def test_write_baked_back_records_measured_values(self):
-        """The ingest script is the only writer of "baked"; never hand-maintained."""
-        import json, shutil, tempfile
+    def test_write_imported_back_records_the_measured_extent(self):
+        """The ingest script is the only writer of "imported"; never hand-maintained."""
+        import json, shutil
         with tempfile.TemporaryDirectory() as d:
             copy = Path(d) / "datasets.json"
             shutil.copy(vp.MANIFEST_PATH, copy)
-            h = vp.BakedHeader(4, True, False, 0.719238, (202.0, 679.0, 456.0))
-            vp.write_baked_back("firePlume", h, path=copy)
-            written = json.load(open(copy))["firePlume"]["baked"]
-            self.assertEqual(written["extent"], [202.0, 679.0, 456.0])
-            self.assertAlmostEqual(written["max_density"], 0.719238, places=6)
-            self.assertTrue(written["has_emission"])
+            vp.write_imported_back("firePlume", (204.0, 701.0, 463.0), path=copy)
+            written = json.load(open(copy))["firePlume"]["imported"]
+            self.assertEqual(written["extent"], [204.0, 701.0, 463.0])
+
+
+class TestImportedMetadata(unittest.TestCase):
+    """With the bake gone there is no .bin header to read, so placement metadata comes from
+    gImportVDB's own stdout, which prints `res: X Y Z` once per mip (mip0 first)."""
+
+    SAMPLE = """Starting GVDB.
+   Grid: density
+   Loading Grid: density
+res: 801 796 140
+res: 803 798 142
+res: 401 399 71
+  Saving VBX (ver 1.12)
+"""
+
+    def test_parses_mip0_resolution(self):
+        self.assertEqual(vp.parse_import_res(self.SAMPLE), (801.0, 796.0, 140.0))
+
+    def test_returns_none_when_no_res_line(self):
+        self.assertIsNone(vp.parse_import_res("Starting GVDB.\nCannot find vdb file.\n"))
+
+    def test_imported_extent_reads_the_manifest(self):
+        ds = dict(vp.get_dataset("firePlume"), imported={"extent": [204.0, 701.0, 463.0]})
+        self.assertEqual(vp.imported_extent(ds), (204.0, 701.0, 463.0))
+
+    def test_expected_vbx_names_covers_both_families(self):
+        """The integrity gate that replaces is_bin_complete: a frame is only done when every
+        mip of both the normal and conservative families is present."""
+        names = vp.expected_vbx_names("firePlume_0100", 4)
+        self.assertEqual(len(names), 8)
+        self.assertIn("firePlume_0100_mip0.vbx", names)
+        self.assertIn("firePlume_0100_mip3c.vbx", names)
+
+    def test_vbx_complete_is_false_when_a_mip_is_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for n in vp.expected_vbx_names("f", 2)[:-1]:   # all but the last
+                (d / n).write_bytes(b"x")
+            self.assertFalse(vp.vbx_complete(d, "f", 2))
+            (d / vp.expected_vbx_names("f", 2)[-1]).write_bytes(b"x")
+            self.assertTrue(vp.vbx_complete(d, "f", 2))
+
+    def test_imported_extent_fails_loudly_when_never_ingested(self):
+        ds = dict(vp.get_dataset("firePlume"))
+        ds.pop("imported", None)
+        with self.assertRaises(KeyError) as ctx:
+            vp.imported_extent(ds)
+        self.assertIn("ingest", str(ctx.exception).lower())
 
 
 class TestPlacement(unittest.TestCase):
@@ -179,21 +224,21 @@ class TestPlaybackFrames(unittest.TestCase):
 
 
 class TestIngestFailurePaths(unittest.TestCase):
-    """The three failure modes the plan named as most likely to bite. Each is exercised with a
-    fake runner so no executable, GPU or multi-GB source is needed."""
+    """The failure modes the plan named as most likely to bite. Exercised with a fake runner, so
+    no executable, GPU or multi-GB source is needed."""
 
     def setUp(self):
         import ingest_vdb_sequence as ing
         self.ing = ing
-        self._saved = (ing.GIMPORT_DIR, ing.BAKE_DIR, ing.VDBPREP_DIR)
+        self._saved = (ing.GIMPORT_DIR, ing.VDBPREP_DIR)
         self._tmp = tempfile.TemporaryDirectory()
         tmp = Path(self._tmp.name)
-        ing.GIMPORT_DIR = ing.BAKE_DIR = ing.VDBPREP_DIR = tmp
+        ing.GIMPORT_DIR = ing.VDBPREP_DIR = tmp
         self.out = tmp / "out"
         self.out.mkdir()
 
     def tearDown(self):
-        self.ing.GIMPORT_DIR, self.ing.BAKE_DIR, self.ing.VDBPREP_DIR = self._saved
+        self.ing.GIMPORT_DIR, self.ing.VDBPREP_DIR = self._saved
         self._tmp.cleanup()
 
     def _ds(self, **over):
@@ -201,35 +246,44 @@ class TestIngestFailurePaths(unittest.TestCase):
         ds.update(over)
         return ds
 
+    def _fake_import(self, stem, names=None, res="res: 801 796 140"):
+        """Stand in for gImportVDB: create the staged folder with the given .vbx names."""
+        def fake(cmd, cwd, capture=False):
+            staged = self.ing.GIMPORT_DIR / stem
+            staged.mkdir(exist_ok=True)
+            for n in (names if names is not None else vp.expected_vbx_names(stem, 4)):
+                (staged / n).write_bytes(b"x")
+            return res if capture else ""
+        return fake
+
     def test_missing_source_frame_fails_loudly_naming_it(self):
         with self.assertRaises(SystemExit) as ctx:
-            self.ing.ingest_frame(self._ds(), 9999, self.out, False, False,
-                                  runner=lambda *a, **k: None)
+            self.ing.ingest_frame(self._ds(), 9999, self.out, False,
+                                  runner=lambda *a, **k: "")
         self.assertIn("9999", str(ctx.exception))
+
+    def test_incomplete_vbx_set_is_rejected(self):
+        """An import killed part way must not be accepted, or a later resume skips the frame."""
+        stem = "dustshockwave_0060"
+        partial = vp.expected_vbx_names(stem, 4)[:-1]     # one mip short
+        with self.assertRaises(SystemExit) as ctx:
+            self.ing.ingest_frame(self._ds(), 60, self.out, False,
+                                  runner=self._fake_import(stem, partial))
+        self.assertIn("missing expected .vbx", str(ctx.exception))
 
     def test_emission_without_a_temperature_grid_fails(self):
         """Otherwise the volume renders black, indistinguishable from bad emission tuning."""
-        def fake(cmd, cwd):
-            # stand in for gImportVDB: produce the vbx folder but no _temperature.vbx
-            (self.ing.GIMPORT_DIR / "dustshockwave_0060").mkdir(exist_ok=True)
+        stem = "dustshockwave_0060"
         with self.assertRaises(SystemExit) as ctx:
             self.ing.ingest_frame(self._ds(has_emission=True, grid_renames={}), 60,
-                                  self.out, False, False, runner=fake)
+                                  self.out, False, runner=self._fake_import(stem))
         self.assertIn("temperature", str(ctx.exception))
 
-    def test_an_incomplete_bake_is_rejected_and_leaves_no_bin(self):
-        """The disk-full case: GVDBBake exits 0 having written a partial file."""
-        def fake(cmd, cwd):
-            name = str(cmd[0])
-            if "gImportVDB" in name:
-                (self.ing.GIMPORT_DIR / "dustshockwave_0060").mkdir(exist_ok=True)
-            else:
-                Path(cmd[-1]).write_bytes(b"\x47\x56\x44\x42" + b"\0" * 32)  # valid magic, no body
-        with self.assertRaises(SystemExit) as ctx:
-            self.ing.ingest_frame(self._ds(), 60, self.out, False, False, runner=fake)
-        self.assertIn("not a valid bake", str(ctx.exception))
-        self.assertEqual(list(self.out.glob("*.bin")), [],
-                         "a rejected bake must not be renamed into place")
+    def test_successful_import_returns_the_mip0_extent(self):
+        stem = "dustshockwave_0060"
+        res = self.ing.ingest_frame(self._ds(), 60, self.out, False,
+                                    runner=self._fake_import(stem))
+        self.assertEqual(res, (801.0, 796.0, 140.0))
 
     def test_preflight_names_a_missing_executable(self):
         with self.assertRaises(SystemExit) as ctx:
