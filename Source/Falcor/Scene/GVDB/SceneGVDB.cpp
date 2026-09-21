@@ -226,22 +226,74 @@ namespace Falcor
         return m;
     }
 
+    void GVDBVolumeManager::ensureBlackBodyLUT()
+    {
+        if (mpBlackBodyRadiationTexture) return;
+        // 128 RGB rows, 50 K .. 6400 K, from PBRT (data/LUT). A missing file used to go unnoticed: the
+        // reads failed silently and emission came out black or garbage.
+        std::string lutPath;
+        // data/ (repo root) is deployed next to the executable by copy_data_folder; the asset resolver
+        // only searches media/, so look there too.
+        const std::filesystem::path deployed = getRuntimeDirectory() / "data" / "LUT" / "BlackBodyRadiationRGB_50K-6400K.txt";
+        if (std::filesystem::exists(deployed))
+            lutPath = deployed.string();
+        else if (!resolveDataFile("LUT/BlackBodyRadiationRGB_50K-6400K.txt", lutPath))
+        {
+            logError("GVDB: blackbody LUT 'LUT/BlackBodyRadiationRGB_50K-6400K.txt' not found; volume emission will be black.");
+            return;
+        }
+        std::ifstream f(lutPath);
+        mCPUBlackBodyRadiationTexture.clear();
+        for (int i = 0; i < 128; i++)
+        {
+            float r = 0.f, gg = 0.f, b = 0.f;
+            if (!(f >> r >> gg >> b))
+            {
+                logError("GVDB: blackbody LUT '{}' has fewer than 128 rows; volume emission will be wrong.", lutPath);
+                break;
+            }
+            mCPUBlackBodyRadiationTexture.push_back(float4(r, gg, b, 0));
+        }
+        mCPUBlackBodyRadiationTexture.resize(128, float4(0.f));
+        mpBlackBodyRadiationTexture = mpDevice->createTexture1D(128, ResourceFormat::RGBA32Float, 1, 1, mCPUBlackBodyRadiationTexture.data());
+    }
+
     uint32_t GVDBVolumeManager::addVolume(VolumeDesc& volumeDesc, AABB& sceneVolumeBB, const ref<ParameterBlock>& sceneBlock, int curFrameId,
         float3 sigma_a, float3 sigma_s, float g, const std::string& vbxFile, int numMips, float densityScale, bool hasVelocityGrid,
         bool hasEmissionGrid, float LeScale, float temperatureCutOff, float temperatureScale, float3 worldTranslation,
         float3 worldRotation, float worldScaling)
     {
-        // Prefer a pre-baked file (produced by the GVDBBake tool). This avoids loading gvdb.dll in the
-        // Falcor process, whose OpenVDB is ABI-incompatible with Falcor's. Convention: "<vbxFile>.bin".
+        // Load .vbx in-process through gvdb.dll, exactly as the Falcor 4.x fork did
+        // (its Scene::addGVDBVolume -> gvdb.LoadVBX). No prebake stage; the fork had none.
+        //
+        // This used to prefer a "<vbxFile>.bin" produced by the GVDBBake tool, on the stated grounds
+        // that gvdb.dll could not be loaded in the Falcor process because its OpenVDB is
+        // ABI-incompatible with Falcor's. That does not hold for the gvdb.dll we actually link:
+        // there are two different builds in this tree, and they are not interchangeable.
+        //
+        //   legacy/GVDBConverter/gvdb.dll          1,670,144 B  imports openvdb, tbb, blosc, Half, ...
+        //   build/.../bin/Release/gvdb.dll         1,481,728 B  imports only OpenGL, CUDA, CRT
+        //
+        // Falcor.dll has a load-time import of the second one (`dumpbin /dependents` lists both
+        // gvdb.dll and openvdb.dll), so GVDB is already resident in this process and always has been.
+        // Reading .vbx never needed OpenVDB -- only LoadVDB() does, and that stays in the separate
+        // gImportVDB process, exactly as in the fork.
+        //
+        // FALCOR_GVDB_FORCE_BAKED=1 restores the old .bin preference. Temporary, for A/B against the
+        // baked loader with one binary; goes away when the baked path is retired.
         {
-            std::string bakedPath = vbxFile + ".bin";
-            std::string resolved;
-            if (std::filesystem::exists(bakedPath))
-                return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, bakedPath, sigma_a, sigma_s, g, densityScale, LeScale,
-                    temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
-            if (resolveDataFile(bakedPath, resolved))
-                return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, resolved, sigma_a, sigma_s, g, densityScale, LeScale,
-                    temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
+            static const bool forceBaked = []{ const char* e = std::getenv("FALCOR_GVDB_FORCE_BAKED"); return e && e[0] == '1'; }();
+            if (forceBaked)
+            {
+                std::string bakedPath = vbxFile + ".bin";
+                std::string resolved;
+                if (std::filesystem::exists(bakedPath))
+                    return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, bakedPath, sigma_a, sigma_s, g, densityScale, LeScale,
+                        temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
+                if (resolveDataFile(bakedPath, resolved))
+                    return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, resolved, sigma_a, sigma_s, g, densityScale, LeScale,
+                        temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
+            }
         }
 #if defined(FALCOR_HAS_GVDB) && FALCOR_HAS_GVDB
         // Ported from the Falcor 4.x fork Scene::addGVDBVolume. Textures are created uncompressed
@@ -267,7 +319,13 @@ namespace Falcor
 
         int mipId = 0;
         ref<ParameterBlock> gvdbBlock = ParameterBlock::create(mpDevice, pReflection);
-        GVDBInfo gvdbInfo;
+        // Value-initialized: only levels below top_lev are filled in, so without this the unused
+        // levels ship uninitialized stack garbage to the GPU. Harmless in practice (nodecnt==0 and
+        // top_lev gate the traversal, so those entries are never read) but it made the live path's
+        // vdel/noderange differ from the baked path's, which memsets its whole blob -- and that
+        // difference is exactly what FALCOR_GVDB_DUMP exists to rule out. Not memset: GVDBInfo holds
+        // ref<Buffer>/ref<Texture> members, so {} is the only safe way to zero the POD arrays.
+        GVDBInfo gvdbInfo{};
 
         FALCOR_ASSERT(numMips <= kNumMaxMips);
 
@@ -324,19 +382,7 @@ namespace Falcor
                 if (mipId == 2 * kNumMaxMips)
                 {
                     gvdbParamBlocks.hasEmissionGrid = true;
-                    if (!mpBlackBodyRadiationTexture)
-                    {
-                        mCPUBlackBodyRadiationTexture.clear();
-                        std::string lutPath;
-                        resolveDataFile("LUT/BlackBodyRadiationRGB_50K-6400K.txt", lutPath);
-                        std::ifstream f(lutPath);
-                        for (int i = 0; i < 128; i++)
-                        {
-                            float r, gg, b; f >> r >> gg >> b;
-                            mCPUBlackBodyRadiationTexture.push_back(float4(r, gg, b, 0));
-                        }
-                        mpBlackBodyRadiationTexture = mpDevice->createTexture1D(128, ResourceFormat::RGBA32Float, 1, 1, mCPUBlackBodyRadiationTexture.data());
-                    }
+                    ensureBlackBodyLUT();
                 }
 
                 if (mipId == 2 * kNumMaxMips + 1) gvdbParamBlocks.hasVelocityGrid = true;
@@ -534,9 +580,37 @@ namespace Falcor
                     for (int i = 0; i < numAtlasElements; i++)
                         clampedDensity[i] = gvdb.mPool->getAtlasCPU(0)[i] / gvdb.mGridValMax < 1e-9 ? 0 : gvdb.mPool->getAtlasCPU(0)[i];
 
+                    // Density atlas compression, restored from the 4.x fork (ATLAS_COMPRESSION == 1).
+                    //
+                    // The port allocated every atlas as R32Float -- 4 bytes per voxel against the fork's 1 -- so
+                    // every density fetch moved 4x the bytes. The volume march is the inner loop of Generate
+                    // Samples, Temporal Reuse, Spatial Reuse and Final Shading alike, which is why the port
+                    // measured ~15 ms/frame slower on bistro with the cost spread across passes, not in one.
+                    //
+                    // The shader already expects this: getValueAtlasCoord() multiplies by
+                    // gvdb.densityCompressScaleFactor[mip], which the port had pinned to 1.0.
+                    const bool useTextureCompression = (mipId > 0 && mipId < (int)kNumMaxMips) || (mipId == 0 && typeId == 1);
+                    std::vector<uint8_t> compressedDensity;
+                    if (useTextureCompression && gvdb.mGridValMax > 0.f)
+                    {
+                        gvdbInfo.densityCompressScaleFactor[slotId] = gvdb.mGridValMax;
+                        compressedDensity.resize(numAtlasElements);
+                        for (int i = 0; i < numAtlasElements; i++)
+                        {
+                            float d = clampedDensity[i];
+                            int q = (int)std::round(255.0 * (d / gvdb.mGridValMax));
+                            compressedDensity[i] = (uint8_t)std::max(0, std::min(255, q));
+                            // Keep a non-zero voxel non-zero: rounding a thin density to 0 punches holes the
+                            // tracker then treats as empty space.
+                            if (compressedDensity[i] == 0 && d > 0.f && typeId == 1) compressedDensity[i] = 1;
+                        }
+                    }
+                    const bool atlasCompressed = !compressedDensity.empty();
                     if (mipId < 2 * kNumMaxMips + 1)
                     {
-                        gvdbInfo.volIn[slotId] = mpDevice->createTexture3D(atlasWidth, atlasHeight, part1Depth, ResourceFormat::R32Float, 1, clampedDensity.data(), ResourceBindFlags::ShaderResource);
+                        gvdbInfo.volIn[slotId] = atlasCompressed
+                            ? mpDevice->createTexture3D(atlasWidth, atlasHeight, part1Depth, ResourceFormat::R8Unorm, 1, compressedDensity.data(), ResourceBindFlags::ShaderResource)
+                            : mpDevice->createTexture3D(atlasWidth, atlasHeight, part1Depth, ResourceFormat::R32Float, 1, clampedDensity.data(), ResourceBindFlags::ShaderResource);
                         gvdbInfo.volIn[slotId]->setName("volIn");
                     }
                     else if (mipId == 2 * kNumMaxMips + 1)
@@ -550,7 +624,9 @@ namespace Falcor
                     {
                         if (mipId != 2 * kNumMaxMips + 1)
                         {
-                            gvdbInfo.volIn_part2[slotId] = mpDevice->createTexture3D(atlasWidth, atlasHeight, part2Depth, ResourceFormat::R32Float, 1, clampedDensity.data() + atlasWidth * atlasHeight * part1Depth, ResourceBindFlags::ShaderResource);
+                            gvdbInfo.volIn_part2[slotId] = atlasCompressed
+                                ? mpDevice->createTexture3D(atlasWidth, atlasHeight, part2Depth, ResourceFormat::R8Unorm, 1, compressedDensity.data() + (size_t)atlasWidth * atlasHeight * part1Depth, ResourceBindFlags::ShaderResource)
+                                : mpDevice->createTexture3D(atlasWidth, atlasHeight, part2Depth, ResourceFormat::R32Float, 1, clampedDensity.data() + atlasWidth * atlasHeight * part1Depth, ResourceBindFlags::ShaderResource);
                             gvdbInfo.volIn_part2[slotId]->setName("volIn_part2");
                         }
                         else
@@ -641,7 +717,21 @@ namespace Falcor
 
         return (uint32_t)mGVDBVolumes.size() - 1;
 #else
-        logWarning("GVDBVolumeManager::addVolume: GVDB support not compiled in (FALCOR_HAS_GVDB=0): '{}'", vbxFile);
+        // No gvdb.dll in this build, so .vbx cannot be read. Fall back to a prebaked .bin if one is
+        // present. The 4.x fork had no such path -- this exists only so a FALCOR_HAS_GVDB=0 build is
+        // not left with no way to load a volume at all.
+        {
+            std::string bakedPath = vbxFile + ".bin";
+            std::string resolved;
+            if (std::filesystem::exists(bakedPath))
+                return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, bakedPath, sigma_a, sigma_s, g, densityScale, LeScale,
+                    temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
+            if (resolveDataFile(bakedPath, resolved))
+                return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, resolved, sigma_a, sigma_s, g, densityScale, LeScale,
+                    temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
+        }
+        logWarning("GVDBVolumeManager::addVolume: GVDB support not compiled in (FALCOR_HAS_GVDB=0) and no "
+                   "prebaked '{}.bin' found; volume not loaded.", vbxFile);
         return 0;
 #endif
     }
@@ -678,6 +768,9 @@ namespace Falcor
         gvdbParamBlocks.numMips = hdr.numMips;
         gvdbParamBlocks.hasEmissionGrid = hdr.hasEmission != 0;
         gvdbParamBlocks.hasVelocityGrid = hdr.hasVelocity != 0;
+        // The baked path used to set the flag and never build the LUT, so an emissive volume sampled an
+        // unbound texture and rendered as plain smoke (LGHExplosion: no glow at all).
+        if (gvdbParamBlocks.hasEmissionGrid) ensureBlackBodyLUT();
 
         GVDBInfo gvdbInfo;
         // Scalar arrays with identical layout.
@@ -741,11 +834,37 @@ namespace Falcor
                 gb::readVal(f, w); gb::readVal(f, h); gb::readVal(f, d); gb::readVal(f, p1); gb::readVal(f, p2); gb::readVal(f, isVel);
                 std::vector<uint8_t> atlasBlob; gb::readBlob(f, atlasBlob);
                 const float* dens = reinterpret_cast<const float*>(atlasBlob.data());
-                gvdbInfo.volIn[s] = mpDevice->createTexture3D(w, h, p1, ResourceFormat::R32Float, 1, dens, ResourceBindFlags::ShaderResource);
+                // Same atlas compression as the VBX path above -- this is the BAKED loader, which is what
+                // bistro actually goes through ('GVDB: loaded baked volume ...'), so compressing only the VBX
+                // path left the shipping scene untouched (byte-identical output, unchanged timing).
+                //
+                // maxValue[s] is the slot's peak density, so density/maxValue lands in [0,1] for unorm8 and
+                // densityCompressScaleFactor[s] scales it back in getValueAtlasCoord().
+                const float slotMax = gvdbInfo.maxValue[s];
+                const bool bakedCompress = !isVel && slotMax > 0.f && s != 0;
+                std::vector<uint8_t> bakedQ;
+                if (bakedCompress)
+                {
+                    gvdbInfo.densityCompressScaleFactor[s] = slotMax;
+                    const size_t n = (size_t)w * h * d;
+                    bakedQ.resize(n);
+                    for (size_t i = 0; i < n; i++)
+                    {
+                        float v = dens[i];
+                        int q = (int)std::lround(255.0 * (v / slotMax));
+                        bakedQ[i] = (uint8_t)std::max(0, std::min(255, q));
+                        if (bakedQ[i] == 0 && v > 0.f) bakedQ[i] = 1; // keep thin density from vanishing
+                    }
+                }
+                gvdbInfo.volIn[s] = bakedCompress
+                    ? mpDevice->createTexture3D(w, h, p1, ResourceFormat::R8Unorm, 1, bakedQ.data(), ResourceBindFlags::ShaderResource)
+                    : mpDevice->createTexture3D(w, h, p1, ResourceFormat::R32Float, 1, dens, ResourceBindFlags::ShaderResource);
                 gvdbInfo.volIn[s]->setName("volIn");
                 if (d > 2048)
                 {
-                    gvdbInfo.volIn_part2[s] = mpDevice->createTexture3D(w, h, p2, ResourceFormat::R32Float, 1, dens + (size_t)w * h * p1, ResourceBindFlags::ShaderResource);
+                    gvdbInfo.volIn_part2[s] = bakedCompress
+                        ? mpDevice->createTexture3D(w, h, p2, ResourceFormat::R8Unorm, 1, bakedQ.data() + (size_t)w * h * p1, ResourceBindFlags::ShaderResource)
+                        : mpDevice->createTexture3D(w, h, p2, ResourceFormat::R32Float, 1, dens + (size_t)w * h * p1, ResourceBindFlags::ShaderResource);
                     gvdbInfo.volIn_part2[s]->setName("volIn_part2");
                 }
                 slotHasData = true;
