@@ -12,7 +12,6 @@ only the host/engine glue was rewritten for the 8.0 API.
 |---|---|
 | Render pass | `Source/RenderPasses/VolumetricReSTIR/` (this folder) |
 | GVDB volume subsystem in the Scene | `Source/Falcor/Scene/GVDB/` (`SceneGVDB.{h,cpp}`, `GVDBParameterBlock.slang`, `gvdb*.slang`) + `VolumeDesc`/`volume*` fields in `Scene/SceneTypes.slang` & `Scene/Scene.slang` |
-| Offline GVDB bake tool | `Source/Tools/GVDBBake/` + shared format `Source/Falcor/Scene/GVDB/GVDBBakeFormat.h` |
 | Run scripts | `Scripts/run_bunny_cloud.py` (working demo), plus the original fork scripts |
 
 ## The GVDB / OpenVDB situation
@@ -57,8 +56,7 @@ that `Scene::addGVDBVolume` reads back on subsequent runs.
 ### Verifying a change to the loader
 
 `FALCOR_GVDB_DUMP=1` prints the resulting `GVDBInfo`/`VolumeDesc`, so two loaders can be diffed
-before rendering a pixel. `FALCOR_GVDB_FORCE_BAKED=1` temporarily restores the old `.bin`
-preference for A/B against the retired baked path.
+before rendering a pixel.
 
 Note that the baked path was **not** equivalent to the fork: its atlas zero-clamp lacked the fork's
 `typeId == 1` condition, so it lifted near-zero density to 1/255 across the whole normal mip chain
@@ -91,10 +89,10 @@ build\windows-vs2022\bin\Release\Mogwai.exe --script Source\RenderPasses\Volumet
 python -c "import sys; sys.path.insert(0, r'Source\RenderPasses\VolumetricReSTIR\Scripts'); import encode_video; encode_video.encode(r'shots\<dataset>', r'shots\<dataset>.mp4')"
 ```
 
-Ingest is resumable: it bakes to `<frame>.bin.part` and renames on success, so an interrupted
-run never leaves a truncated `.bin` that a later run would skip as finished. It deletes the
-`.vbx` intermediates (reproducible from source) and writes the measured `baked` values back into
-the manifest. Derived cost is roughly **7.7x** the source frame, so budget accordingly.
+Ingest is resumable: a frame counts as done only when every expected `_mip{0..N}[c].vbx` exists
+and is non-empty, so an import killed part way is redone rather than skipped. The `.vbx` set is
+what Falcor loads, so it is kept; the measured mip0 extent is written back into the manifest under
+`imported`. Derived cost is roughly **7.8x** the source frame, so budget accordingly.
 
 Derivable values are not hand-tuned. [`Scripts/vdb_pipeline.py`](Scripts/vdb_pipeline.py) parses
 the bake header and computes placement and density; it is unit tested against the bakes already
@@ -105,9 +103,9 @@ Five things that are easy to get wrong, all learned the hard way:
 - **`gImportVDB` resolves both its CUDA module and its output folder against the working
   directory.** Those pull in opposite directions, so it must run from its own directory and have
   its output moved.
-- **`VDBPrep.exe` must live in Falcor's `bin/Release`, never beside `GVDBBake.exe`.** That folder
-  ships the 2021 GVDB-era `openvdb.dll`, and Windows searches the executable's own directory
-  first — it would load exactly the OpenVDB whose ABI conflict the prebake design avoids.
+- **`VDBPrep.exe` must live in Falcor's `bin/Release`, never in a `GVDBConverter` folder.** Those
+  ship the 2021 GVDB-era `openvdb.dll`, and Windows searches the executable's own directory
+  first — it would load exactly the OpenVDB whose ABI is incompatible with the one it links.
 - **`worldTranslation` is the volume's CENTRE, not its min corner.** The scene matrix alone reads
   as a min corner, but GVDB's per-volume `xform` already centres the grid and the two compose.
 - **`densityScale` cannot be copied between datasets.** Optical thickness is
@@ -152,7 +150,7 @@ in `Scripts/run_bunny_cloud.py` comments / the scratchpad `test_oidn_{cpu,gpu}.p
   by its many emissive lights, with the smoke plume scattering that light. This required porting the
   previously-stubbed surface path onto the 8.0 material system — see "Surface-scene path" below.
 - ✅ Animated volume sequences (the `fire115` plume) render and play via `addGVDBVolumeSequence`
-  (`Scripts/run_plume.py`): each frame is pre-baked with `GVDBBake` (incl. velocity), the sequence
+  (`Scripts/run_plume.py`): each frame is imported to `.vbx` by `gImportVDB`, the sequence
   advances one frame per rendered frame (`Scene::update` → `advanceVolumeAnimation`), and
   velocity-based temporal reprojection works. Set the pass property
   `mVolumeAnimationSelectedFrameId` (0-based) to pause on a frame and converge to a clean still.
