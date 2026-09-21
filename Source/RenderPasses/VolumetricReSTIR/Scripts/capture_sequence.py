@@ -83,6 +83,10 @@ m.ui = True
 STRIDE = int(os.environ.get("VR_STRIDE", "1"))
 out = REPO / "shots" / NAME
 os.makedirs(out, exist_ok=True)
+# Clear previous captures: numbering restarts at 1, so a shorter re-run would leave the tail of
+# the previous one behind and encode_video would splice two runs into one video.
+for stale in list(out.glob("*.png")) + list(out.glob("*.exr")):
+    stale.unlink()
 m.frameCapture.outputDir = str(out)
 m.frameCapture.baseFilename = "frame"
 capture_at = [1 + i * STRIDE for i in range(len(frames))]

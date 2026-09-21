@@ -31,7 +31,30 @@ def run(cmd, cwd):
         raise SystemExit(f"FAILED (exit {r.returncode}): {cmd[0]}")
 
 
-def ingest_frame(ds, frame, out_dir, keep, force):
+def preflight(ds, repo_root):
+    """Fail in seconds, not fifty minutes. Checks every source frame in the window and the three
+    executables before any baking starts.
+
+    The executable check is not paranoia: VDBPrep.exe lives in build/windows-vs2022/bin/Release
+    because it must resolve Falcor's OpenVDB, and nothing rebuilds it -- Source/Tools/CMakeLists.txt
+    does not list it -- so a clean rebuild or `git clean -xfd` silently removes it.
+    """
+    missing = [str(vp.source_frame_path(ds, f, repo_root))
+               for f in vp.frame_numbers(ds)
+               if not vp.source_frame_path(ds, f, repo_root).exists()]
+    if missing:
+        raise SystemExit(f"FAILED: {len(missing)} source frame(s) missing, first: {missing[0]}")
+
+    tools = [GIMPORT_DIR / "gImportVDB.exe", BAKE_DIR / "GVDBBake.exe"]
+    if ds["grid_renames"]:
+        tools.append(VDBPREP_DIR / "VDBPrep.exe")
+    absent = [str(t) for t in tools if not t.exists()]
+    if absent:
+        raise SystemExit("FAILED: missing executable(s): " + ", ".join(absent)
+                         + "\n  (VDBPrep is hand-built; see the header of Source/Tools/VDBPrep/VDBPrep.cpp)")
+
+
+def ingest_frame(ds, frame, out_dir, keep, force, runner=run):
     stem = vp.source_frame_path(ds, frame, REPO).stem
     final_bin = out_dir / f"{stem}.bin"
     if final_bin.exists() and vp.is_bin_complete(final_bin) and not force:
@@ -46,7 +69,7 @@ def ingest_frame(ds, frame, out_dir, keep, force):
     if ds["grid_renames"]:
         work = out_dir / f"{stem}_prepped.vdb"
         args = [f"{o}={n}" for o, n in ds["grid_renames"].items()]
-        run([VDBPREP_DIR / "VDBPrep.exe", src, work] + args, cwd=VDBPREP_DIR)
+        runner([VDBPREP_DIR / "VDBPrep.exe", src, work] + args, cwd=VDBPREP_DIR)
 
     # gImportVDB resolves BOTH its CUDA module (cuda_gvdb_module.ptx) and its output folder
     # relative to cwd, and those two pull in opposite directions: run it from the output
@@ -55,7 +78,7 @@ def ingest_frame(ds, frame, out_dir, keep, force):
     staged = GIMPORT_DIR / work.stem
     if staged.exists():
         shutil.rmtree(staged, ignore_errors=True)
-    run([GIMPORT_DIR / "gImportVDB.exe", work, ds["num_mips"]], cwd=GIMPORT_DIR)
+    runner([GIMPORT_DIR / "gImportVDB.exe", work, ds["num_mips"]], cwd=GIMPORT_DIR)
     vbx_dir = out_dir / work.stem
     if vbx_dir.exists():
         shutil.rmtree(vbx_dir, ignore_errors=True)
@@ -67,10 +90,21 @@ def ingest_frame(ds, frame, out_dir, keep, force):
             raise SystemExit(f"FAILED: has_emission is set but {temp_vbx.name} was not produced")
 
     part = out_dir / f"{stem}.bin.part"
-    run([BAKE_DIR / "GVDBBake.exe", vbx_dir, ds["num_mips"],
-         int(ds["has_velocity"]), int(ds["has_emission"]), part], cwd=BAKE_DIR)
+    runner([BAKE_DIR / "GVDBBake.exe", vbx_dir, ds["num_mips"],
+            int(ds["has_velocity"]), int(ds["has_emission"]), part], cwd=BAKE_DIR)
     if not vp.is_bin_complete(part):
-        raise SystemExit(f"FAILED: {part.name} is not a valid bake")
+        part.unlink(missing_ok=True)
+        raise SystemExit(
+            f"FAILED: {part.name} is not a valid bake (truncated? GVDBBake exits 0 even when a "
+            f"write fails, so check free disk space)")
+    # The .vbx check above proves the grid reached the importer; this proves it reached the bake.
+    # GVDBBake silently zeroes hasEmission when it cannot load the temperature slot, which would
+    # otherwise surface only as a volume that renders black and reads like bad tuning.
+    baked = vp.read_baked_header(part)
+    if baked.has_emission != bool(ds["has_emission"]):
+        part.unlink(missing_ok=True)
+        raise SystemExit(f"FAILED: manifest has_emission={ds['has_emission']} but the bake "
+                         f"reports has_emission={baked.has_emission}")
     part.replace(final_bin)
 
     if not keep:
@@ -95,6 +129,8 @@ def main():
     out_dir = REPO / "VolumetricReSTIRData" / a.dataset
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    preflight(ds, REPO)
+
     need = vp.estimate_window_bytes(ds, REPO)
     free = shutil.disk_usage(out_dir).free
     print(f"[ingest] {a.dataset}: {len(frames)} frames, ~{need/2**30:.1f} GB needed, "
@@ -106,8 +142,10 @@ def main():
         print(f"[{i}/{len(frames)}] frame {f}")
         ingest_frame(ds, f, out_dir, a.keep_intermediates, a.force)
 
-    first = out_dir / f"{vp.source_frame_path(ds, frames[0], REPO).stem}.bin"
-    h = vp.read_baked_header(first)
+    # Record the frame playback actually derives placement from, not frames[0]: recording a
+    # different frame's extent would quietly disagree with what the renderer uses.
+    pframe = vp.placement_frame(vp.playback_frame_numbers(ds))
+    h = vp.read_baked_header(out_dir / f"{vp.source_frame_path(ds, pframe, REPO).stem}.bin")
     vp.write_baked_back(a.dataset, h)
     print(f"[ingest] done. extent={h.extent} max_density={h.max_density:.4f} "
           f"has_emission={h.has_emission} (written to datasets.json)")

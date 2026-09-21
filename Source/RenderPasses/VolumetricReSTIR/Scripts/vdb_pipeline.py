@@ -42,12 +42,62 @@ def read_baked_header(path) -> BakedHeader:
     return BakedHeader(num_mips, bool(has_em), bool(has_vel), max_density, extent)
 
 
+MAX_SLOTS = 19      # grid mips 0-7, conservative 8-15, temperature 16, velocity 17, supervoxel 18
+MAX_LEVELS = 3
+
+
+def _walk_slots(f, file_size):
+    """Seek through every slot record, returning the offset one past the last byte consumed.
+
+    Raises ValueError if the structure runs past EOF. Only lengths are read, never payloads,
+    so this is a handful of seeks even on a 700 MB file.
+    """
+    def take(n):
+        buf = f.read(n)
+        if len(buf) < n:
+            raise ValueError("ran out of file while walking slots")
+        return buf
+
+    def u64():
+        return struct.unpack("<Q", take(8))[0]
+
+    def i32():
+        return struct.unpack("<i", take(4))[0]
+
+    def skip(n):
+        if n < 0 or f.tell() + n > file_size:
+            raise ValueError("blob length runs past EOF")
+        f.seek(n, 1)
+
+    for _ in range(MAX_SLOTS):
+        for _ in range(MAX_LEVELS):
+            skip(u64())     # node blob
+            skip(u64())     # child blob
+        if i32():           # hasAtlas
+            for _ in range(6):   # w, h, d, part1Depth, part2Depth, isVelocity
+                i32()
+            skip(u64())     # atlas blob
+    return f.tell()
+
+
 def is_bin_complete(path) -> bool:
-    """True if path looks like a finished bake. Cheap guard against a truncated file."""
+    """True only if the whole slot structure is present and ends exactly at EOF.
+
+    Checking the header alone is not enough, and the gap is the one that bites: GVDBBake never
+    inspects an fwrite return and unconditionally returns 0 (Source/Tools/GVDBBake/GVDBBake.cpp),
+    so a bake that exhausts the disk still exits successfully, leaving a file whose 11 KB header
+    is valid and whose payload is missing. Accepting that would rename a corpse into place and
+    every later resume would skip it as finished work.
+    """
     try:
-        read_baked_header(path)
-        return True
-    except (OSError, ValueError):
+        path = Path(path)
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            read_baked_header(path)
+            f.seek(MIN_BIN_BYTES)
+            end = _walk_slots(f, size)
+        return end == size
+    except (OSError, ValueError, struct.error):
         return False
 
 
@@ -149,6 +199,10 @@ def write_baked_back(name, header, path=None) -> None:
         "max_density": header.max_density,
         "has_emission": header.has_emission,
     }
-    with open(p, "w", encoding="utf-8") as f:
+    # Write-then-replace: datasets.json is tracked, and truncating it in place means a Ctrl-C at
+    # the end of an hour-long ingest can leave it empty.
+    tmp = p.with_suffix(".json.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)
         f.write("\n")
+    tmp.replace(p)
