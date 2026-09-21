@@ -25,6 +25,7 @@
 #include "Scene/Scene.h"
 #include "Scene/GVDB/SceneGVDB.h"
 #include "Scene/GVDB/GVDBBakeFormat.h"
+#include "Utils/Image/BCHelper.h"
 #include "Core/API/Device.h"
 #include "Core/API/RenderContext.h"
 #include "Core/AssetResolver.h"
@@ -589,27 +590,39 @@ namespace Falcor
                     //
                     // The shader already expects this: getValueAtlasCoord() multiplies by
                     // gvdb.densityCompressScaleFactor[mip], which the port had pinned to 1.0.
+                    // ATLAS_COMPRESSION == 2 in the 4.x fork: BC4, 4 bits/voxel against R8Unorm's 8 and
+                    // R32Float's 32. Transparent to the shaders -- BC4 is hardware-decompressed with
+                    // hardware trilinear filtering, and getValueAtlasCoord already multiplies by
+                    // densityCompressScaleFactor.
+                    //
+                    // The conservative family passes isConservative=true, which rounds toward the endpoint
+                    // that does not underestimate, so a conservative grid compressed this way still bounds
+                    // the true density from above -- which is what the ratio/residual trackers rely on.
+                    //
+                    // BC4 works on 4x4 blocks, so the texture is allocated at dimensions rounded up to a
+                    // multiple of 4 and volInDimensions records the PADDED size: the shader divides atlas
+                    // coordinates by it to get UVs, and the texture really is that wide.
                     const bool useTextureCompression = (mipId > 0 && mipId < (int)kNumMaxMips) || (mipId == 0 && typeId == 1);
-                    std::vector<uint8_t> compressedDensity;
+                    const int atlasWidthPadded = (atlasWidth + 3) / 4 * 4;
+                    const int atlasHeightPadded = (atlasHeight + 3) / 4 * 4;
+                    std::vector<uint8_t> compressedDensity, compressedDensityPart2;
                     if (useTextureCompression && gvdb.mGridValMax > 0.f)
                     {
                         gvdbInfo.densityCompressScaleFactor[slotId] = gvdb.mGridValMax;
-                        compressedDensity.resize(numAtlasElements);
-                        for (int i = 0; i < numAtlasElements; i++)
+                        BCHelper::CompressImage(clampedDensity.data(), int3(atlasWidth, atlasHeight, part1Depth),
+                                                gvdb.mGridValMax, typeId == 1, compressedDensity);
+                        if (atlasDepth > 2048 && part2Depth > 0)
                         {
-                            float d = clampedDensity[i];
-                            int q = (int)std::round(255.0 * (d / gvdb.mGridValMax));
-                            compressedDensity[i] = (uint8_t)std::max(0, std::min(255, q));
-                            // Keep a non-zero voxel non-zero: rounding a thin density to 0 punches holes the
-                            // tracker then treats as empty space.
-                            if (compressedDensity[i] == 0 && d > 0.f && typeId == 1) compressedDensity[i] = 1;
+                            BCHelper::CompressImage(clampedDensity.data() + (size_t)atlasWidth * atlasHeight * part1Depth,
+                                                    int3(atlasWidth, atlasHeight, part2Depth),
+                                                    gvdb.mGridValMax, typeId == 1, compressedDensityPart2);
                         }
                     }
                     const bool atlasCompressed = !compressedDensity.empty();
                     if (mipId < 2 * kNumMaxMips + 1)
                     {
                         gvdbInfo.volIn[slotId] = atlasCompressed
-                            ? mpDevice->createTexture3D(atlasWidth, atlasHeight, part1Depth, ResourceFormat::R8Unorm, 1, compressedDensity.data(), ResourceBindFlags::ShaderResource)
+                            ? mpDevice->createTexture3D(atlasWidthPadded, atlasHeightPadded, part1Depth, ResourceFormat::BC4Unorm, 1, compressedDensity.data(), ResourceBindFlags::ShaderResource)
                             : mpDevice->createTexture3D(atlasWidth, atlasHeight, part1Depth, ResourceFormat::R32Float, 1, clampedDensity.data(), ResourceBindFlags::ShaderResource);
                         gvdbInfo.volIn[slotId]->setName("volIn");
                     }
@@ -618,14 +631,16 @@ namespace Falcor
                         gvdbInfo.velocityIn[0] = mpDevice->createTexture3D(atlasWidth, atlasHeight, part1Depth, ResourceFormat::RGB32Float, 1, velocities.data(), ResourceBindFlags::ShaderResource);
                     }
 
-                    gvdbInfo.volInDimensions[slotId] = int3(atlasWidth, atlasHeight, part1Depth);
+                    gvdbInfo.volInDimensions[slotId] = atlasCompressed
+                        ? int3(atlasWidthPadded, atlasHeightPadded, part1Depth)
+                        : int3(atlasWidth, atlasHeight, part1Depth);
 
                     if (atlasDepth > 2048)
                     {
                         if (mipId != 2 * kNumMaxMips + 1)
                         {
                             gvdbInfo.volIn_part2[slotId] = atlasCompressed
-                                ? mpDevice->createTexture3D(atlasWidth, atlasHeight, part2Depth, ResourceFormat::R8Unorm, 1, compressedDensity.data() + (size_t)atlasWidth * atlasHeight * part1Depth, ResourceBindFlags::ShaderResource)
+                                ? mpDevice->createTexture3D(atlasWidthPadded, atlasHeightPadded, part2Depth, ResourceFormat::BC4Unorm, 1, compressedDensityPart2.data(), ResourceBindFlags::ShaderResource)
                                 : mpDevice->createTexture3D(atlasWidth, atlasHeight, part2Depth, ResourceFormat::R32Float, 1, clampedDensity.data() + atlasWidth * atlasHeight * part1Depth, ResourceBindFlags::ShaderResource);
                             gvdbInfo.volIn_part2[slotId]->setName("volIn_part2");
                         }
@@ -633,7 +648,9 @@ namespace Falcor
                         {
                             gvdbInfo.velocityIn_part2[0] = mpDevice->createTexture3D(atlasWidth, atlasHeight, part2Depth, ResourceFormat::RGB32Float, 1, velocities.data() + atlasWidth * atlasHeight * part1Depth, ResourceBindFlags::ShaderResource);
                         }
-                        gvdbInfo.volInDimensions_part2[slotId] = int3(atlasWidth, atlasHeight, part2Depth);
+                        gvdbInfo.volInDimensions_part2[slotId] = atlasCompressed
+                            ? int3(atlasWidthPadded, atlasHeightPadded, part2Depth)
+                            : int3(atlasWidth, atlasHeight, part2Depth);
                     }
                 }
 

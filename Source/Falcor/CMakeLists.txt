@@ -621,6 +621,8 @@ target_sources(Falcor PRIVATE
 
     Utils/Image/AsyncTextureLoader.cpp
     Utils/Image/AsyncTextureLoader.h
+    Utils/Image/BCHelper.cpp
+    Utils/Image/BCHelper.h
     Utils/Image/Bitmap.cpp
     Utils/Image/Bitmap.h
     Utils/Image/CopyColorChannel.cs.slang
