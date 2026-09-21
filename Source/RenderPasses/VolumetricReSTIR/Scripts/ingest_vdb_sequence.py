@@ -113,12 +113,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("dataset")
     ap.add_argument("--frames", type=int, default=None)
+    ap.add_argument("--start", type=int, default=None,
+                    help="override the manifest's start_frame (for importing a frame outside the window)")
     ap.add_argument("--force", action="store_true")
     a = ap.parse_args()
 
     ds = vp.get_dataset(a.dataset)
     if a.frames:
         ds = dict(ds, num_frames=a.frames)
+    if a.start is not None:
+        # Importing outside the manifest window is a one-off, so do not write the extent back:
+        # "imported" must keep describing the window playback actually uses.
+        ds = dict(ds, start_frame=a.start, playback_frames=None)
     frames = vp.frame_numbers(ds)
 
     out_dir = REPO / "VolumetricReSTIRData" / a.dataset
@@ -142,9 +148,11 @@ def main():
         if f == vp.placement_frame(vp.playback_frame_numbers(ds)) and res:
             extent = res
 
-    if extent:
+    if extent and a.start is None:
         vp.write_imported_back(a.dataset, extent)
         print(f"[ingest] done. mip0 extent={extent} (written to datasets.json)")
+    elif extent:
+        print(f"[ingest] done. mip0 extent={extent} (one-off --start import; manifest unchanged)")
     else:
         print("[ingest] done. Nothing re-imported, so datasets.json is unchanged.")
 

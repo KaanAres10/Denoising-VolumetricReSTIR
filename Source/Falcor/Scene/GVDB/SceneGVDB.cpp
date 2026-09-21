@@ -601,6 +601,20 @@ namespace Falcor
                         }
                     }
                     const bool atlasCompressed = !compressedDensity.empty();
+                    // D3D12 caps a Texture3D at 2048 per axis and this loader only ever splits the
+                    // atlas in two, so the addressable depth is 2 * 2048. Past that, texture creation
+                    // fails with a bare E_INVALIDARG that reads like a driver fault. Say what it is.
+                    if (part2Depth > 2048)
+                    {
+                        logWarning("GVDB slot {}: atlas is {}x{}x{}, and the two-part split gives "
+                                   "part1={} + part2={} -- part2 exceeds the 2048 Texture3D limit, so "
+                                   "this volume cannot be uploaded. The atlas is only {} bricks wide; "
+                                   "re-importing with more bricks per axis (gImportVDB's "
+                                   "SetChannelDefault) trades depth for width and brings it back "
+                                   "under the cap.",
+                                   slotId, atlasWidth, atlasHeight, atlasDepth, part1Depth, part2Depth,
+                                   atlasWidth / 10);
+                    }
                     if (mipId < 2 * kNumMaxMips + 1)
                     {
                         gvdbInfo.volIn[slotId] = atlasCompressed

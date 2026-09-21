@@ -37,7 +37,15 @@ out_dir = DATA_DIR / NAME
 prefix = ds["file_pattern"].split("{")[0]
 
 # Same placement the animated path uses, so streamed and sequence renders are comparable.
-extent = vp.imported_extent(ds)
+#
+# VR_EXTENT overrides it for a frame outside the ingested window: "imported" describes the frame
+# playback derives placement from, and a frame far outside that window can have a very different
+# extent (dustShockwave grows from 801x796x140 at frame 60 to 1124x1097x137 at frame 154), which
+# would place and scale it wrongly.
+if os.environ.get("VR_EXTENT"):
+    extent = tuple(float(v) for v in os.environ["VR_EXTENT"].split(","))
+else:
+    extent = vp.imported_extent(ds)
 scale, trans = vp.derive_placement(extent, ds["placement"]["centre"],
                                    ds["placement"]["target_height"])
 density = vp.derive_density_scale(ds["medium"]["density_scale_ref"], scale)
