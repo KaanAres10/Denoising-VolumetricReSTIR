@@ -15,32 +15,55 @@ only the host/engine glue was rewritten for the 8.0 API.
 | Offline GVDB bake tool | `Source/Tools/GVDBBake/` + shared format `Source/Falcor/Scene/GVDB/GVDBBakeFormat.h` |
 | Run scripts | `Scripts/run_bunny_cloud.py` (working demo), plus the original fork scripts |
 
-## The GVDB / OpenVDB situation (important)
+## The GVDB / OpenVDB situation
 
-The pass uses NVIDIA **GVDB** to represent the sparse voxel grids. The prebuilt `gvdb.dll` (shipped
-in the fork) is linked against an **OpenVDB build that is ABI-incompatible with the OpenVDB that
-Falcor 8.0 ships**, and two `openvdb.dll` versions cannot coexist in one process. So `gvdb.dll`
-cannot be loaded inside the Falcor process.
-
-Solution: **offline prebake.** A standalone tool (`GVDBBake`) runs `gvdb.dll` *in isolation* (its
-own OpenVDB, no Falcor, no conflict) to parse each `.vbx` and serialize everything Falcor needs
-(repacked sparse node pools, child lists, the dense density atlas, and per-mip metadata) into a
-plain `.bin`. Falcor then just reads the `.bin` and uploads it to the GPU — **no `gvdb.dll` in the
-Falcor process at all.**
-
-### Baking a volume
-
-Build `GVDBBake` (once) and run it from a directory where `gvdb.dll` can find its own OpenVDB/TBB
-(the fork's `Bin\x64\Release`):
+The pass uses NVIDIA **GVDB** for the sparse voxel grids, and loads `.vbx` **in-process** via
+`gvdb.LoadVBX`, exactly as the Falcor 4.x fork did. The pipeline is the fork's two stages:
 
 ```
-GVDBBake.exe <vbxFolder> <numMips> <hasVelocity 0|1> <hasEmission 0|1> <out.bin>
-# e.g.
-GVDBBake.exe "Data\bunny_cloud" 7 0 0 "Data\bunny_cloud.bin"
+.vdb  --(gImportVDB, offline, separate process)-->  .vbx  --(in-process)-->  render
 ```
 
-Place the resulting `<name>.bin` next to the volume folder. At runtime, `Scene::addGVDBVolume`
-(and `addGVDBVolumeSequence`) automatically load `<dataFile>.bin` if present.
+### There is no ABI conflict — this README used to say there was
+
+An earlier version of this file, and the comment in `SceneGVDB.cpp`, claimed `gvdb.dll` could not
+be loaded inside the Falcor process because its OpenVDB is ABI-incompatible with Falcor's, and an
+offline `GVDBBake` → `.bin` stage existed to work around it. That was wrong. There are **two
+different `gvdb.dll` builds** in this tree and they are not interchangeable:
+
+| File | Size | OpenVDB dependency |
+|---|---|---|
+| `legacy/GVDBConverter/gvdb.dll` | 1,670,144 B | **yes** — openvdb, tbb, blosc, Half, snappy, zlib |
+| `build/windows-vs2022/bin/Release/gvdb.dll` | 1,481,728 B | **none** — OpenGL, CUDA, CRT only |
+
+`dumpbin /dependents Falcor.dll` lists **both `gvdb.dll` and `openvdb.dll`** as load-time imports,
+so GVDB has been resident in the Mogwai process all along. Reading `.vbx` never needed OpenVDB —
+only `LoadVDB()` (parsing `.vdb`) does, and that stays in the separate `gImportVDB` process, which
+ships its own OpenVDB alongside the first DLL above. The conflict is real for *that* build; it was
+never relevant to the one Falcor links.
+
+### Converting `.vdb` → `.vbx`
+
+Run `gImportVDB` from its own directory (it resolves both `cuda_gvdb_module.ptx` **and** its output
+folder relative to the working directory, so it must run there and have the result moved):
+
+```
+gImportVDB.exe <file.vdb> <numMips>
+```
+
+It writes `<name>/<name>_mip{0..N}[c].vbx` plus, on first load, the `_level{n}nodes.bin` node cache
+that `Scene::addGVDBVolume` reads back on subsequent runs.
+
+### Verifying a change to the loader
+
+`FALCOR_GVDB_DUMP=1` prints the resulting `GVDBInfo`/`VolumeDesc`, so two loaders can be diffed
+before rendering a pixel. `FALCOR_GVDB_FORCE_BAKED=1` temporarily restores the old `.bin`
+preference for A/B against the retired baked path.
+
+Note that the baked path was **not** equivalent to the fork: its atlas zero-clamp lacked the fork's
+`typeId == 1` condition, so it lifted near-zero density to 1/255 across the whole normal mip chain
+where the fork clamps only the conservative grid. Since the shipped defaults sample mips 1 and 2,
+measurements taken through the baked path carry that deviation.
 
 ## Running
 
@@ -235,47 +258,6 @@ Everything above is **estimator-neutral except camera jitter**:
   reservoirs were generated on jittered rays); and on Bistro the fixed and unfixed configurations
   converge to *different* images (difference asymptotes rather than decaying with sample count),
   which is the signature of one of them being biased.
-- **Temporal reuse is biased while the camera moves**, at thin medium. `TemporalReuse.cs.slang` picks
-  last frame's pixel from the canonical sample's own depth when that sample scattered in the medium,
-  so the temporal neighbour depends on the sample, and the Talbot weights (which assume it does not)
-  stop summing to one. A still camera maps every choice to the same pixel, so a static bias test
-  cannot see it; under motion, parallax sends medium and surface to different pixels. Bistro,
-  stop-and-go path, scene animation frozen, 8 seeds against a 256-frame temporal-reuse-off truth at
-  the same pose -- the medium's own light (`volumeColor`):
-
-  | | thin medium (1-30% coverage) | silhouette (30-90%) | deep |
-  |---|---|---|---|
-  | moving, as shipped | **0.60** | **0.80** | 0.99 |
-  | still | 0.99 | 1.01 | 1.00 |
-  | moving, `mTemporalReprojectIndependent` | 0.99 | 1.00 | 1.00 |
-  | still, `mTemporalReprojectIndependent` | 1.01 | 1.02 | 1.00 |
-
-  That reference (temporal reuse off, 256 frames at the same pose) is itself within 1% of brute-force
-  volumetric path tracing there -- thin 1.009, edge 0.994, deep 1.027 against `mUseReference`, 256
-  frames x 4 spp. The repo's static bias tests cannot see any of this: with a still camera every depth
-  reprojects to the same pixel, so the dependence disappears.
-
-  `mTemporalReprojectIndependent` (default **off**; `VR_TR_INDEPENDENT=1` in `vr_graph`) draws the
-  point from the pixel alone -- the surface with probability T, else a point by density, as the
-  surface-sample branch already did. Off is byte-identical to before. Cost: +0.06 ms (temporal reuse,
-  960x540; +0.28 ms at 1080p), and ~1.7-2x the per-pixel noise at a moving silhouette, where the
-  history now matches less often; still frames and deep medium are unchanged.
-
-  `mTemporalReprojectByLightShare` (`VR_TR_LIGHT_SHARE=1`, needs the switch above) follows the surface
-  with its share of the pixel's LIGHT instead of T -- the guides' light-share statistics, read from last
-  frame, so the neighbour still does not depend on this frame's sample. It buys back part of that noise
-  (medium light at a moving silhouette 1.08 -> 0.89 of the true light, thin medium 1.76 -> 1.62, against
-  0.65 / 0.90 as shipped; in the TOTAL light, edge 0.90 -> 0.84 and thin 0.72 -> 0.70, against
-  0.82 / 0.68) and keeps the correction (moving 1.03 thin / 1.00 edge). The statistics pass, which
-  otherwise only runs for the guides, then runs whenever this is on. With no reprojection at all (another
-  neighbour that cannot depend on the sample) the loss also mostly goes -- 0.98 / 0.98 moving with
-  `mTemporalReprojectionMode = kReprojectionNone`, which is a shipped setting and needs no code change
-  at all. That pins the cause on the dependence rather than on temporal reuse as such, and it is a
-  usable fallback: it blotches less on screen than either switch, at the price of deep medium, which
-  loses motion compensation entirely (noise 0.73 against 0.53 of the true light). Beware that an orbit
-  centred on the medium flatters it -- the medium barely moves on screen there, so "the same pixel" is
-  nearly right for it; a pan is untested. Shortening the history cap instead (10x -> 2x) only halves the
-  loss (0.77 / 0.92) and costs noise in every frame, still ones included.
 
 ### Note on the previous-frame matrices (transpose)
 
