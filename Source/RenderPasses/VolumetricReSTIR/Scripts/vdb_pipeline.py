@@ -1,110 +1,15 @@
 """Pure logic for the VDB ingestion pipeline.
 
-Everything derivable lives here so it can be unit tested without running gImportVDB,
-GVDBBake or Mogwai. See docs/superpowers/specs/2026-09-20-volumetric-dataset-pipeline-design.md
+Everything derivable lives here so it can be unit tested without running gImportVDB or
+Mogwai. See docs/superpowers/specs/2026-09-20-volumetric-dataset-pipeline-design.md
 """
 import json
 import re
-import struct
 from pathlib import Path
-from typing import NamedTuple
-
-MAGIC = 0x42445647          # "GVDB"
-HEADER_BYTES = 24           # BakedHeader: magic, version, numMips, hasEmission, hasVelocity, maxDensity
-INFO_BYTES = 11656          # sizeof(BakedInfo), see Source/Falcor/Scene/GVDB/GVDBBakeFormat.h
-OFF_BMIN = HEADER_BYTES + 4092
-OFF_BMAX = HEADER_BYTES + 4452
-MIN_BIN_BYTES = HEADER_BYTES + INFO_BYTES
-
-
-class BakedHeader(NamedTuple):
-    num_mips: int
-    has_emission: bool
-    has_velocity: bool
-    max_density: float
-    extent: tuple
-
-
-def read_baked_header(path) -> BakedHeader:
-    """Parse the fixed-size head of a GVDBBake .bin. Raises ValueError if it is not one."""
-    path = Path(path)
-    with open(path, "rb") as f:
-        head = f.read(MIN_BIN_BYTES)
-    if len(head) < MIN_BIN_BYTES:
-        raise ValueError(f"{path} is shorter than a baked header ({len(head)} bytes)")
-    magic, version, num_mips, has_em, has_vel, max_density = struct.unpack_from("<IIiiif", head, 0)
-    if magic != MAGIC:
-        raise ValueError(f"{path} is not a GVDBBake file (magic {magic:#x})")
-    if version != 1:
-        raise ValueError(f"{path} has unsupported bake version {version}")
-    bmin = struct.unpack_from("<3f", head, OFF_BMIN)
-    bmax = struct.unpack_from("<3f", head, OFF_BMAX)
-    extent = tuple(bmax[i] - bmin[i] for i in range(3))
-    return BakedHeader(num_mips, bool(has_em), bool(has_vel), max_density, extent)
-
-
-MAX_SLOTS = 19      # grid mips 0-7, conservative 8-15, temperature 16, velocity 17, supervoxel 18
-MAX_LEVELS = 3
-
-
-def _walk_slots(f, file_size):
-    """Seek through every slot record, returning the offset one past the last byte consumed.
-
-    Raises ValueError if the structure runs past EOF. Only lengths are read, never payloads,
-    so this is a handful of seeks even on a 700 MB file.
-    """
-    def take(n):
-        buf = f.read(n)
-        if len(buf) < n:
-            raise ValueError("ran out of file while walking slots")
-        return buf
-
-    def u64():
-        return struct.unpack("<Q", take(8))[0]
-
-    def i32():
-        return struct.unpack("<i", take(4))[0]
-
-    def skip(n):
-        if n < 0 or f.tell() + n > file_size:
-            raise ValueError("blob length runs past EOF")
-        f.seek(n, 1)
-
-    for _ in range(MAX_SLOTS):
-        for _ in range(MAX_LEVELS):
-            skip(u64())     # node blob
-            skip(u64())     # child blob
-        if i32():           # hasAtlas
-            for _ in range(6):   # w, h, d, part1Depth, part2Depth, isVelocity
-                i32()
-            skip(u64())     # atlas blob
-    return f.tell()
-
-
-def is_bin_complete(path) -> bool:
-    """True only if the whole slot structure is present and ends exactly at EOF.
-
-    Checking the header alone is not enough, and the gap is the one that bites: GVDBBake never
-    inspects an fwrite return and unconditionally returns 0 (Source/Tools/GVDBBake/GVDBBake.cpp),
-    so a bake that exhausts the disk still exits successfully, leaving a file whose 11 KB header
-    is valid and whose payload is missing. Accepting that would rename a corpse into place and
-    every later resume would skip it as finished work.
-    """
-    try:
-        path = Path(path)
-        size = path.stat().st_size
-        with open(path, "rb") as f:
-            read_baked_header(path)
-            f.seek(MIN_BIN_BYTES)
-            end = _walk_slots(f, size)
-        return end == size
-    except (OSError, ValueError, struct.error):
-        return False
-
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
 MANIFEST_PATH = SCRIPTS_DIR / "datasets.json"
-DERIVED_BYTES_PER_SOURCE_BYTE = 7.7   # measured: 41 MB source -> 317 MB .bin
+DERIVED_BYTES_PER_SOURCE_BYTE = 7.8   # measured: 41 MB source .vdb -> 321 MB .vbx set
 
 
 def load_manifest(path=None) -> dict:
@@ -127,11 +32,11 @@ def frame_numbers(dataset) -> list:
 def playback_frame_numbers(dataset) -> list:
     """Frames to PLAY, which can be fewer than the frames ingested.
 
-    addGVDBVolumeSequence uploads every frame's GPU resources up front, so a window that bakes
+    addGVDBVolumeSequence uploads every frame's GPU resources up front, so a window that imports
     fine can still exceed VRAM at playback. Measured on an 8 GB RTX 5070 Laptop: dustShockwave
     at 677 MB/frame plays 16 frames and dies with DXGI_ERROR_DEVICE_REMOVED at 24, while
     firePlume at 334 MB/frame plays all 32. An optional "playback_frames" key caps playback
-    without touching the ingest window, so the extra bakes stay on disk for a larger GPU.
+    without touching the ingest window, so the extra frames stay on disk for a larger GPU.
     """
     frames = frame_numbers(dataset)
     cap = dataset.get("playback_frames")
@@ -224,7 +129,7 @@ def derive_density_scale(density_scale_ref, scale, reference_scale=REFERENCE_WOR
 
 
 def placement_frame(frames):
-    """Which frame's bake to derive placement from.
+    """Which frame's import to derive placement from.
 
     V1 measured that GVDB rebases every frame's local origin to (0,0,0) while its extent grows,
     and addGVDBVolumeSequence takes a single worldTranslation, which the transform treats as the

@@ -24,7 +24,6 @@
 
 #include "Scene/Scene.h"
 #include "Scene/GVDB/SceneGVDB.h"
-#include "Scene/GVDB/GVDBBakeFormat.h"
 #include "Utils/Image/BCHelper.h"
 #include "Core/API/Device.h"
 #include "Core/API/RenderContext.h"
@@ -279,26 +278,9 @@ namespace Falcor
         // gvdb.dll and openvdb.dll), so GVDB is already resident in this process and always has been.
         // Reading .vbx never needed OpenVDB -- only LoadVDB() does, and that stays in the separate
         // gImportVDB process, exactly as in the fork.
-        //
-        // FALCOR_GVDB_FORCE_BAKED=1 restores the old .bin preference. Temporary, for A/B against the
-        // baked loader with one binary; goes away when the baked path is retired.
-        {
-            static const bool forceBaked = []{ const char* e = std::getenv("FALCOR_GVDB_FORCE_BAKED"); return e && e[0] == '1'; }();
-            if (forceBaked)
-            {
-                std::string bakedPath = vbxFile + ".bin";
-                std::string resolved;
-                if (std::filesystem::exists(bakedPath))
-                    return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, bakedPath, sigma_a, sigma_s, g, densityScale, LeScale,
-                        temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
-                if (resolveDataFile(bakedPath, resolved))
-                    return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, resolved, sigma_a, sigma_s, g, densityScale, LeScale,
-                        temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
-            }
-        }
 #if defined(FALCOR_HAS_GVDB) && FALCOR_HAS_GVDB
-        // Ported from the Falcor 4.x fork Scene::addGVDBVolume. Textures are created uncompressed
-        // (R32Float); the fork's optional BC4 path (ATLAS_COMPRESSION==2, via BCHelper) is omitted.
+        // Ported from the Falcor 4.x fork Scene::addGVDBVolume, including its BC4 density atlas
+        // (ATLAS_COMPRESSION == 2, via BCHelper).
         const auto kBufFlags = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
 
         if (curFrameId <= 0) // non-animated uses curFrameId == -1
@@ -733,218 +715,10 @@ namespace Falcor
         mpDevice->getRenderContext()->submit(true);
 
         return (uint32_t)mGVDBVolumes.size() - 1;
-#else
-        // No gvdb.dll in this build, so .vbx cannot be read. Fall back to a prebaked .bin if one is
-        // present. The 4.x fork had no such path -- this exists only so a FALCOR_HAS_GVDB=0 build is
-        // not left with no way to load a volume at all.
-        {
-            std::string bakedPath = vbxFile + ".bin";
-            std::string resolved;
-            if (std::filesystem::exists(bakedPath))
-                return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, bakedPath, sigma_a, sigma_s, g, densityScale, LeScale,
-                    temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
-            if (resolveDataFile(bakedPath, resolved))
-                return addVolumeFromBaked(volumeDesc, sceneVolumeBB, sceneBlock, resolved, sigma_a, sigma_s, g, densityScale, LeScale,
-                    temperatureCutOff, temperatureScale, worldTranslation, worldRotation, worldScaling, curFrameId);
-        }
-        logWarning("GVDBVolumeManager::addVolume: GVDB support not compiled in (FALCOR_HAS_GVDB=0) and no "
-                   "prebaked '{}.bin' found; volume not loaded.", vbxFile);
+        logWarning("GVDBVolumeManager::addVolume: GVDB support not compiled in (FALCOR_HAS_GVDB=0); cannot read '{}'.", vbxFile);
+        return 0;
         return 0;
 #endif
-    }
-
-    uint32_t GVDBVolumeManager::addVolumeFromBaked(VolumeDesc& volumeDesc, AABB& sceneVolumeBB, const ref<ParameterBlock>& sceneBlock,
-        const std::string& bakedPath, float3 sigma_a, float3 sigma_s, float g, float densityScale, float LeScale,
-        float temperatureCutOff, float temperatureScale, float3 worldTranslation, float3 worldRotation, float worldScaling, int curFrameId)
-    {
-        namespace gb = gvdbbake;
-        const auto kBufFlags = ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess;
-
-        if (curFrameId <= 0)
-        {
-            mVolumeWorldTranslation = worldTranslation;
-            mVolumeWorldScaling = worldScaling;
-            mVolumeWorldRotation = worldRotation;
-        }
-
-        FILE* f = fopen(bakedPath.c_str(), "rb");
-        if (!f) { logError("GVDB: cannot open baked volume '{}'", bakedPath); return 0; }
-        gb::BakedHeader hdr{};
-        gb::readVal(f, hdr);
-        if (hdr.magic != gb::kMagic) { logError("GVDB: bad baked file magic in '{}'", bakedPath); fclose(f); return 0; }
-        auto info = std::make_unique<gb::BakedInfo>();
-        if (!gb::readPOD(f, info.get(), sizeof(gb::BakedInfo))) { logError("GVDB: truncated baked file '{}'", bakedPath); fclose(f); return 0; }
-
-        // Program reflection for the gvdb parameter block.
-        ref<Program> pProgram = Program::createCompute(mpDevice, "Scene/GVDBParameterBlock.slang", "main");
-        ref<const ParameterBlockReflection> pReflection = pProgram->getReflector()->getParameterBlock("gVDBInfo");
-        FALCOR_ASSERT(pReflection);
-        ref<ParameterBlock> gvdbBlock = ParameterBlock::create(mpDevice, pReflection);
-
-        GVDBParamBlocks gvdbParamBlocks;
-        gvdbParamBlocks.numMips = hdr.numMips;
-        gvdbParamBlocks.hasEmissionGrid = hdr.hasEmission != 0;
-        gvdbParamBlocks.hasVelocityGrid = hdr.hasVelocity != 0;
-        // The baked path used to set the flag and never build the LUT, so an emissive volume sampled an
-        // unbound texture and rendered as plain smoke (LGHExplosion: no glow at all).
-        if (gvdbParamBlocks.hasEmissionGrid) ensureBlackBodyLUT();
-
-        GVDBInfo gvdbInfo;
-        // Scalar arrays with identical layout.
-        memcpy(gvdbInfo.dim, info->dim, sizeof(info->dim));
-        memcpy(gvdbInfo.res, info->res, sizeof(info->res));
-        memcpy(gvdbInfo.nodecnt, info->nodecnt, sizeof(info->nodecnt));
-        memcpy(gvdbInfo.nodewid, info->nodewid, sizeof(info->nodewid));
-        memcpy(gvdbInfo.childwid, info->childwid, sizeof(info->childwid));
-        memcpy(gvdbInfo.top_lev, info->top_lev, sizeof(info->top_lev));
-        memcpy(gvdbInfo.maxValue, info->maxValue, sizeof(info->maxValue));
-        memcpy(gvdbInfo.invMaxValue, info->invMaxValue, sizeof(info->invMaxValue));
-        memcpy(gvdbInfo.densityCompressScaleFactor, info->densityCompressScaleFactor, sizeof(info->densityCompressScaleFactor));
-        gvdbInfo.max_iter = info->max_iter;
-        gvdbInfo.epsilon = info->epsilon;
-        gvdbInfo.clr_chan = info->clr_chan;
-        gvdbInfo.superVoxelWorldSpaceDiagonalLength = info->superVoxelWorldSpaceDiagonalLength;
-        for (int i = 0; i < gb::NLM; i++)
-        {
-            gvdbInfo.vdel[i] = float3(info->vdel[i][0], info->vdel[i][1], info->vdel[i][2]);
-            gvdbInfo.noderange[i] = int3(info->noderange[i][0], info->noderange[i][1], info->noderange[i][2]);
-        }
-        for (int i = 0; i < gb::MAX_MIPS; i++)
-        {
-            gvdbInfo.bmin[i] = float3(info->bmin[i][0], info->bmin[i][1], info->bmin[i][2]);
-            gvdbInfo.bmax[i] = float3(info->bmax[i][0], info->bmax[i][1], info->bmax[i][2]);
-            gvdbInfo.volInDimensions[i] = int3(info->volInDimensions[i][0], info->volInDimensions[i][1], info->volInDimensions[i][2]);
-            gvdbInfo.volInDimensions_part2[i] = int3(info->volInDimensions_part2[i][0], info->volInDimensions_part2[i][1], info->volInDimensions_part2[i][2]);
-            memcpy(&gvdbInfo.xform[i], info->xform[i], sizeof(float) * 16);
-            memcpy(&gvdbInfo.invxform[i], info->invxform[i], sizeof(float) * 16);
-            memcpy(&gvdbInfo.invxrot[i], info->invxrot[i], sizeof(float) * 16);
-        }
-
-        // Per-slot GPU resources.
-        for (int s = 0; s < gb::MAX_SLOTS; s++)
-        {
-            bool slotHasData = false;
-            for (int n = 0; n < gb::MAX_LEVELS; n++)
-            {
-                std::vector<uint8_t> nodeBlob, childBlob;
-                gb::readBlob(f, nodeBlob);
-                gb::readBlob(f, childBlob);
-                if (!nodeBlob.empty())
-                {
-                    int cnt = gvdbInfo.nodecnt[n + GVDBInfo::MAX_LEVELS * s];
-                    gvdbInfo.nodelist[n + GVDBInfo::MAX_LEVELS * s] = mpDevice->createStructuredBuffer(
-                        gvdbInfo.nodewid[n + GVDBInfo::MAX_LEVELS * s], cnt, kBufFlags, MemoryType::DeviceLocal, nodeBlob.data(), false);
-                    gvdbInfo.nodelist[n + GVDBInfo::MAX_LEVELS * s]->setName("nodelist" + std::to_string(n));
-                    slotHasData = true;
-                }
-                if (!childBlob.empty())
-                {
-                    gvdbInfo.childlist[n + GVDBInfo::MAX_LEVELS * s] = mpDevice->createBuffer(
-                        childBlob.size(), kBufFlags, MemoryType::DeviceLocal, childBlob.data());
-                    gvdbInfo.childlist[n + GVDBInfo::MAX_LEVELS * s]->setName("childList" + std::to_string(n));
-                }
-            }
-            int32_t hasAtlas = 0; gb::readVal(f, hasAtlas);
-            if (hasAtlas)
-            {
-                int32_t w, h, d, p1, p2, isVel;
-                gb::readVal(f, w); gb::readVal(f, h); gb::readVal(f, d); gb::readVal(f, p1); gb::readVal(f, p2); gb::readVal(f, isVel);
-                std::vector<uint8_t> atlasBlob; gb::readBlob(f, atlasBlob);
-                const float* dens = reinterpret_cast<const float*>(atlasBlob.data());
-                // Same atlas compression as the VBX path above -- this is the BAKED loader, which is what
-                // bistro actually goes through ('GVDB: loaded baked volume ...'), so compressing only the VBX
-                // path left the shipping scene untouched (byte-identical output, unchanged timing).
-                //
-                // maxValue[s] is the slot's peak density, so density/maxValue lands in [0,1] for unorm8 and
-                // densityCompressScaleFactor[s] scales it back in getValueAtlasCoord().
-                const float slotMax = gvdbInfo.maxValue[s];
-                const bool bakedCompress = !isVel && slotMax > 0.f && s != 0;
-                std::vector<uint8_t> bakedQ;
-                if (bakedCompress)
-                {
-                    gvdbInfo.densityCompressScaleFactor[s] = slotMax;
-                    const size_t n = (size_t)w * h * d;
-                    bakedQ.resize(n);
-                    for (size_t i = 0; i < n; i++)
-                    {
-                        float v = dens[i];
-                        int q = (int)std::lround(255.0 * (v / slotMax));
-                        bakedQ[i] = (uint8_t)std::max(0, std::min(255, q));
-                        if (bakedQ[i] == 0 && v > 0.f) bakedQ[i] = 1; // keep thin density from vanishing
-                    }
-                }
-                gvdbInfo.volIn[s] = bakedCompress
-                    ? mpDevice->createTexture3D(w, h, p1, ResourceFormat::R8Unorm, 1, bakedQ.data(), ResourceBindFlags::ShaderResource)
-                    : mpDevice->createTexture3D(w, h, p1, ResourceFormat::R32Float, 1, dens, ResourceBindFlags::ShaderResource);
-                gvdbInfo.volIn[s]->setName("volIn");
-                if (d > 2048)
-                {
-                    gvdbInfo.volIn_part2[s] = bakedCompress
-                        ? mpDevice->createTexture3D(w, h, p2, ResourceFormat::R8Unorm, 1, bakedQ.data() + (size_t)w * h * p1, ResourceBindFlags::ShaderResource)
-                        : mpDevice->createTexture3D(w, h, p2, ResourceFormat::R32Float, 1, dens + (size_t)w * h * p1, ResourceBindFlags::ShaderResource);
-                    gvdbInfo.volIn_part2[s]->setName("volIn_part2");
-                }
-                slotHasData = true;
-            }
-            if (slotHasData) gvdbInfo.bindParameterBlock(gvdbBlock, s);
-        }
-        fclose(f);
-
-        // VolumeDesc (mip 0).
-        volumeDesc.maxDensity = hdr.volumeMaxDensity;
-        volumeDesc.PhaseFunctionConstantG = g;
-        volumeDesc.sigma_s = sigma_s;
-        volumeDesc.sigma_a = sigma_a;
-        volumeDesc.sigma_t = sigma_s.x + sigma_a.x;
-        volumeDesc.tStep = (length(gvdbInfo.xform[0][0].xyz()) + length(gvdbInfo.xform[0][1].xyz()) + length(gvdbInfo.xform[0][2].xyz())) / 3.f;
-        volumeDesc.densityScaleFactor = densityScale;
-        volumeDesc.densityScaleFactorByScaling = densityScale / mVolumeWorldScaling;
-        volumeDesc.invMaxDensity = gvdbInfo.invMaxValue[0];
-        volumeDesc.gridRes = uint3((uint32_t)round(gvdbInfo.bmax[0].x - gvdbInfo.bmin[0].x), (uint32_t)round(gvdbInfo.bmax[0].y - gvdbInfo.bmin[0].y), (uint32_t)round(gvdbInfo.bmax[0].z - gvdbInfo.bmin[0].z));
-        volumeDesc.LeScale = LeScale;
-        volumeDesc.temperatureCutOff = temperatureCutOff;
-        volumeDesc.temperatureScale = temperatureScale;
-        volumeDesc.numMips = gvdbParamBlocks.numMips;
-        volumeDesc.velocityScale = 1;
-        volumeDesc.hasEmission = gvdbParamBlocks.hasEmissionGrid;
-        volumeDesc.hasVelocity = gvdbParamBlocks.hasVelocityGrid;
-        volumeDesc.hasAnimation = curFrameId >= 0;
-        volumeDesc.usePrevGridForReproj = false;
-        mVolumeDescArray.push_back(volumeDesc);
-
-        ShaderVar sceneVar = sceneBlock->getRootVar();
-        sceneVar["volumeDesc"].setBlob(volumeDesc);
-        float4x4 externalModelToWorldMatrix = computeVolumeExternalModelToWorldMatrix();
-        if (curFrameId <= 0)
-        {
-            sceneVar["volumeWorldTranslation"] = mVolumeWorldTranslation;
-            sceneVar["volumeWorldScaling"] = mVolumeWorldScaling;
-            // See the note in addVolume(): transpose to match gvdb.xform's layout in the shader's mul(v, M).
-            sceneVar["volumeExternalWorldToModelMatrix"] = transpose(inverse(externalModelToWorldMatrix));
-            sceneVar["volumeExternalModelToWorldMatrix"] = transpose(externalModelToWorldMatrix);
-            // Emissive lights scale by gScene.emissiveIntensityMultiplier; the shader default (1.f)
-            // does not apply to cbuffer-backed data, so set it explicitly or emissive lighting is 0.
-            sceneVar["emissiveIntensityMultiplier"] = 1.f;
-        }
-
-        // gvdbInfo.xform is in GVDB's layout (transpose of a Falcor-native float4x4); use its transpose
-        // so this host-side transform stays consistent with the Falcor-native external matrix.
-        float4x4 m0 = math::mul(externalModelToWorldMatrix, transpose(gvdbInfo.xform[0]));
-        float3 worldMin = math::mul(m0, float4(gvdbInfo.bmin[0], 1.f)).xyz();
-        float3 worldMax = math::mul(m0, float4(gvdbInfo.bmax[0], 1.f)).xyz();
-        mVDBVolumeBBs.push_back(AABB(worldMin, worldMax));
-        sceneVolumeBB = AABB(worldMin, worldMax);
-
-        gvdbParamBlocks.paramBlock = gvdbBlock;
-        mGVDBInfos.push_back(gvdbInfo);
-        mGVDBVolumes.push_back(gvdbParamBlocks);
-
-        dumpGVDBDiag("BAKED (.bin)", gvdbInfo, volumeDesc, gvdbParamBlocks.numMips);
-
-        mpDevice->getRenderContext()->submit(true);
-        logInfo("GVDB: loaded baked volume '{}' (numMips={}, maxDensity={}) worldBB min({},{},{}) max({},{},{})",
-            bakedPath, hdr.numMips, hdr.volumeMaxDensity, worldMin.x, worldMin.y, worldMin.z, worldMax.x, worldMax.y, worldMax.z);
-        return (uint32_t)mGVDBVolumes.size() - 1;
     }
 
     // -----------------------------------------------------------------------------------------

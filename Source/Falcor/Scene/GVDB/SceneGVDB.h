@@ -142,11 +142,12 @@ namespace Falcor
     private:
         float4x4 computeVolumeExternalModelToWorldMatrix() const;
 
+        // Blackbody colour LUT that volume emission samples (Emission() in VolumeBase.slang). Needed by
+        // BOTH load paths whenever the volume has a temperature grid; created once.
+        void ensureBlackBodyLUT();
+
         // Loads a pre-baked GVDB volume (.bin produced by the GVDBBake tool) and uploads to GPU.
         // This is the path used at runtime (no gvdb.dll in the Falcor process).
-        uint32_t addVolumeFromBaked(VolumeDesc& volumeDesc, AABB& sceneVolumeBB, const ref<ParameterBlock>& sceneBlock,
-            const std::string& bakedPath, float3 sigma_a, float3 sigma_s, float g, float densityScale, float LeScale,
-            float temperatureCutOff, float temperatureScale, float3 worldTranslation, float3 worldRotation, float worldScaling, int curFrameId);
 
         ref<Device> mpDevice;
     };
