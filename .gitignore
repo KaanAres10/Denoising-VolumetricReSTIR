@@ -3,6 +3,7 @@
 
 # Test output folder.
 /tests/data/
+/test-results/
 
 # Media folders.
 /media
@@ -67,3 +68,8 @@
 # Worktree of the falcor4-legacy branch (Falcor 4.x), for reproducing the pre-port OptiX/OIDN
 # videos. Its own build tree and packman deps live here; never tracked by the v8 repo.
 /legacy/
+
+# [9.0] from upstream Falcor.
+token.txt
+
+customjob.yml

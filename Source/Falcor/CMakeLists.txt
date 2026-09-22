@@ -355,6 +355,7 @@ target_sources(Falcor PRIVATE
     Scene/SceneCache.h
     Scene/SceneDefines.slangh
     Scene/SceneIDs.h
+    Scene/SceneIDsPython.cpp
     Scene/SceneRayQueryInterface.slang
     Scene/SceneTypes.slang
     Scene/Shading.slang
@@ -565,7 +566,6 @@ target_sources(Falcor PRIVATE
     Utils/NVAPI.slang
     Utils/NVAPI.slangh
     Utils/ObjectID.h
-    Utils/ObjectIDPython.h
     Utils/PathResolving.cpp
     Utils/PathResolving.h
     Utils/Properties.cpp
@@ -943,7 +943,7 @@ endif()
 
 target_compile_definitions(Falcor
     PUBLIC
-        $<$<CONFIG:Release>:NDEBUG>
+        $<$<CONFIG:Release,RelWithDebInfo>:NDEBUG>
         $<$<CONFIG:Debug>:_DEBUG>
         # Windows.
         $<$<PLATFORM_ID:Windows>:NOMINMAX>  # do not define min/max macros

@@ -113,6 +113,7 @@ ref<GraphicsStateObject> GraphicsState::getGSO(const ProgramVars* pVars)
             mDesc = pGso->getDesc();
             pGso->breakStrongReferenceToDevice();
             mpGsoGraph->setCurrentNodeData(pGso);
+            mDesc = pGso->getDesc();
         }
     }
     return pGso;
