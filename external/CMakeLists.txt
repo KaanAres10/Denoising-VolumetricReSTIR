@@ -481,6 +481,10 @@ if(FALCOR_USE_NRD4 AND EXISTS ${NRD4_DIR}/Include/NRD.h)
         INTERFACE_COMPILE_DEFINITIONS FALCOR_HAS_NRD4=1
         IMPORTED_IMPLIB_RELEASE ${NRD4_DIR}/Lib/Release/NRD.lib
         IMPORTED_LOCATION_RELEASE ${NRD4_DIR}/Lib/Release/NRD.dll
+        # [9.0] added RelWithDebInfo presets; without this the target has no location there and
+        # generation fails under CMP0111.
+        IMPORTED_IMPLIB_RELWITHDEBINFO ${NRD4_DIR}/Lib/Release/NRD.lib
+        IMPORTED_LOCATION_RELWITHDEBINFO ${NRD4_DIR}/Lib/Release/NRD.dll
         IMPORTED_IMPLIB_DEBUG ${NRD4_DIR}/Lib/Release/NRD.lib
         IMPORTED_LOCATION_DEBUG ${NRD4_DIR}/Lib/Release/NRD.dll
     )
