@@ -140,7 +140,19 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
             ls.Li = pdf > 0.f ? lightSample.Le * gScene.emissiveIntensityMultiplier / pdf : float3(0);
 
             outLightIndex = lightSample.triangleIndex + gScene.getLightCount();
-            outLightUV = lightSample.uv;
+            // [9.0 port] TriangleLightSample.uv changed meaning. 8.0's sampleTriangle returned the
+            // random numbers u it was called with; 9.0's returns the barycentrics they produced,
+            // sample_triangle(u).yz = (1 - sqrt(u.x), u.y * sqrt(u.x)). The reservoir stores this as
+            // lightUV and every reuse regenerates the point with sampleTriangleOffset(.., lightUV, ..)
+            // -- i.e. feeds it back in AS u. Storing the barycentrics therefore re-warps them onto a
+            // different point of the emitter than the one sampled: every reused emissive sample was
+            // evaluated at the wrong place, with the uniform 1/area pdf of the right one. That is a
+            // bias, and it rendered the whole image ~1% darker on 9.0.
+            // Inverting the warp restores the random numbers, so lightUV means what it meant on 8.0.
+            {
+                const float su = 1.f - lightSample.uv.x; // = sqrt(u.x)
+                outLightUV = float2(su * su, su > 0.f ? saturate(lightSample.uv.y / su) : 0.f);
+            }
 
             if (!valid)
             {
