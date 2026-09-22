@@ -25,23 +25,38 @@ Scored with `outputs/m_rebaseline_v9.py`, which reuses `m_denoisers.py`'s metric
 
 |                          | s=32 8.0 → 9.0 | plume 8.0 → 9.0 | surfaces 8.0 → 9.0 | detail 8.0 → 9.0 |
 |--------------------------|----------------|-----------------|--------------------|------------------|
-| raw ReSTIR (+ TAA)       | 9.25 → 9.27    | 13.87 → 13.84   | 27.43 → 27.58      | 0.0910 → 0.0910  |
-| OptiX (+ guides)         | 10.81 → **10.58** | 17.48 → **16.93** | 28.69 → 28.71   | 0.0638 → **0.0673** |
-| RELAX-SH                 | 9.27 → 9.34    | 13.59 → 13.61   | 27.15 → 27.40      | 0.0640 → 0.0640  |
-| REBLUR-SH                | 9.32 → 9.41    | 13.55 → 13.59   | 26.90 → 27.13      | 0.0637 → 0.0638  |
-| DLSS Ray Reconstruction  | 8.75 → 8.80    | 13.77 → 13.84   | 26.51 → 26.67      | 0.0651 → 0.0651  |
+| raw ReSTIR (+ TAA)       | 9.25 → 9.23    | 13.87 → 13.83   | 27.43 → 27.44      | 0.0910 → 0.0910  |
+| OptiX (+ guides)         | 10.81 → **10.52** | 17.48 → **16.91** | 28.69 → 28.53   | 0.0638 → **0.0673** |
+| RELAX-SH                 | 9.27 → 9.30    | 13.59 → 13.63   | 27.15 → 27.22      | 0.0640 → 0.0640  |
+| REBLUR-SH                | 9.32 → 9.40    | 13.55 → 13.64   | 26.90 → 26.99      | 0.0637 → 0.0637  |
+| DLSS Ray Reconstruction  | 8.75 → 8.75    | 13.77 → 13.80   | 26.51 → 26.49      | 0.0651 → 0.0652  |
 
-Raw, RELAX, REBLUR and RR move by 1% or less, and the ranking is the same in every column. OptiX is the
-one real change, and it is an improvement: plume 3.1% more stable, 5.5% more detail.
+9.0 here is `rb_v9uv_*`, with every port fix below applied. Raw and RR match 8.0 to 0.3%, RELAX and
+REBLUR to under 1%, and the ranking is the same in every column. OptiX is the one real change, and it
+is an improvement: plume 3.3% more stable, 5.5% more detail.
 
-**That ~1% drift is brightness, not stability.** Every configuration renders ~1% darker on 9.0
-(-0.93% to -1.33% mean level), and the metric divides by the mean, so a 1% darker image scores ~1%
-worse at identical flicker. The observed +0.1..+1.0% for RELAX/REBLUR/RR is at or below that, so
-their absolute flicker is unchanged or marginally lower. The darkening is in the renderer (raw shows
-it too), not the tone mapper (9.0's change there is a type declaration only), and spread thinly over
-lit surfaces rather than in one object; the plume differs in both directions, i.e. different samples.
-Which 9.0 change causes it is NOT found -- candidates are the emissive light sampler / LightCollection
-and material changes. Finding it would take a bisection.
+**A 1% darker render, from a Falcor API whose meaning changed -- FIXED.** Before this fix every
+configuration rendered 0.93-1.33% darker on 9.0, in the renderer itself (raw showed it; the tone
+mapper's 9.0 change is a type declaration only), spread thinly over lit surfaces. Because the metric
+divides by the mean, it also read as a uniform ~1% "regression" in every column.
+
+Cause: 9.0's `sampleTriangle` sets `TriangleLightSample.uv` to the sample's BARYCENTRICS,
+`sample_triangle(u).yz = (1 - sqrt(u.x), u.y * sqrt(u.x))`; 8.0 set it to the random numbers `u`.
+`VolumeUtils.slang` stores it as the reservoir's `lightUV`, and every reuse regenerates the light point
+with `sampleTriangleOffset(.., lightUV, ..)` -- feeding it back in AS `u`. On 9.0 that warps the
+barycentrics a second time onto a different point of the emitter, so each reused emissive sample was
+evaluated away from where it was sampled, under the uniform 1/area pdf of the right point: a bias.
+It compiled cleanly because the type and the name did not change -- only the meaning.
+
+Fix: invert the warp where the reservoir is written, `u = ((1 - uv.x)^2, uv.y / (1 - uv.x))`, so
+`lightUV` means what it meant on 8.0. That one change moves 9.0's raw mean level from -0.93% to
+-0.05% of 8.0's, and by screen region from uniformly darker (-0.45..-1.56%) to mixed signs within
++-0.45%, i.e. noise. The pixel-level difference from 8.0 stays (different random streams, most likely
+from the new compiler's float results flipping individual sample choices -- `PAD_RANDOM_NUMBERS` is
+off for this pass), but that changes the noise, not the expectation. OptiX's output stays 0.47%
+darker; raw, which OptiX denoises, does not, so that is OptiX now using its normal guide.
+**Anything else that stores a Falcor `TriangleLightSample.uv` and feeds it back into `sampleTriangle`
+has the same bug on 9.0.**
 
 **The OptiX gain is 8.0's normal guide never reaching OptiX.** Answers "The OptiX normal guide is
 inert" below: in 8.0's `OptixDenoiser_::convertNormalsToBuf` the conversion shader's variables are
@@ -56,9 +71,9 @@ Isolated by putting the old decode back into 9.0 for one run (`rb_v9_optix_oldde
 | 8.0 -> 9.0 with the old decode    | -1.7% | -2.5% | +4.5%  |
 | old decode -> fixed decode        | -0.5% | -0.7% | +0.9%  |
 
-So most of it is the guide being delivered at all; the decode is the smaller part. The first row also
-carries the ~1% darkening, which counts AGAINST OptiX's score, so the dispatch fix is if anything
-larger than shown. **Every OptiX number measured on 8.0 was OptiX without a normal guide.** OptiX
+So most of it is the guide being delivered at all; the decode is the smaller part. Both runs predate
+the lightUV fix above, so the first row also carries the ~1% darkening, which counts AGAINST OptiX's
+score -- the dispatch fix is if anything larger than shown. **Every OptiX number measured on 8.0 was OptiX without a normal guide.** OptiX
 still ranks last on 9.0, so the conclusion stands, but its gap to the others is smaller than 8.0 said.
 
 **The comparison is exact, not statistical.** Two runs of the same build are byte-identical, so every
