@@ -52,6 +52,13 @@ cbuffer CB
     bool    gOutputDepth;
     bool    gOutputDeterministicMV;
     bool    gDepthAsNDC;            // false = linear view Z (GBufferRT.linearZ layout)
+    // Depth/mvec follow the medium only where it supplies at least this share of the pixel's light;
+    // 0 = wherever it is met at all. See mGuideMediumMinShare.
+    float   gGuideMediumMinShare;
+    // The previous frame's light statistics (GuideLightStats.cs.slang) are bound and usable, and the
+    // mip that averages them over the neighbourhood.
+    bool    gGuideLightStatsValid;
+    float   gGuideLightStatsMip;
     // Volumetric guides for DLSS Ray Reconstruction. RR's albedo/normal/roughness guides describe a
     // surface; a participating medium has none, so instead we export how much of the pixel the
     // medium covers and a stand-in normal, and blend toward medium-like values downstream.
@@ -116,6 +123,31 @@ RWTexture2D<float4> gMediumCoverage;
 RWTexture2D<float4> gMediumTransmittance;
 // Raw expected scatter distance along the ray (world units), -1 where the ray met no medium.
 RWTexture2D<float> gScatterDistance;
+// Running average of (medium light, coverage, surface light, transmittance), with mips -- the
+// previous frame's, from GuideLightStats.cs.slang. Read only for the depth/mvec layer choice.
+Texture2D<float4> gGuideLightStats;
+
+/** Share of this pixel's light that comes from the medium, for choosing which layer depth/mvec
+    describe. `coverage` and `transmittance` are this pixel's own (exact, from the march); the two
+    layers' brightness comes from the neighbourhood statistics as medium light per unit coverage and
+    surface light per unit transmittance. Without statistics both layers count as equally bright, so
+    the share is simply the coverage.
+*/
+float mediumLightShare(int2 pixelPos, float coverage, float transmittance)
+{
+    if (gGuideLightStatsValid)
+    {
+        const float2 uv = (float2(pixelPos) + 0.5f) / float2(gResolution);
+        const float4 s = gGuideLightStats.SampleLevel(gLinearSampler, uv, gGuideLightStatsMip);
+        if (s.y > 1e-4f && s.w > 1e-4f)
+        {
+            const float mediumLight = coverage * (s.x / s.y);
+            const float surfaceLight = transmittance * (s.z / s.w);
+            if (mediumLight + surfaceLight > 0.f) return mediumLight / (mediumLight + surfaceLight);
+        }
+    }
+    return coverage;
+}
 
 [numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
@@ -186,6 +218,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
             // Pick the representative depth: the expected scattering distance inside the medium,
             // else the opaque surface hit, else the far plane. All are distances along the ray.
             float t = expectedT;
+            // ...but the medium only where it supplies enough of the pixel's light to be what the pixel
+            // shows (see mGuideMediumMinShare). Measured mid-orbit on bistro: 28k pixels of the plume's
+            // outer fringe -- 11k of them below 0.1% coverage -- carried the smoke's motion, 6.9 px per
+            // frame away from the ground's they actually show, which is exactly the veil RR laid over
+            // that ground. Skipped entirely at 0, so the outputs stay bit-identical to the old rule.
+            if (t >= 0.f && gGuideMediumMinShare > 0.f &&
+                mediumLightShare(pixelPos, 1.f - accuTransmittance, accuTransmittance) < gGuideMediumMinShare)
+                t = -1.f;
 #ifdef SURFACE_SCENE
             if (t < 0.f && hitInfo.isValidHit()) t = hitInfo.rayT;
 #endif

@@ -12,6 +12,7 @@ target_sources(VolumetricReSTIR PRIVATE
     CopyReservoirs.cs.slang
     FinalShading.cs.slang
     GenerateFeatures.cs.slang
+    GuideLightStats.cs.slang
     HostDeviceSharedConstants.slang
     InlineRayTracingHelpers.slang
     Reservoir.slang

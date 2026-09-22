@@ -179,6 +179,13 @@ private:
         uint32_t mTemporalReprojectionMode = kReprojectionLinear;
         uint32_t mTemporalMISMethod = kMISTalbot;
         int mTemporalReprojectionMipLevel = 1;
+        /// Draw the temporal reprojection point from the pixel alone -- the surface with probability T,
+        /// else a point by density -- instead of from the canonical sample's own depth. Off = the
+        /// original behaviour. See TemporalReuse.cs.slang for why it matters while the camera moves.
+        bool mTemporalReprojectIndependent = false;
+        /// With mTemporalReprojectIndependent: follow the surface with the surface's share of the pixel's
+        /// LIGHT (the guides' light-share statistics) instead of its share of the coverage (T). Off = T.
+        bool mTemporalReprojectByLightShare = false;
 
         /////////////////////
         /// Spatial Reuse
@@ -241,6 +248,8 @@ private:
             ar("mTemporalReprojectionMode", mTemporalReprojectionMode);
             ar("mTemporalMISMethod", mTemporalMISMethod);
             ar("mTemporalReprojectionMipLevel", mTemporalReprojectionMipLevel);
+            ar("mTemporalReprojectIndependent", mTemporalReprojectIndependent);
+            ar("mTemporalReprojectByLightShare", mTemporalReprojectByLightShare);
             ar("mSpatialReuseRounds", mSpatialReuseRounds);
             ar("mSpatialVisibilityMipLevel", mSpatialVisibilityMipLevel);
             ar("mSpatialLightingMipLevel", mSpatialLightingMipLevel);
@@ -342,6 +351,9 @@ private:
     mutable float mUpscaleRatio = 0.58f;
     /// Last render resolution actually used, for display in the UI.
     uint2 mLastRenderDims = {0, 0};
+    /// Resolution the per-pixel buffers (reservoirs, V-buffers, colour history) were allocated for.
+    /// A resize is detected against THIS -- see execute().
+    uint2 mBufferDims = {0, 0};
     /// Last swapchain/display size, so the UI presets are a fraction of the DISPLAY rather than of
     /// the current render size (which would compound on every click).
     uint2 mLastDisplayDims = {0, 0};
@@ -366,6 +378,31 @@ private:
     // true = NDC depth. Runtime-switchable because DLSSPass advertises NDC to NGX but linear Z is
     // what the shipped graph actually uses.
     bool mDepthAsNDC = false;
+
+    // Minimum share of a pixel's LIGHT that must come from the medium for the depth and deterministic
+    // motion-vector outputs to describe the medium (its expected scattering depth); below it they
+    // describe the surface behind, or the far plane. 0 = wherever the ray meets any medium at all --
+    // the original rule, and the right one for a consumer that denoises the medium's own light (NRD's
+    // volume half). It is wrong for one that denoises the WHOLE pixel (RR, TAA): every pixel of the
+    // smoke's faint outer fringe, where the surface behind is nearly all of what is seen, is handed
+    // the smoke's motion, so under camera motion RR reprojects that ground as if it were smoke and
+    // drags the smoke's history over it -- the veil around the silhouette.
+    //
+    // A share of light, not of coverage, so the rule carries across scenes: the same coverage is most
+    // of the light for a glowing fire over a dark street and almost none for grey smoke over sunlit
+    // ground. The share is estimated from the previous frame's own light split (GuideLightStats), so
+    // this is GUIDE-ONLY -- the estimator's sampling, reuse and shading never see it.
+    float mGuideMediumMinShare = 0.f;
+    // false = ignore the light statistics and count both layers as equally bright, i.e. the threshold
+    // becomes a plain coverage threshold. For comparison only.
+    bool mGuideLightShareFromStats = true;
+    // Light-share statistics behind mGuideMediumMinShare: a running average of (medium light, coverage,
+    // surface light, transmittance) per pixel, with mips for neighbourhood means. Allocated only while
+    // the rule is on.
+    ref<ComputePass> mGuideLightStatsPass;
+    ref<Texture> mGuideLightStats;
+    bool mGuideLightStatsValid = false;
+    std::string mGuideLightStatsDefines;   // MAX_BOUNCES/VERTEX_REUSE the pass was compiled with
 
     // camera animation
     float3 mBackedupCameraPosition;

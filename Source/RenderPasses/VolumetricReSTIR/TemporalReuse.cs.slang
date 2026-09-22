@@ -55,6 +55,10 @@ cbuffer CB
     int     gReprojectionMipLevel;
     uint    gReprojectionMode;
     bool    gOutputMotionVec;
+    bool    gReprojectIndependent;  // see the reprojection point below
+    bool    gReprojectByLightShare; // with gReprojectIndependent: see reprojectSurfaceProbability()
+    bool    gGuideLightStatsValid;  // gGuideLightStats holds last frame's statistics
+    float   gGuideLightStatsMip;
     float3  gPrevCameraU;
     float3  gPrevCameraV;
     float3  gPrevCameraW;
@@ -79,6 +83,35 @@ RWTexture2D<float2> gMotionVec;
 StructuredBuffer<VBufferItem> gVBuffer;
 StructuredBuffer<VBufferItem> gTemporalVBuffer;
 #endif
+/// GuideLightStats.cs.slang's running average of (medium light, coverage, surface light, transmittance).
+Texture2D<float4> gGuideLightStats;
+
+/** How often gReprojectIndependent follows the SURFACE's motion rather than the medium's.
+
+    By default the transmittance T -- the surface's share of the pixel's COVERAGE. At thin medium that
+    follows the surface nearly always, so the medium's samples rarely find a matching history and its
+    light is noisy in motion (it is not biased: any choice made without looking at this frame's sample
+    keeps the Talbot weights summing to one). With gReprojectByLightShare it is the surface's share of
+    the pixel's LIGHT, so the history follows whichever layer supplies the light. Estimated the way
+    GenerateFeatures' mediumLightShare() does for the guides, from the same statistics: this pixel's
+    coverage and T, times the neighbourhood's medium light per unit coverage and surface light per unit
+    transmittance -- last frame's running average, so still independent of this frame's sample.
+*/
+float reprojectSurfaceProbability(int2 pixelPos, float T)
+{
+    if (gReprojectByLightShare && gGuideLightStatsValid)
+    {
+        const float2 uv = (float2(pixelPos) + 0.5f) / float2(gResolution);
+        const float4 s = gGuideLightStats.SampleLevel(gLinearSampler, uv, gGuideLightStatsMip);
+        if (s.y > 1e-4f && s.w > 1e-4f)
+        {
+            const float mediumLight = (1.f - saturate(T)) * (s.x / s.y);
+            const float surfaceLight = saturate(T) * (s.z / s.w);
+            if (mediumLight + surfaceLight > 0.f) return surfaceLight / (mediumLight + surfaceLight);
+        }
+    }
+    return T;
+}
 
 [numthreads(16, 16, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
@@ -130,7 +163,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
         if (gReprojectionMode != kReprojectionNone)
         {
-            float reprojDepth = taps[0].depth;
+            // The reprojection point picks the temporal neighbour. By default it is the canonical
+            // sample's own depth whenever that sample scattered in the medium, so the neighbour depends
+            // on the sample: the canonical sample's Talbot weight is computed against a neighbour chosen
+            // FOR it, while the neighbour's samples are weighted against the neighbours chosen for all
+            // the OTHER canonical samples, and the two weights stop summing to one. With a still camera
+            // every choice lands on the same pixel and nothing changes. While the camera moves,
+            // parallax sends medium and surface to different pixels, and where the medium is thin --
+            // its samples a minority, most neighbours picked through the surface behind it -- it loses
+            // light. gReprojectIndependent draws the point from the pixel alone, as the surface-sample
+            // branch below already does: the surface with probability T, else a point by density.
+            // Bistro, stop-and-go, lights frozen, vs a 256-frame truth, medium light while moving (thin /
+            // silhouette): 0.60 / 0.80 -> 0.99 / 1.00; still camera unchanged; ~1.7-2x the noise at a
+            // moving silhouette (its history now matches it less often); +0.06 ms at 960x540.
+            float reprojDepth = (gReprojectIndependent && gReprojectionMode == kReprojectionLinear) ? kRayTMax : taps[0].depth;
             bool reprojectUsingVolumeSample = true;
 
             if (reprojDepth == kRayTMax && gReprojectionMode != kReprojectionNoBackground && !isBackgroundReservoir)
@@ -145,7 +191,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 {
                     reprojDepth = hitInfo.rayT;
                     // are we almost surface or almost volume?
-                    if (sampleNext1D(sg) < centerFeatures.transmittance)
+                    if (sampleNext1D(sg) < (gReprojectIndependent ? reprojectSurfaceProbability(pixelPos, centerFeatures.transmittance)
+                                                                   : centerFeatures.transmittance))
                     {
                         reprojectUsingVolumeSample = false;
                     }

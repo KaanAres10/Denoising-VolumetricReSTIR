@@ -125,6 +125,13 @@ namespace
         { (uint32_t)EmissiveLightSamplerType::Power, "Power" }
     };
 
+    /// The mip the light-share statistics are read at: a neighbourhood of ~1/32 of the image height,
+    /// 16 px at 540p and 32 px at 1080p.
+    float guideLightStatsMip(const ref<Texture>& pStats, uint32_t height)
+    {
+        const float mip = std::round(std::log2(std::max(1.f, float(height) / 32.f)));
+        return std::min(mip, float(pStats->getMipCount() - 1));
+    }
 };
 
 
@@ -242,6 +249,8 @@ void VolumetricReSTIR::parseProperties(const Properties& props)
     props.getTo("mOutputDepth", mOutputDepth);
     props.getTo("mOutputVolumeGuides", mOutputVolumeGuides);
     props.getTo("mDepthAsNDC", mDepthAsNDC);
+    props.getTo("mGuideMediumMinShare", mGuideMediumMinShare);
+    props.getTo("mGuideLightShareFromStats", mGuideLightShareFromStats);
     props.getTo("coverageKnee", mCoverageKnee);
     {
         std::string mode;
@@ -301,6 +310,8 @@ Properties VolumetricReSTIR::getProperties() const
     props.set("mOutputDepth", mOutputDepth);
     props.set("mOutputVolumeGuides", mOutputVolumeGuides);
     props.set("mDepthAsNDC", mDepthAsNDC);
+    props.set("mGuideMediumMinShare", mGuideMediumMinShare);
+    props.set("mGuideLightShareFromStats", mGuideLightShareFromStats);
     props.set("mVolumeNormalMode", mVolumeNormalMode == VolumeNormalMode::Gradient ? "Gradient" : "Camera");
     props.set("outputSize", mOutputSizeSelection);
     if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed) props.set("fixedOutputSize", mFixedOutputSize);
@@ -668,10 +679,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         mLastVertexReuse = mParams.mVertexReuse;
     }
 
-    // accumulated_color is an optional output: the graph compiler does not allocate an optional
-    // output that is neither connected nor markOutput'd, so this must not be dereferenced blindly.
-    ref<Texture> pColorOut = renderData.getTexture(kAccumulatedColorOutput);
-    bool isScreenSizeChanged = pColorOut && (pColorOut->getHeight() != scrHeight || pColorOut->getWidth() != scrWidth);
+    // A resize is detected against the size the per-pixel buffers were ALLOCATED for. This used to
+    // compare the accumulated_color output with the render size (as the 4.x original did), but the
+    // graph reallocates that output at the new size before execute() runs, so the two always agreed:
+    // a resized window kept the old reservoirs, and since they are indexed linearly only the first
+    // old-width x old-height pixels got samples -- 960x540 stretched into a 1278-wide window filled
+    // 405 of its 700 rows and left the rest black.
+    const bool isScreenSizeChanged = any(renderDims != mBufferDims);
 
     // compute extra bounce storage
     int totalReservoirCount = reservoirCount;
@@ -711,6 +725,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         mPerPixelColorBuffer[0] = mpDevice->createTexture2D(scrWidth, scrHeight, ResourceFormat::RGBA32Float, 1, 1, nullptr, ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
         mPerPixelColorBuffer[1] = mpDevice->createTexture2D(scrWidth, scrHeight, ResourceFormat::RGBA32Float, 1, 1, nullptr, ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
     }
+    mBufferDims = renderDims;
 
     int numInitialSamplingRounds = 1;
     int numTotalRounds = (int)(mParams.mEnableSpatialReuse ? mParams.mSpatialReuseRounds : 0) + (int)mParams.mEnableTemporalReuse + 1 + numInitialSamplingRounds;
@@ -788,6 +803,20 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         vars["CB"]["gOutputDepth"] = writeDepth;
         vars["CB"]["gOutputDeterministicMV"] = writeDetMV;
         vars["CB"]["gDepthAsNDC"] = mDepthAsNDC;
+
+        // Which layer depth/mvec describe (mGuideMediumMinShare). The light-share statistics are the
+        // PREVIOUS frame's, written after final shading below; until there are any (first frame, just
+        // resized, rule just switched on) the shader assumes both layers equally bright.
+        const bool guideShare = mGuideMediumMinShare > 0.f && (writeDepth || writeDetMV);
+        const bool statsUsable = guideShare && mGuideLightStatsValid && mGuideLightStats &&
+                                 mGuideLightStats->getWidth() == scrWidth && mGuideLightStats->getHeight() == scrHeight;
+        vars["CB"]["gGuideMediumMinShare"] = guideShare ? mGuideMediumMinShare : 0.f;
+        vars["CB"]["gGuideLightStatsValid"] = statsUsable;
+        if (statsUsable)
+        {
+            vars["gGuideLightStats"] = mGuideLightStats;
+            vars["CB"]["gGuideLightStatsMip"] = guideLightStatsMip(mGuideLightStats, scrHeight);
+        }
 
         // Each guide is gated on ITS OWN texture. These used to share one condition requiring both to
         // be allocated, so a graph that asked for only mediumAlpha got a silently zeroed buffer --
@@ -878,8 +907,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
         if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
 
+        // The duplicated condition here was a dangling if: the `else` bound to the inner
+        // `if`, so a volume-only scene (mUseSurfaceScene == false) skipped BOTH branches and
+        // gScene was never bound for this pass.
         if (mParams.mUseSurfaceScene)
-        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mpTraceRaysPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mpTraceRaysPass->getRootVar()["gScene"]);
+            mpScene->bindShaderDataForRaytracing(pRenderContext, mpTraceRaysPass->getRootVar()["gScene"], 0);
+        else
+            mpScene->bindShaderData(mpTraceRaysPass->getRootVar()["gScene"]);
 
         mpTraceRaysPass->execute(pRenderContext, uint3(renderDims, 1));
     }
@@ -930,6 +964,21 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             vars["CB"]["gPrevProjMat"] = mPrevProjMat;
             vars["CB"]["gPrevJitter"] = mApplyPrevJitter ? mPrevJitter : float2(0.f);
             vars["CB"]["gReprojectionMode"] = mParams.mTemporalReprojectionMode;
+            vars["CB"]["gReprojectIndependent"] = mParams.mTemporalReprojectIndependent;
+            // Last frame's light-share statistics (written after final shading below), for the choice of
+            // which layer's motion to follow. Until there are any, the shader falls back to T.
+            {
+                const bool byShare = mParams.mTemporalReprojectIndependent && mParams.mTemporalReprojectByLightShare;
+                const bool statsUsable = byShare && mGuideLightStatsValid && mGuideLightStats &&
+                                         mGuideLightStats->getWidth() == scrWidth && mGuideLightStats->getHeight() == scrHeight;
+                vars["CB"]["gReprojectByLightShare"] = byShare;
+                vars["CB"]["gGuideLightStatsValid"] = statsUsable;
+                if (statsUsable)
+                {
+                    vars["gGuideLightStats"] = mGuideLightStats;
+                    vars["CB"]["gGuideLightStatsMip"] = guideLightStatsMip(mGuideLightStats, scrHeight);
+                }
+            }
             vars["CB"]["gPrevCameraU"] = mPrevCameraU;
             vars["CB"]["gPrevCameraV"] = mPrevCameraV;
             vars["CB"]["gPrevCameraW"] = mPrevCameraW;
@@ -943,8 +992,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
             if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
 
+            // The duplicated condition here was a dangling if: the `else` bound to the inner
+            // `if`, so a volume-only scene (mUseSurfaceScene == false) skipped BOTH branches and
+            // gScene was never bound for this pass.
             if (mParams.mUseSurfaceScene)
-            if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mTemporalReusePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mTemporalReusePass->getRootVar()["gScene"]);
+                mpScene->bindShaderDataForRaytracing(pRenderContext, mTemporalReusePass->getRootVar()["gScene"], 0);
+            else
+                mpScene->bindShaderData(mTemporalReusePass->getRootVar()["gScene"]);
 
             mTemporalReusePass->execute(pRenderContext, (int)scrWidth , (int)scrHeight );
 
@@ -1006,8 +1060,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
                 if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
                 if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
 
+                // NOTE the stray duplicated condition here used to leave the scene UNBOUND entirely
+                // when mUseSurfaceScene was false: the `else` attached to the inner `if`, so the
+                // outer one skipped both branches. Volume-only scenes silently got no gScene.
                 if (mParams.mUseSurfaceScene)
-                if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mSpatialReusePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mSpatialReusePass->getRootVar()["gScene"]);
+                    mpScene->bindShaderDataForRaytracing(pRenderContext, mSpatialReusePass->getRootVar()["gScene"], 0);
+                else
+                    mpScene->bindShaderData(mSpatialReusePass->getRootVar()["gScene"]);
 
                 mSpatialReusePass->execute(pRenderContext, (int)scrWidth , (int)scrHeight );
                 totalRoundId++;
@@ -1090,10 +1149,65 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
         if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
 
+        // The duplicated condition here was a dangling if: the `else` bound to the inner
+        // `if`, so a volume-only scene (mUseSurfaceScene == false) skipped BOTH branches and
+        // gScene was never bound for this pass.
         if (mParams.mUseSurfaceScene)
-        if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mFinalShadingPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mFinalShadingPass->getRootVar()["gScene"]);
+            mpScene->bindShaderDataForRaytracing(pRenderContext, mFinalShadingPass->getRootVar()["gScene"], 0);
+        else
+            mpScene->bindShaderData(mFinalShadingPass->getRootVar()["gScene"]);
 
         mFinalShadingPass->execute(pRenderContext, scrWidth, scrHeight);
+    }
+
+    // Light-share statistics for the NEXT frame's depth/mvec guides (mGuideMediumMinShare), and -- only
+    // with mTemporalReprojectByLightShare -- for the next frame's temporal reuse, to choose which
+    // layer's motion to follow. That is a choice of neighbour, never a weight, and it is made from last
+    // frame's averages rather than this frame's sample, so the Talbot weights still sum to one.
+    // Otherwise nothing in the estimator reads what this writes. It reads the finished frame and the
+    // reservoirs final shading just used. Reference mode has no reservoirs to classify, so the guides
+    // fall back to the equal-brightness assumption there.
+    ref<Texture> pShadedFrame = renderData.getTexture(kAccumulatedColorOutput);
+    const bool guideNeedsStats = mGuideMediumMinShare > 0.f && mGuideLightShareFromStats &&
+                                 (renderData.getTexture(kLinearZ) || renderData.getTexture(kMotionVec));
+    const bool reprojNeedsStats = mParams.mEnableTemporalReuse && mParams.mTemporalReprojectIndependent &&
+                                  mParams.mTemporalReprojectByLightShare;
+    if ((guideNeedsStats || reprojNeedsStats) && !mParams.mUseReference && pShadedFrame)
+    {
+        FALCOR_PROFILE(pRenderContext, "Guide light stats");
+        // The reservoir layout depends on MAX_BOUNCES and VERTEX_REUSE, so rebuild when those change.
+        const std::string defines = std::to_string(mParams.mMaxBounces) + (mParams.mVertexReuse ? "/vr" : "");
+        if (!mGuideLightStatsPass || mGuideLightStatsDefines != defines)
+        {
+            DefineList d;
+            d.add("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
+            if (mParams.mVertexReuse) d.add("VERTEX_REUSE");
+            mGuideLightStatsPass = ComputePass::create(mpDevice, kShaderDirectory + "GuideLightStats.cs.slang", "main", d);
+            mGuideLightStatsDefines = defines;
+        }
+        if (!mGuideLightStats || mGuideLightStats->getWidth() != scrWidth || mGuideLightStats->getHeight() != scrHeight)
+        {
+            mGuideLightStats = mpDevice->createTexture2D(scrWidth, scrHeight, ResourceFormat::RGBA32Float, 1, Resource::kMaxPossible, nullptr,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::RenderTarget);
+            mGuideLightStatsValid = false;
+        }
+        auto vars = mGuideLightStatsPass->getRootVar();
+        vars["CB"]["gResolution"] = uint2(scrWidth, scrHeight);
+        // ~5-frame running average: enough to calm the all-or-nothing per-pixel split, short enough to
+        // follow a moving camera (the window it is read over is 16-32 px anyway).
+        vars["CB"]["gBlend"] = mGuideLightStatsValid ? 0.2f : 1.f;
+        vars["gColor"] = pShadedFrame;
+        vars["gFinalReservoirs"] = mPerPixelReservoirBuffer[totalRoundId % 2];
+        vars["gFeatures"] = mReservoirFeatureBuffer;
+        vars["gStats"].setUav(mGuideLightStats->getUAV(0));
+        mGuideLightStatsPass->execute(pRenderContext, uint3(scrWidth, scrHeight, 1));
+        mGuideLightStats->generateMips(pRenderContext);
+        mGuideLightStatsValid = true;
+    }
+    else
+    {
+        // Restart the average whenever the rule is off, so switching it back on never reads stale light.
+        mGuideLightStatsValid = false;
     }
 
 
@@ -1336,6 +1450,22 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
         }
 
         scaleGroup.text(fmt::format("Rendering at {}x{}  (display {}x{})", mLastRenderDims.x, mLastRenderDims.y, mLastDisplayDims.x, mLastDisplayDims.y));
+    }
+
+    if (auto guideGroup = widget.group("Depth / motion-vector outputs"))
+    {
+        guideGroup.slider("Medium min light share", mGuideMediumMinShare, 0.f, 1.f);
+        guideGroup.tooltip(
+            "Where the medium supplies at least this share of the pixel's light, linearZ and the deterministic "
+            "mvec follow the medium; elsewhere, the surface behind it. 0 = any medium at all (right for NRD's "
+            "volume half). RR and TAA need the layer the pixel actually shows: at 0 the smoke's faint fringe "
+            "gets the smoke's motion and RR smears a veil of smoke over the ground there. The share comes from "
+            "the previous frame's light split; it never changes what the estimator renders.",
+            true
+        );
+        guideGroup.checkbox("Share from light statistics", mGuideLightShareFromStats);
+        guideGroup.tooltip("Off: count the medium and the surface behind it as equally bright, which makes the "
+                           "threshold a plain coverage threshold. For comparison only.", true);
     }
 
     if (auto logGroup = widget.group("Logging"))
@@ -1597,6 +1727,15 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
             }
 
             dirty |= widget.var("Reprojection Mip Level", mParams.mTemporalReprojectionMipLevel, 0, mpScene->getVolumeNumMips() - 1);
+            dirty |= widget.checkbox("Reprojection independent of the sample", mParams.mTemporalReprojectIndependent);
+            widget.tooltip("Pick last frame's pixel from this pixel alone (the surface with probability T, else a "
+                           "point by density) instead of from the current sample's own depth. The Talbot weights "
+                           "assume the neighbour does not depend on the sample; while the camera moves, breaking "
+                           "that darkens thin medium. Velocity-resampling mode only.", true);
+            dirty |= widget.checkbox("...follow the layer by light share", mParams.mTemporalReprojectByLightShare);
+            widget.tooltip("With the option above: follow the surface with the surface's share of the pixel's "
+                           "light (the guides' light-share statistics, last frame's) instead of its share of the "
+                           "coverage, so the medium's history matches where the medium supplies the light.", true);
             {
                 Gui::DropdownList op;
                 op.push_back({ 0, "No MIS (biased when moving)" });
@@ -1733,26 +1872,33 @@ void VolumetricReSTIR::setProperties(const Properties& props)
         mpEmissiveSampler = nullptr;
     }
 
-    // reset animation
-    if (mVolumeAnimationSelectedFrameId == -1)
+    // The block below needs the scene, which the pass only receives once its graph is added to
+    // Mogwai. A script setting a property while it BUILDS the graph (vr_graph's add_denoiser does)
+    // used to dereference a null mpScene here and crash without a message.
+    if (mpScene)
     {
-        if (mpScene->mUseAnimatedVolume)
-            mpScene->mVDBAnimationFrameId = -1;
+        // reset animation
+        if (mVolumeAnimationSelectedFrameId == -1)
+        {
+            if (mpScene->mUseAnimatedVolume)
+                mpScene->mVDBAnimationFrameId = -1;
+            else
+                mpScene->mVDBAnimationFrameId = 0;
+            mpScene->mPauseVDBAnimation = false;
+        }
         else
-            mpScene->mVDBAnimationFrameId = 0;
-        mpScene->mPauseVDBAnimation = false;
-    }
-    else
-    {
-        mpScene->mVDBAnimationFrameId = mVolumeAnimationSelectedFrameId - 1;
-        mpScene->mPauseVDBAnimation = true;
-    }
+        {
+            mpScene->mVDBAnimationFrameId = mVolumeAnimationSelectedFrameId - 1;
+            mpScene->mPauseVDBAnimation = true;
+        }
 
-    overrideVolumeDesc();
-    mpScene->getCurrentVolumeDesc().usePrevGridForReproj = mParams.mUsePrevVolumeForReproj;
+        overrideVolumeDesc();
+        mpScene->getCurrentVolumeDesc().usePrevGridForReproj = mParams.mUsePrevVolumeForReproj;
 
-    mAnimationFrameCount = 0;
-    mpScene->getEnvMap()->setRotation(mSavedEnvMapRotation);
+        mAnimationFrameCount = 0;
+        // Bistro has no environment map, so this was a second crash waiting for any runtime set there.
+        if (auto pEnvMap = mpScene->getEnvMap()) pEnvMap->setRotation(mSavedEnvMapRotation);
+    }
 
     if (props.has("ToggleCameraAnimation"))
     {
