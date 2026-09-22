@@ -44,6 +44,8 @@ const char kSDKVariant[] = "sdkVariant";
 /// Subdirectory of the runtime directory holding the legacy (CNN) feature DLL. Populated by
 /// build_scripts/deploycommon.bat from external/dlss-legacy-37.
 const char kLegacySDKSubdir[] = "dlss_cnn";
+/// Subdirectory holding the 310.7.0 feature DLLs, from external/dlss-310. Shared with DLSSDPass.
+const char kPrevious310_7Subdir[] = "dlss_310_7";
 const char kMotionVectorScale[] = "motionVectorScale";
 const char kIsHDR[] = "isHDR";
 const char kSharpness[] = "sharpness";
@@ -161,7 +163,8 @@ void DLSSPass::renderUI(Gui::Widgets& widget)
 
         widget.dropdown("SDK variant", mSDKVariant);
         widget.tooltip(
-            "Which nvngx_dlss.dll NGX loads: Current = 310.7.0 (transformer, presets J/K/L/M), "
+            "Which nvngx_dlss.dll NGX loads: Current = the DLL beside the executable (310.9.1, transformer, "
+            "presets J/K/L/M), Previous310_7 = 310.7.0 (transformer, J/K/L/M), "
             "LegacyCNN = 3.7.20 (convolutional, presets A..F). Read only when the NGX session is "
             "first created -- changing it needs a restart, so compare the two as separate runs. "
             "The log line '[NGX] loaded nvngx_dlss.dll version ...' reports what is really running.",
@@ -203,9 +206,12 @@ void DLSSPass::initializeDLSS(RenderContext* pRenderContext)
     if (!mpNGXWrapper)
     {
         // The feature search path is what selects the DLL, and therefore the network architecture.
-        // kLegacySDKSubdir holds the 3.7.20 nvngx_dlss.dll, deployed beside the executable.
-        const std::filesystem::path searchPath =
-            mSDKVariant == SDKVariant::LegacyCNN ? getRuntimeDirectory() / kLegacySDKSubdir : getRuntimeDirectory();
+        // Each subdirectory holds one SDK's nvngx_dlss.dll, deployed beside the executable.
+        std::filesystem::path searchPath = getRuntimeDirectory();
+        if (mSDKVariant == SDKVariant::LegacyCNN)
+            searchPath /= kLegacySDKSubdir;
+        else if (mSDKVariant == SDKVariant::Previous310_7)
+            searchPath /= kPrevious310_7Subdir;
         mpNGXWrapper = NGXWrapper::acquire(mpDevice, getRuntimeDirectory(), searchPath);
     }
 
@@ -263,7 +269,7 @@ void DLSSPass::initializeDLSS(RenderContext* pRenderContext)
     const bool cnnPreset = mPreset >= RenderPreset::A_CNN && mPreset <= RenderPreset::F_CNN;
     const bool transformerPreset = mPreset >= RenderPreset::J_TransformerLessGhost;
     if (cnnPreset && mSDKVariant != SDKVariant::LegacyCNN)
-        logWarning("DLSSPass: CNN preset selected with the Current (transformer) SDK; it does not exist there and NGX will use its default instead.");
+        logWarning("DLSSPass: CNN preset selected with a transformer (310.x) SDK; it does not exist there and NGX will use its default instead.");
     if (transformerPreset && mSDKVariant == SDKVariant::LegacyCNN)
         logWarning("DLSSPass: transformer preset selected with the LegacyCNN SDK; it does not exist there and NGX will use its default instead.");
 

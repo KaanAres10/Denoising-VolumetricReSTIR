@@ -21,6 +21,10 @@ const char kRoughnessInput[] = "roughness";
 const char kOutput[] = "output";
 
 const char kEnabled[] = "enabled";
+const char kSDKVariant[] = "sdkVariant";
+/// Subdirectory of the runtime directory holding the 310.7.0 feature DLLs. Populated by
+/// build_scripts/deploycommon.bat from external/dlss-310; shared with DLSSPass.
+const char kPrevious310_7Subdir[] = "dlss_310_7";
 const char kProfile[] = "profile";
 const char kPreset[] = "preset";
 const char kIsHDR[] = "isHDR";
@@ -34,6 +38,8 @@ DLSSDPass::DLSSDPass(ref<Device> pDevice, const Properties& props) : RenderPass(
     {
         if (key == kEnabled)
             mEnabled = value;
+        else if (key == kSDKVariant)
+            mSDKVariant = value;
         else if (key == kProfile)
             mProfile = value;
         else if (key == kPreset)
@@ -53,10 +59,19 @@ DLSSDPass::DLSSDPass(ref<Device> pDevice, const Properties& props) : RenderPass(
     mpDevice->getRenderContext()->updateTextureData(mpExposure.get(), &exposure);
 }
 
+DLSSDPass::~DLSSDPass()
+{
+#if FALCOR_HAS_DLSSD
+    if (mpNGXWrapper)
+        mpNGXWrapper->releaseDLSSD(this);
+#endif
+}
+
 Properties DLSSDPass::getProperties() const
 {
     Properties props;
     props[kEnabled] = mEnabled;
+    props[kSDKVariant] = mSDKVariant;
     props[kProfile] = mProfile;
     props[kPreset] = mPreset;
     props[kIsHDR] = mIsHDR;
@@ -92,7 +107,14 @@ void DLSSDPass::compile(RenderContext* pRenderContext, const CompileData& compil
 void DLSSDPass::initializeDLSSD(RenderContext* pRenderContext)
 {
     if (!mpNGXWrapper)
-        mpNGXWrapper = NGXWrapper::acquire(mpDevice, getRuntimeDirectory(), getRuntimeDirectory());
+    {
+        // The feature search path is what selects the DLL, and therefore which networks the preset
+        // below chooses between. Same mechanism as DLSSPass' LegacyCNN variant.
+        const std::filesystem::path searchPath = mSDKVariant == SDKVariant::Previous310_7
+                                                     ? getRuntimeDirectory() / kPrevious310_7Subdir
+                                                     : getRuntimeDirectory();
+        mpNGXWrapper = NGXWrapper::acquire(mpDevice, getRuntimeDirectory(), searchPath);
+    }
 
 #if FALCOR_HAS_DLSSD
     NVSDK_NGX_PerfQuality_Value perfQuality = NVSDK_NGX_PerfQuality_Value_DLAA;
@@ -119,15 +141,34 @@ void DLSSDPass::initializeDLSSD(RenderContext* pRenderContext)
     }
 
     // 0 means "no hint": let NGX pick the default network for this quality level.
-    const uint32_t preset =
-        mPreset == RenderPreset::D_Transformer         ? NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D
-        : mPreset == RenderPreset::E_TransformerLatest ? NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E
-                                                       : 0u;
+    //
+    // The values are what reach the DLL, as plain integers, whichever SDK's header compiled this --
+    // F is declared (as "do not use") in 310.7.0 too. Pin them so a renumbering cannot silently point
+    // one variant's letter at another network.
+    static_assert(
+        NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D == 4 && NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E == 5 &&
+            NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F == 6,
+        "DLSS Ray Reconstruction render preset values have been renumbered"
+    );
+    uint32_t preset = 0u;
+    switch (mPreset)
+    {
+    case RenderPreset::D_Transformer: preset = NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D; break;
+    case RenderPreset::E_TransformerLatest: preset = NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E; break;
+    case RenderPreset::F_RR2: preset = NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F; break;
+    case RenderPreset::Default: break;
+    }
+
+    // A preset the loaded DLL does not implement does not fail: NGX quietly runs that DLL's default and
+    // returns a plausible image of the wrong network, which would corrupt a comparison unnoticed.
+    if (mPreset == RenderPreset::F_RR2 && mSDKVariant == SDKVariant::Previous310_7)
+        logWarning("DLSSDPass: preset F (RR2) selected with the 310.7.0 SDK variant; that DLL has no RR2 and NGX will run its default (D) instead.");
 
     // Unlike DLSSPass, the display size is simply the bound output's size. No queryOptimalSettings
     // round trip -- the producer decides the render size, and RR reconstructs to whatever the
     // graph allocated.
-    mpNGXWrapper->initializeDLSSD(pRenderContext, mInputSize, mOutputSize, mIsHDR, perfQuality, preset);
+    mpNGXWrapper->initializeDLSSD(this, pRenderContext, mInputSize, mOutputSize, mIsHDR, perfQuality, preset);
+    mAppliedPresetHint = preset;
 #else
     FALCOR_THROW("DLSSDPass requires a DLSS SDK with Ray Reconstruction (see DLSSPass/README.md).");
 #endif
@@ -218,6 +259,11 @@ void DLSSDPass::execute(RenderContext* pRenderContext, const RenderData& renderD
 
     // Wall-clock delta. A render pass has no access to Mogwai's clock, and RR only needs this as a
     // hint for how much motion a frame represents, so measuring it here is sufficient.
+    //
+    // MEASURED INERT (2026-09-18, bistro orbit, 40 frames at 960x540): RR's output is bit-identical
+    // whether this is the wall clock, a fixed 33.3 ms (matching a clock pinned at 30 fps) or 500 ms,
+    // for 310.7.0 preset E and 310.9.1 preset F alike. So a mismatch with a pinned scene clock costs
+    // nothing, and the gain once credited to "matrices and frame time" is the matrices'.
     const auto now = std::chrono::steady_clock::now();
     float frameTimeMs = 0.f;
     if (mLastFrameTime.time_since_epoch().count() != 0)
@@ -225,7 +271,7 @@ void DLSSDPass::execute(RenderContext* pRenderContext, const RenderData& renderD
     mLastFrameTime = now;
 
     mpNGXWrapper->evaluateDLSSD(
-        pRenderContext, in, /*resetAccumulation*/ false, jitterOffset, motionVectorScale, &worldToView, &viewToClip, frameTimeMs
+        this, pRenderContext, in, /*resetAccumulation*/ false, jitterOffset, motionVectorScale, &worldToView, &viewToClip, frameTimeMs
     );
 #else
     pRenderContext->blit(pColor->getSRV(), pOutput->getRTV());
@@ -238,10 +284,23 @@ void DLSSDPass::renderUI(Gui::Widgets& widget)
     if (!mEnabled)
         return;
 
+    widget.dropdown("SDK variant", mSDKVariant);
+    widget.tooltip(
+        "Which nvngx_dlssd.dll NGX loads: Current = the DLL beside the executable (310.9.1, presets D/E/F), "
+        "Previous310_7 = 310.7.0 (presets D/E; no RR2). Read only when the NGX session is first created -- "
+        "changing it needs a restart, so compare the two as separate runs. The log line "
+        "'[NGX] loaded nvngx_dlssd.dll version ...' reports what is really running.",
+        true
+    );
     if (widget.dropdown("Profile", mProfile))
         mRecreate = true;
     if (widget.dropdown("Render preset", mPreset))
         mRecreate = true;
+    widget.tooltip(
+        "Ray Reconstruction network. F = RR2, the default in 310.9.1. D and E are transformer models. "
+        "These letters are NOT the same networks as the Super Resolution presets of the same name.",
+        true
+    );
     if (widget.checkbox("HDR input", mIsHDR))
         mRecreate = true;
     widget.checkbox("Relative motion vectors", mMotionVectorsRelative);
@@ -249,5 +308,21 @@ void DLSSDPass::renderUI(Gui::Widgets& widget)
     widget.text(fmt::format("Render:  {}x{}", mInputSize.x, mInputSize.y));
     widget.text(fmt::format("Output:  {}x{}", mOutputSize.x, mOutputSize.y));
     if (mpNGXWrapper)
+    {
         widget.text(fmt::format("RayReconstruction available: {}", mpNGXWrapper->isRRAvailable()));
+        // What is actually running, read back rather than taken from the dropdowns: the DLL NGX
+        // mapped (the SDK variant is only a search-path hint) and the hint the feature was created
+        // with. Letters per nvsdk_ngx_defs_dlssd.h: 4 = D, 5 = E, 6 = F.
+        if (!mpNGXWrapper->getLoadedRRVersion().empty())
+        {
+            const char* letter = mAppliedPresetHint == 4   ? "D"
+                                 : mAppliedPresetHint == 5 ? "E"
+                                 : mAppliedPresetHint == 6 ? "F (RR2)"
+                                 : mAppliedPresetHint == 0 ? "Default"
+                                                           : "?";
+            widget.text(fmt::format(
+                "Running: nvngx_dlssd.dll {}, preset {} (hint {})", mpNGXWrapper->getLoadedRRVersion(), letter, mAppliedPresetHint
+            ));
+        }
+    }
 }

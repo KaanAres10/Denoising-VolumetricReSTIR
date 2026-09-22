@@ -67,21 +67,47 @@ public:
         }
     );
 
-    /// Denoising network. Per nvsdk_ngx_defs_dlssd.h (310.7.0) these three are the only meaningful
-    /// values for Ray Reconstruction: A/B/C were removed and F..O are all documented "do not use,
-    /// reverts to default behavior", so this is the whole search space.
+    /// Which nvngx_dlssd.dll NGX loads, i.e. which set of networks the presets below select from.
     ///
-    /// BOTH live models are transformer-based -- the older convolutional networks were the presets
-    /// NVIDIA removed, so there is no CNN to switch to in this SDK.
+    /// The DLL, not the header, carries the networks: a preset is a plain integer handed to whatever
+    /// DLL the feature search path finds, so the same letter can be a different model -- or no model
+    /// at all -- depending on this. Only read when the NGX session is created (per device, per
+    /// process), so compare variants as separate runs. The log line
+    /// "[NGX] loaded nvngx_dlssd.dll version ..." reports what actually ran.
+    enum class SDKVariant : uint32_t
+    {
+        Current,        ///< The DLL deployed beside the executable: 310.9.1 when external/dlss-310.9.1 is vendored.
+        Previous310_7,  ///< 310.7.0 from dlss_310_7\ -- transformer presets D/E only, no RR2.
+    };
+
+    FALCOR_ENUM_INFO(
+        SDKVariant,
+        {
+            {SDKVariant::Current, "Current"},
+            {SDKVariant::Previous310_7, "Previous310_7"},
+        }
+    );
+
+    /// Denoising network. Per nvsdk_ngx_defs_dlssd.h (310.9.1) these are the only meaningful values
+    /// for Ray Reconstruction: A/B/C were removed and G..O are documented "do not use, reverts to
+    /// default behavior", so this is the whole search space.
+    ///
+    ///   Previous310_7 (310.7.0): D (its default), E.  F is "do not use" there and silently runs D.
+    ///   Current       (310.9.1): D, E, F.  F -- "RR2" -- is the new default.
+    ///
+    /// D and E are transformer models; the older convolutional networks were the presets NVIDIA
+    /// removed, so there is no CNN to switch to. NVIDIA does not describe RR2's architecture beyond
+    /// the name, so it is not labelled a transformer here.
     ///
     /// Names carry the NVIDIA letter first (that is what their docs and forums use) followed by what
     /// the model actually is, because a bare letter says nothing at a glance -- and the letters mean
     /// something DIFFERENT for Super Resolution, which is an easy and expensive mistake to make.
     enum class RenderPreset : uint32_t
     {
-        Default,             ///< Let NGX choose. Measured bit-identical to D at every quality level.
-        D_Transformer,       ///< "Default model (transformer)".
+        Default,             ///< Let NGX choose: D in 310.7.0 (measured bit-identical), F in 310.9.1.
+        D_Transformer,       ///< "Transformer model". Was "Default model (transformer)" in 310.7.0.
         E_TransformerLatest, ///< "Latest transformer model" -- required if a depth-of-field guide is used.
+        F_RR2,               ///< "Default model RR2", new in 310.9.1. Previous310_7 does not have it.
     };
 
     FALCOR_ENUM_INFO(
@@ -90,12 +116,15 @@ public:
             {RenderPreset::Default, "Default"},
             {RenderPreset::D_Transformer, "D_Transformer"},
             {RenderPreset::E_TransformerLatest, "E_TransformerLatest"},
+            {RenderPreset::F_RR2, "F_RR2"},
         }
     );
 
     static ref<DLSSDPass> create(ref<Device> pDevice, const Properties& props) { return make_ref<DLSSDPass>(pDevice, props); }
 
     DLSSDPass(ref<Device> pDevice, const Properties& props);
+    /// Releases this pass's own RR feature; the NGX session may outlive it (another DLSSDPass).
+    ~DLSSDPass() override;
 
     virtual Properties getProperties() const override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
@@ -111,6 +140,7 @@ private:
     std::shared_ptr<NGXWrapper> mpNGXWrapper;   ///< Shared per-device NGX session.
 
     bool mEnabled = true;
+    SDKVariant mSDKVariant = SDKVariant::Current;
     Profile mProfile = Profile::DLAA;
     /// Left at E to match every measurement published so far. D scored better at all four profiles
     /// of the first sweep, but that was a single unreplicated run -- do not change this default
@@ -122,6 +152,9 @@ private:
     float mExposure = 0.f;
 
     bool mRecreate = true;
+    /// Preset hint the current RR feature was created with (0 = DLL default), shown in the UI beside
+    /// the loaded DLL's version -- the pair is what identifies the running network.
+    uint32_t mAppliedPresetHint = 0;
     uint2 mInputSize = {};      ///< Render resolution, taken from the bound color input.
     /// Render size a guide-size mismatch was last reported for, so the warning fires once per size
     /// rather than every frame.
@@ -133,5 +166,6 @@ private:
     ref<Texture> mpExposure;    ///< 1x1 R32Float, matching DLSSPass' handling.
 };
 
+FALCOR_ENUM_REGISTER(DLSSDPass::SDKVariant);
 FALCOR_ENUM_REGISTER(DLSSDPass::Profile);
 FALCOR_ENUM_REGISTER(DLSSDPass::RenderPreset);

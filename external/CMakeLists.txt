@@ -515,14 +515,19 @@ endif()
 # dlss
 # SDK selection, in priority order:
 #   1. FALCOR_DLSS_SDK_DIR cache variable (manual override)
-#   2. external/dlss-310  -- manually vendored SDK that ships Ray Reconstruction (DLSS-D).
+#   2. external/dlss-310.9.1  -- ships Ray Reconstruction 2 ("RR2", render preset F, the new default).
+#   3. external/dlss-310      -- 310.7.0, manually vendored SDK that ships Ray Reconstruction (DLSS-D).
 #      packman has no DLSS newer than 3.5.0, and 3.5.0 is Super-Resolution only, so RR can only
 #      come from a manual fetch of github.com/NVIDIA/DLSS (see Source/RenderPasses/DLSSPass/README.md).
-#   3. the packman package -- note ${PACKMAN_DIR}/dlss is a SYMLINK into a machine-wide cache
+#      310.7.0 is also what the "Previous310_7" SDK variant of both DLSS passes loads, from a
+#      subdirectory of the runtime directory -- see build_scripts/deploycommon.bat.
+#   4. the packman package -- note ${PACKMAN_DIR}/dlss is a SYMLINK into a machine-wide cache
 #      (/c/packman-repo/...), so never write into it.
 set(FALCOR_DLSS_SDK_DIR "" CACHE PATH "Path to a DLSS SDK; overrides the vendored and packman ones")
 if(FALCOR_DLSS_SDK_DIR AND EXISTS ${FALCOR_DLSS_SDK_DIR}/include/nvsdk_ngx.h)
     set(DLSS_DIR ${FALCOR_DLSS_SDK_DIR})
+elseif(EXISTS ${CMAKE_SOURCE_DIR}/external/dlss-310.9.1/include/nvsdk_ngx.h)
+    set(DLSS_DIR ${CMAKE_SOURCE_DIR}/external/dlss-310.9.1)
 elseif(EXISTS ${CMAKE_SOURCE_DIR}/external/dlss-310/include/nvsdk_ngx.h)
     set(DLSS_DIR ${CMAKE_SOURCE_DIR}/external/dlss-310)
 else()
@@ -548,8 +553,10 @@ if(EXISTS ${DLSS_DIR}/include/nvsdk_ngx.h)
     )
     set(FALCOR_HAS_DLSS ON PARENT_SCOPE)
 
-    # Ray Reconstruction is only present in SDKs that ship the DLSS-D headers.
-    if(EXISTS ${DLSS_DIR}/include/nvsdk_ngx_helpers_dlssd.h)
+    # Ray Reconstruction is only present in SDKs that ship the DLSS-D headers. 310.9.1 renamed the
+    # helper to nvsdk_ngx_helpers_dlssd_d3d.h and kept the old name only as a deprecated shim, so
+    # accept either rather than lose RR the release NVIDIA deletes the shim.
+    if(EXISTS ${DLSS_DIR}/include/nvsdk_ngx_helpers_dlssd_d3d.h OR EXISTS ${DLSS_DIR}/include/nvsdk_ngx_helpers_dlssd.h)
         set(FALCOR_HAS_DLSSD ON PARENT_SCOPE)
         target_compile_definitions(dlss INTERFACE FALCOR_HAS_DLSSD=1)
     else()

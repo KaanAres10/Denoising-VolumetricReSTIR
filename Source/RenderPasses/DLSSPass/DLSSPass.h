@@ -74,10 +74,16 @@ public:
     /// in different SDK generations. The architecture is chosen here, the variant within it by
     /// RenderPreset. Legacy is the only way to reach a convolutional model, because the 310.x line
     /// removed every CNN preset.
+    ///
+    /// "Current" is whatever DLL was deployed beside the executable, so it moves when the vendored SDK
+    /// does: it was 310.7.0 for every Super Resolution number recorded before 310.9.1 was vendored.
+    /// Previous310_7 reproduces those. nvsdk_ngx_defs.h is byte-identical between the two SDKs, so the
+    /// preset letters are the same; whether the weights behind them are is not documented.
     enum class SDKVariant : uint32_t
     {
-        Current,   ///< 310.7.0 (DLSS 4). Transformer. Presets J/K/L/M.
-        LegacyCNN, ///< 3.7.20. Convolutional. Presets A..F. NOTE: no Ray Reconstruction in this line.
+        Current,       ///< DLL beside the executable: 310.9.1 when vendored (else 310.7.0). Transformer. Presets J/K/L/M.
+        LegacyCNN,     ///< 3.7.20. Convolutional. Presets A..F. NOTE: no Ray Reconstruction in this line.
+        Previous310_7, ///< 310.7.0 (DLSS 4), from dlss_310_7\. Transformer. Presets J/K/L/M.
     };
 
     FALCOR_ENUM_INFO(
@@ -85,6 +91,7 @@ public:
         {
             {SDKVariant::Current, "Current"},
             {SDKVariant::LegacyCNN, "LegacyCNN"},
+            {SDKVariant::Previous310_7, "Previous310_7"},
         }
     );
 
@@ -92,8 +99,8 @@ public:
     /// preset silently reverts to the DLL's default rather than failing, so pairing them wrongly
     /// produces a plausible image of the wrong model. That is the whole trap this enum documents.
     ///
-    ///   Current (310.7.0, transformer): J K L M   -- A..D removed, E/F deprecated, rest "do not use"
-    ///   LegacyCNN (3.7.20, CNN):        A..F      -- J..O do not exist in that DLL
+    ///   Current, Previous310_7 (310.x, transformer): J K L M   -- A..D removed, E/F deprecated, rest "do not use"
+    ///   LegacyCNN (3.7.20, CNN):                     A..F      -- J..O do not exist in that DLL
     enum class RenderPreset : uint32_t
     {
         Default,                  ///< Let NGX choose: K for DLAA/Balanced/Quality, M for Perf, L for Ultra Perf.

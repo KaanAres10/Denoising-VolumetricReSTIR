@@ -93,8 +93,13 @@ public:
 
     /// Log which nvngx_dlss*.dll is actually mapped into the process, and its file version. The
     /// feature search path is only a hint -- NGX falls back to the executable directory -- so this is
-    /// the one reliable way to know which trained network is running.
-    static void logLoadedFeatureDll(const char* moduleName);
+    /// the one reliable way to know which trained network is running. Returns the version ("unknown"
+    /// if it cannot be read, empty if the module is not loaded).
+    static std::string logLoadedFeatureDll(const char* moduleName);
+
+    /// File version of the nvngx_dlssd.dll the last Ray Reconstruction feature was created with, as
+    /// logged by logLoadedFeatureDll -- for showing in a UI which DLL a window is really running.
+    const std::string& getLoadedRRVersion() const { return mLoadedRRVersion; }
 
     /// Release DLSS.
     void releaseDLSS();
@@ -125,8 +130,13 @@ public:
         Texture* exposure = nullptr;       ///< Optional.
     };
 
-    /// Initialize DLSS Ray Reconstruction. Throws if unable to initialize.
+    /// Initialize DLSS Ray Reconstruction for `owner`. Throws if unable to initialize.
+    ///
+    /// One RR feature PER OWNER (the calling pass), all in the one shared NGX session: a graph that
+    /// denoises two layers separately runs two DLSSDPass instances, and a single handle in the shared
+    /// session made each recreate the other's feature every frame.
     void initializeDLSSD(
+        const void* owner,
         RenderContext* pRenderContext,
         uint2 maxRenderSize,
         uint2 displayOutSize,
@@ -135,10 +145,14 @@ public:
         uint32_t renderPreset = 0
     );
 
-    /// Release DLSS Ray Reconstruction.
-    void releaseDLSSD();
+    /// Release `owner`'s DLSS Ray Reconstruction feature.
+    void releaseDLSSD(const void* owner);
 
-    bool isDLSSDInitialized() const { return mpFeatureRR != nullptr; }
+    bool isDLSSDInitialized(const void* owner) const
+    {
+        auto it = mRRFeatures.find(owner);
+        return it != mRRFeatures.end() && it->second != nullptr;
+    }
 
     /// Evaluate DLSS Ray Reconstruction.
     ///
@@ -146,6 +160,7 @@ public:
     /// depth and motion vectors alone cannot express. frameTimeDeltaMs lets it scale how much it
     /// denoises with the speed implied by the motion-vector magnitudes.
     bool evaluateDLSSD(
+        const void* owner,
         RenderContext* pRenderContext,
         const DLSSDEvalInputs& inputs,
         bool resetAccumulation = false,
@@ -184,9 +199,12 @@ private:
     // unconditionally and each evaluate() early-returns on null, so whichever feature was created
     // last would win and the other would quietly stop running.
     NVSDK_NGX_Handle* mpFeatureSR = nullptr;
-    NVSDK_NGX_Handle* mpFeatureRR = nullptr;
+    /// Ray Reconstruction features, one per owning pass (see initializeDLSSD).
+    std::map<const void*, NVSDK_NGX_Handle*> mRRFeatures;
 
     bool mSRAvailable = false;
     bool mRRAvailable = false;
+
+    std::string mLoadedRRVersion;
 };
 } // namespace Falcor

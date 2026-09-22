@@ -40,8 +40,13 @@
 #include <nvsdk_ngx.h>
 #include <nvsdk_ngx_helpers.h>
 #if FALCOR_HAS_DLSSD
-// Ray Reconstruction. Only present in SDKs from the 310.x line -- see DLSSPass/README.md.
+// Ray Reconstruction. Only present in SDKs from the 310.x line -- see DLSSPass/README.md. 310.9.1
+// renamed the helper to *_d3d.h and kept the old name as a shim that emits a deprecation warning.
+#if __has_include(<nvsdk_ngx_helpers_dlssd_d3d.h>)
+#include <nvsdk_ngx_helpers_dlssd_d3d.h>
+#else
 #include <nvsdk_ngx_helpers_dlssd.h>
+#endif
 #endif
 #endif
 
@@ -153,7 +158,7 @@ std::shared_ptr<NGXWrapper> NGXWrapper::acquire(
     return created;
 }
 
-void NGXWrapper::logLoadedFeatureDll(const char* moduleName)
+std::string NGXWrapper::logLoadedFeatureDll(const char* moduleName)
 {
     // Which DLL NGX actually loaded is the only thing that determines which network runs, and the
     // search path is a *hint* -- NGX falls back to the executable directory. Report the module that
@@ -163,12 +168,12 @@ void NGXWrapper::logLoadedFeatureDll(const char* moduleName)
     if (hModule == nullptr)
     {
         logWarning("[NGX] {} is not loaded", moduleName);
-        return;
+        return {};
     }
 
     char path[MAX_PATH] = {};
     if (GetModuleFileNameA(hModule, path, MAX_PATH) == 0)
-        return;
+        return "unknown";
 
     std::string version = "unknown";
     DWORD handle = 0;
@@ -188,6 +193,9 @@ void NGXWrapper::logLoadedFeatureDll(const char* moduleName)
         }
     }
     logInfo("[NGX] loaded {} version {} from {}", moduleName, version, path);
+    return version;
+#else
+    return "unknown";
 #endif
 }
 
@@ -319,8 +327,12 @@ void NGXWrapper::shutdownNGX()
         if (mpFeatureSR != nullptr)
             releaseDLSS();
 #if FALCOR_HAS_DLSSD
-        if (mpFeatureRR != nullptr)
-            releaseDLSSD();
+        std::vector<const void*> owners;
+        for (const auto& [owner, handle] : mRRFeatures)
+            owners.push_back(owner);
+        for (const void* owner : owners)
+            releaseDLSSD(owner);
+        mRRFeatures.clear();
 #endif
 
         switch (mpDevice->getType())
@@ -345,6 +357,7 @@ void NGXWrapper::shutdownNGX()
 
 #if FALCOR_HAS_DLSSD
 void NGXWrapper::initializeDLSSD(
+    const void* owner,
     RenderContext* pRenderContext,
     uint2 maxRenderSize,
     uint2 displayOutSize,
@@ -360,8 +373,10 @@ void NGXWrapper::initializeDLSSD(
             "identically to unsupported hardware."
         );
 
-    if (mpFeatureRR != nullptr)
-        releaseDLSSD();
+    // Map nodes are stable, so this reference survives the release below.
+    NVSDK_NGX_Handle*& feature = mRRFeatures[owner];
+    if (feature != nullptr)
+        releaseDLSSD(owner);
 
     unsigned int creationNodeMask = 1;
     unsigned int visibilityNodeMask = 1;
@@ -391,17 +406,18 @@ void NGXWrapper::initializeDLSSD(
     // the DLAA hint (as this did originally) means every upscaling profile silently ignored the
     // preset and got NGX's default model. Set them all: only the one matching InPerfQualityValue is
     // consulted, so there is no ambiguity, and the create call cannot miss it.
-    if (renderPreset != 0)
+    //
+    // Written even when it is 0 (Default). mpParameters lives as long as the NGX session, so skipping
+    // the write left the PREVIOUS hint in place: switching the UI dropdown from E back to Default kept
+    // running E. 0 is the SDK's own value for "no hint", so an explicit 0 is what omitting it means.
+    for (const char* hint : {NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA,
+                             NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality,
+                             NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced,
+                             NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance,
+                             NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance,
+                             NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality})
     {
-        for (const char* hint : {NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA,
-                                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality,
-                                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Balanced,
-                                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Performance,
-                                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraPerformance,
-                                 NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality})
-        {
-            NVSDK_NGX_Parameter_SetUI(mpParameters, hint, renderPreset);
-        }
+        NVSDK_NGX_Parameter_SetUI(mpParameters, hint, renderPreset);
     }
 
     switch (mpDevice->getType())
@@ -415,7 +431,7 @@ void NGXWrapper::initializeDLSSD(
         ID3D12GraphicsCommandList* pCommandList =
             pRenderContext->getLowLevelData()->getCommandBufferNativeHandle().as<ID3D12GraphicsCommandList*>();
         THROW_IF_FAILED(
-            NGX_D3D12_CREATE_DLSSD_EXT(pCommandList, creationNodeMask, visibilityNodeMask, &mpFeatureRR, mpParameters, &dlssdParams)
+            NGX_D3D12_CREATE_DLSSD_EXT(pCommandList, creationNodeMask, visibilityNodeMask, &feature, mpParameters, &dlssdParams)
         );
         pRenderContext->submit();
 #endif
@@ -425,23 +441,34 @@ void NGXWrapper::initializeDLSSD(
         FALCOR_THROW("DLSS Ray Reconstruction is only implemented for D3D12.");
     }
 
-    logInfo("DLSS Ray Reconstruction initialized: {}x{} -> {}x{}", maxRenderSize.x, maxRenderSize.y, displayOutSize.x, displayOutSize.y);
-    logLoadedFeatureDll("nvngx_dlssd.dll");
+    // The preset hint is logged beside the DLL version below: the pair is what identifies the network,
+    // and neither alone does.
+    logInfo(
+        "DLSS Ray Reconstruction initialized: {}x{} -> {}x{}, preset hint {} (0 = DLL default)",
+        maxRenderSize.x,
+        maxRenderSize.y,
+        displayOutSize.x,
+        displayOutSize.y,
+        renderPreset
+    );
+    mLoadedRRVersion = logLoadedFeatureDll("nvngx_dlssd.dll");
 }
 
-void NGXWrapper::releaseDLSSD()
+void NGXWrapper::releaseDLSSD(const void* owner)
 {
-    if (mpFeatureRR)
+    auto it = mRRFeatures.find(owner);
+    if (it != mRRFeatures.end() && it->second)
     {
         mpDevice->wait();
 #if FALCOR_HAS_D3D12
-        THROW_IF_FAILED(NVSDK_NGX_D3D12_ReleaseFeature(mpFeatureRR));
+        THROW_IF_FAILED(NVSDK_NGX_D3D12_ReleaseFeature(it->second));
 #endif
-        mpFeatureRR = nullptr;
+        it->second = nullptr;
     }
 }
 
 bool NGXWrapper::evaluateDLSSD(
+    const void* owner,
     RenderContext* pRenderContext,
     const DLSSDEvalInputs& in,
     bool resetAccumulation,
@@ -452,8 +479,10 @@ bool NGXWrapper::evaluateDLSSD(
     float frameTimeDeltaMs
 ) const
 {
-    if (!mpFeatureRR)
+    auto featureIt = mRRFeatures.find(owner);
+    if (featureIt == mRRFeatures.end() || !featureIt->second)
         return false;
+    NVSDK_NGX_Handle* const pFeature = featureIt->second;
 
 #if FALCOR_HAS_D3D12
     // Every input must be in ShaderResource and the output in UnorderedAccess before NGX runs.
@@ -497,7 +526,7 @@ bool NGXWrapper::evaluateDLSSD(
 
     ID3D12GraphicsCommandList* pCommandList =
         pRenderContext->getLowLevelData()->getCommandBufferNativeHandle().as<ID3D12GraphicsCommandList*>();
-    NVSDK_NGX_Result result = NGX_D3D12_EVALUATE_DLSSD_EXT(pCommandList, mpFeatureRR, mpParameters, &evalParams);
+    NVSDK_NGX_Result result = NGX_D3D12_EVALUATE_DLSSD_EXT(pCommandList, pFeature, mpParameters, &evalParams);
 
     // Non-fatal, matching evaluateDLSS(): a bad frame should not take the application down.
     if (NVSDK_NGX_FAILED(result))
@@ -547,18 +576,16 @@ void NGXWrapper::initializeDLSS(
     dlssParams.InFeatureCreateFlags = createFlags;
 
     // As in initializeDLSSD: NGX consults the hint belonging to the quality level being created, so
-    // setting a single one would be ignored by every other profile.
-    if (renderPreset != 0)
+    // setting a single one would be ignored by every other profile -- and 0 is written too, or a
+    // switch back to Default would keep the previous preset.
+    for (const char* hint : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
+                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
+                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced,
+                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
+                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
+                             NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality})
     {
-        for (const char* hint : {NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA,
-                                 NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality,
-                                 NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced,
-                                 NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance,
-                                 NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance,
-                                 NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality})
-        {
-            NVSDK_NGX_Parameter_SetUI(mpParameters, hint, renderPreset);
-        }
+        NVSDK_NGX_Parameter_SetUI(mpParameters, hint, renderPreset);
     }
 
     switch (mpDevice->getType())

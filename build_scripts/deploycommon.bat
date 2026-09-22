@@ -152,8 +152,21 @@ rem Copy the legacy (3.7.x) Super Resolution DLL into its own subdirectory. It m
 rem the current one -- same filename, and whichever NGX finds first wins. DLSSPass selects between
 rem them by passing this directory as the NGX feature search path. There is deliberately no
 rem nvngx_dlssd.dll here: no 3.x SDK ever shipped Ray Reconstruction.
-if exist %ExtDir%\dlss-legacy-37 (
-    robocopy %ExtDir%\dlss-legacy-37\lib\Windows_x86_64\rel %OutDir%\dlss_cnn nvngx_dlss.dll /r:0 >nul
+rem
+rem The vendored SDKs live in external\, not external\packman\ (%ExtDir%). This used to test
+rem %ExtDir%\dlss-legacy-37, which never exists, so the copy silently never ran and dlss_cnn\ only
+rem existed because it had been populated by hand -- a fresh build directory had no CNN DLL at all.
+if exist %1\external\dlss-legacy-37 (
+    robocopy %1\external\dlss-legacy-37\lib\Windows_x86_64\rel %OutDir%\dlss_cnn nvngx_dlss.dll /r:0 >nul
+)
+
+rem Copy the 310.7.0 SDK's DLLs into their own subdirectory, for the "Previous310_7" SDK variant of
+rem DLSSPass and DLSSDPass: Ray Reconstruction's transformer presets D/E as they were before 310.9.1
+rem made RR2 (preset F) the default. Same rule as dlss_cnn -- never beside the current DLLs -- and
+rem both features are copied because one NGX session serves every DLSS pass in a graph, so the two
+rem passes must be able to select the same directory.
+if exist %1\external\dlss-310 (
+    robocopy %1\external\dlss-310\lib\Windows_x86_64\rel %OutDir%\dlss_310_7 nvngx_dlss.dll nvngx_dlssd.dll /r:0 >nul
 )
 
 rem Falcor.dll imports libprotoc/protobuf/abseil and z.dll at LOAD time (via the USD build), but the
