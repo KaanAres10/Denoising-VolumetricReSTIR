@@ -1857,14 +1857,27 @@ void NRDPass::createPipelines()
             // silently compile with no signal selected.
             defines.add("NRD_INTERNAL");
 
-            // NRD4_RAW_MATRICES=1 restores the pre-fix behaviour: NRD's matrix constants are read
-            // exactly as they arrive, which is TRANSPOSED (see RELAX_Config.hlsli and STATE.md). It
-            // exists so the fault can be shown side by side instead of taken on trust -- with it set,
-            // RELAX's surface half drops from a 29.80-frame history back to 0.05 on a static camera.
-            // Leave it unset for normal use.
-            static const bool rawMatrices = []
-            { const char* v = std::getenv("NRD4_RAW_MATRICES"); return v && std::strtol(v, nullptr, 10) != 0; }();
-            if (rawMatrices)
+            // Matrix layout. On Falcor 8.0 (Slang 2024.1.34) NRD's float4x4 constants reached the
+            // shaders TRANSPOSED, so build_scripts/patch_nrd_matrix_layout.py rewrote the headers to
+            // read transpose(<name>_raw), with NRD_RAW_MATRICES selecting the untransposed read.
+            //
+            // [9.0] Slang 2025.13.2 delivers them CORRECTLY, so that transpose now applies a second
+            // time and reintroduces the very bug it was written to fix. Measured on the bistro orbit,
+            // RELAX-SH, 300 frames (plume / surfaces / detail):
+            //     8.0 transpose on   13.59  27.15  0.0640     8.0 untransposed   14.56  26.12  0.0629
+            //     9.0 transpose on   14.58  26.33  0.0629     9.0 untransposed   13.61  27.40  0.0640
+            // The rows swap across the diagonal, and at the pixel level 9.0-untransposed sits closer to
+            // 8.0-with-the-fix (3.14 levels) than 9.0-with-the-fix does (5.12). It is silent: no error,
+            // just a denoiser that looks slightly worse -- read at first as "RELAX regressed in 9.0".
+            //
+            // So the default is now the untransposed read. NRD4_TRANSPOSE_MATRICES=1 re-applies the
+            // 8.0-era transpose, which on this engine is the fault, so the A/B can still be shown side
+            // by side instead of taken on trust. NRD4_RAW_MATRICES is now the default and is ignored.
+            // If a later Slang flips the packing back, this is the one line to revisit -- and the swap
+            // above is the test that tells you.
+            static const bool transposeMatrices = []
+            { const char* v = std::getenv("NRD4_TRANSPOSE_MATRICES"); return v && std::strtol(v, nullptr, 10) != 0; }();
+            if (!transposeMatrices)
                 defines.add("NRD_RAW_MATRICES");
 
             // v4 RENAMED the encoding macros. NRD_USE_OCT_NORMAL_ENCODING / NRD_USE_MATERIAL_ID are

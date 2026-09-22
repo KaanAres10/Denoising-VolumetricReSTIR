@@ -27,8 +27,15 @@ Each matrix constant is renamed to `<name>_raw` and `<name>` is redefined as `tr
 Renaming moves nothing in the buffer, so NRD's blob still lines up byte for byte; only the
 interpretation changes, and no call site needs touching.
 
-Defining NRD_RAW_MATRICES at compile time selects the old, broken behaviour instead (NRD4_RAW_MATRICES=1
-on the NRDPass side), which is how the fault can be shown side by side.
+Defining NRD_RAW_MATRICES at compile time selects the untransposed read instead.
+
+[Falcor 9.0] Which branch is CORRECT depends on the Slang version, not on this script. Slang
+2024.1.34 (Falcor 8.0) transposed the matrices, so the transpose branch was the fix. Slang 2025.13.2
+(Falcor 9.0) delivers them correctly, so NRDPass now defines NRD_RAW_MATRICES by default and the
+transpose branch is the FAULT; NRD4_TRANSPOSE_MATRICES=1 selects it for an A/B. The generated header
+comment below still calls the untransposed read "the old, broken behaviour" -- it is stamped once and
+never rewritten (see the marker check), so trust NRDPass.cpp over it. The patch is still worth
+applying: it keeps both reads available behind one define, which is what makes the A/B possible.
 
 Idempotent: a header that already carries the marker is left alone, so this is safe to run on every
 build. See Source/RenderPasses/NRDPass/STATE.md for the full derivation.

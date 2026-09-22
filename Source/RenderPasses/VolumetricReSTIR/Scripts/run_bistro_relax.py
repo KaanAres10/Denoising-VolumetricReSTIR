@@ -26,10 +26,12 @@
 #
 # Env switches worth knowing (all have measured defaults, see STATE.md):
 #   VR_NRD_METHOD=RelaxDiffuseSh | ReblurDiffuseSh   which denoiser
-#   NRD4_RAW_MATRICES=1                              restores the BUG: NRD's matrix constants are read
-#                                                    as they arrive, which is transposed. RELAX's
-#                                                    history collapses from 29.8 frames to 0.05 on a
-#                                                    static camera. This is the real before/after.
+#   NRD4_TRANSPOSE_MATRICES=1                        restores the matrix BUG on Falcor 9.0: re-applies
+#                                                    the transpose that 8.0's Slang needed and 9.0's
+#                                                    does not, so the matrices end up transposed.
+#                                                    On 8.0 the bug was NRD4_RAW_MATRICES=1 instead;
+#                                                    the correct read flipped with the Slang version
+#                                                    (see NRDPass.cpp). This is the real before/after.
 #   NRD4_DISOCC=2                                    disocclusion threshold, percent. 2 is NRD's
 #                                                    documented value and is now the default; it used
 #                                                    to be 35 to work around the bug above.
