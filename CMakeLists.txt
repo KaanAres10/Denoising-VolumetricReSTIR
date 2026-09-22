@@ -367,7 +367,7 @@ endif()
 
 if(FALCOR_WINDOWS)
     add_custom_target(deploy_dependencies ALL
-        COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.bat ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR} ${FALCOR_NRD_DIR}
+        COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.bat ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR} ${FALCOR_NRD_DIR} ${FALCOR_AGILITY_SDK_DIR}
     )
     if(TARGET patch_nrd_shaders)
         add_dependencies(deploy_dependencies patch_nrd_shaders)

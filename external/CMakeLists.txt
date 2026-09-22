@@ -669,6 +669,16 @@ if(FALCOR_HAS_D3D12 AND (CMAKE_SYSTEM_NAME STREQUAL "Windows"))
     FetchPackage(agility_sdk URL "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/${AGILITY_SDK_VERSION}")
     copy_file(${agility_sdk_SOURCE_DIR}/build/native/bin/x64/D3D12Core.dll D3D12)
     copy_file(${agility_sdk_SOURCE_DIR}/build/native/bin/x64/d3d12SDKLayers.dll D3D12)
+    # Those two copy_file calls DO NOT WORK on the VS generator: FALCOR_OUTPUT_DIRECTORY is
+    # bin/$<CONFIG>, and add_custom_command(OUTPUT ...) does not accept a generator expression, so
+    # the command never produces bin/<config>/D3D12/. Nothing errors -- the directory simply keeps
+    # whatever was there before, which after an engine upgrade is the PREVIOUS Agility runtime.
+    # Falcor exports D3D12SDKVersion = FALCOR_D3D12_AGILITY_SDK_VERSION (Core/Macros.h), and when the
+    # DLL beside it is an older SDK, D3D12 device creation fails outright -- "Failed to create device
+    # on GPU 0", with the only clue a warning about experimental features.
+    # Export the directory so deploycommon.bat can do the copy instead, the same way FALCOR_NRD_DIR
+    # is handed over rather than probed.
+    set(FALCOR_AGILITY_SDK_DIR ${agility_sdk_SOURCE_DIR} PARENT_SCOPE)
     add_library(agility-sdk INTERFACE)
     target_include_directories(agility-sdk INTERFACE ${agility_sdk_SOURCE_DIR}/build/native/include)
     set(FALCOR_HAS_D3D12_AGILITY_SDK ON PARENT_SCOPE)

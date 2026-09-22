@@ -100,12 +100,24 @@ if exist %RtxdiSDKDir% (
 )
 
 rem Copy Agility SDK Runtime
-set AgilitySDKDir=%ExtDir%\agility-sdk
+rem
+rem %7 = FALCOR_AGILITY_SDK_DIR. [9.0] the SDK moved from a packman package to a FetchPackage under
+rem the BUILD tree, so %ExtDir%\agility-sdk no longer exists and the old `if exist` guard silently
+rem skipped -- leaving the previous engine's D3D12Core.dll in place. That is not a benign staleness:
+rem Falcor exports D3D12SDKVersion = FALCOR_D3D12_AGILITY_SDK_VERSION (717 in 9.0), and an older
+rem runtime beside it makes device creation fail with "Failed to create device on GPU 0".
+rem
+rem Taken from CMake rather than probed, like the NRD directory above: only CMake knows the version
+rem the binary was compiled to export, and a mismatch here fails at startup with no useful message.
+set AgilitySDKDir=%7
+if "%AgilitySDKDir%" == "" set AgilitySDKDir=%ExtDir%\agility-sdk
 set AgilitySDKTargetDir=%OutDir%\D3D12
-if exist %AgilitySDKDir% (
+if exist "%AgilitySDKDir%\build\native\bin\x64\D3D12Core.dll" (
     if not exist %AgilitySDKTargetDir% mkdir %AgilitySDKTargetDir% >nul
-    copy /y %AgilitySDKDir%\build\native\bin\x64\D3D12Core.dll %AgilitySDKTargetDir% >nul
-    copy /y %AgilitySDKDir%\build\native\bin\x64\d3d12SDKLayers.dll %AgilitySDKTargetDir% >nul
+    copy /y "%AgilitySDKDir%\build\native\bin\x64\D3D12Core.dll" %AgilitySDKTargetDir% >nul
+    copy /y "%AgilitySDKDir%\build\native\bin\x64\d3d12SDKLayers.dll" %AgilitySDKTargetDir% >nul
+) else (
+    echo [deploycommon] WARNING: no Agility SDK at "%AgilitySDKDir%"; D3D12Core.dll left as-is.
 )
 
 rem Copy NanoVDB
