@@ -189,14 +189,49 @@ if PASS_TIMES:
     m.profiler.start_capture(FRAMES + 16)
 
 times = []
+# Clock guard. The camera is placed by THIS loop's counter, but frames are captured by the Mogwai
+# clock's absolute frame number (addFrames above). Those only agree while the clock advances exactly
+# one frame per renderFrame(). In one 300-frame RR run on Falcor 9.0 it did not: the clock held still
+# for ~31 iterations near the end, so every capture from that point on landed in the 60-frame tail
+# after the loop -- all at the FINAL pose. No error, no warning, 300 unique PNGs; it scored as a 10%
+# denoiser regression until the frames were looked at. A re-run was byte-identical up to the stall and
+# clean after it, so it was an event, not the engine. Cause not established.
+#
+# A stalled run is not rescued by fixing the poses, either: the temporal denoisers would still have
+# seen repeated frames, so the history differs from a clean run. The only safe outcome is to say so.
+try:
+    os.remove(os.path.join(OUT_DIR, "CLOCK_STALL.txt"))  # a marker from an earlier run into this dir
+except OSError:
+    pass
+# Checked RELATIVE to the first reading, not against WARM: read before renderFrame() the clock reports
+# the frame it last rendered, so loop 0 sees WARM - 1 (the log's "frame 0 (clock frame 29)" is normal).
+_clock_f0 = int(m.clock.frame)
+_clock_bad = []
 for i in range(FRAMES):
+    _f = int(m.clock.frame)
+    if _f != _clock_f0 + i:
+        _clock_bad.append((i, _f, _clock_f0 + i))
     place(i)
     t0 = time.perf_counter()
     m.renderFrame()
     times.append((time.perf_counter() - t0) * 1000.0)
     if i % 50 == 0:
-        print("[orbit] frame %d/%d" % (i, FRAMES - 1))
+        print("[orbit] frame %d/%d  (clock frame %d)" % (i, FRAMES - 1, _f))
         sys.stdout.flush()
+
+if _clock_bad:
+    _i, _got, _want = _clock_bad[0]
+    _msg = ("CLOCK STALL: the Mogwai clock stopped tracking the orbit at loop %d (clock %d, expected %d); "
+            "%d of %d frames affected. Captures from there on are at the WRONG POSE and the temporal "
+            "history is not that of a clean run -- discard this capture and re-run it."
+            % (_i, _got, _want, len(_clock_bad), FRAMES))
+    print("[orbit] " + _msg)
+    sys.stdout.flush()
+    # A file next to the frames, so a batch that only counts PNGs cannot miss it.
+    with open(os.path.join(OUT_DIR, "CLOCK_STALL.txt"), "w") as fh:
+        fh.write(_msg + "\n")
+        for _i, _got, _want in _clock_bad:
+            fh.write("loop %d: clock %d, expected %d\n" % (_i, _got, _want))
 
 if TIMING:
     # Per-frame CSV, so the distribution can be inspected rather than trusting a single mean -- the
