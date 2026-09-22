@@ -25,6 +25,16 @@ public:
 
     DLSSDGuides(ref<Device> pDevice, const Properties& props);
 
+    /// Which image the guides describe.
+    ///   Blend   -- the composited pixel: surface guides blended toward the medium's by coverage. The
+    ///              single-RR path, and the default.
+    ///   Surface -- the surface layer of the two-layer path: pure G-buffer guides, and (with `color`
+    ///              connected) that layer's radiance divided by the medium's transmittance, so RR sees
+    ///              the unoccluded surface rather than a smoke-shaped shadow that moves with the smoke.
+    ///   Medium  -- the medium layer: the medium's own guides, its diffuse albedo being the fraction
+    ///              of light it scatters toward the camera, single-scatter albedo x coverage.
+    enum class Layer : uint32_t { Blend = 0, Surface = 1, Medium = 2 };
+
     virtual Properties getProperties() const override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
@@ -65,4 +75,20 @@ private:
     bool mNeutralSpecular = false;
     bool mNeutralRoughness = false;
     bool mNeutralNormal = false;
+
+    /// Give no-geometry pixels NVIDIA's documented sky guides (diffuse 0.5, specular/normal/roughness
+    /// 0) instead of the G-buffer's cleared zeros, which reached RR as diffuse 0.01 and NaN normals.
+    /// false reproduces, bit for bit, every number measured through this pass before 2026-09-18 --
+    /// Ray Reconstruction's, and OptiX's albedo/normal guides (VR_OPTIX_GUIDES). RR2 (310.9.1 preset
+    /// F) is the model that cares: see DLSSPass/README.md.
+    bool mSkyDefaults = true;
+
+    /// Which image these guides describe (see Layer).
+    Layer mLayer = Layer::Blend;
+    /// Floor on the transmittance the Surface layer is divided by (as NRDAdapter's minTransmittance):
+    /// below it the surface contributes almost nothing and dividing would only amplify noise.
+    float mMinTransmittance = 0.05f;
+    /// Medium layer: scale its diffuse albedo by coverage (the share of light it scatters toward the
+    /// camera). false = the single-scatter albedo alone.
+    bool mMediumAlbedoByCoverage = true;
 };

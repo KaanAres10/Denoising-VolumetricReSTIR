@@ -53,6 +53,21 @@ cbuffer CB
     bool gNeutralSpecular;
     bool gNeutralRoughness;
     bool gNeutralNormal;
+
+    // Pixels with no geometry -- environment map, sky -- get the values NVIDIA's DLSS-RR integration
+    // guide gives for sky (3.4.1-3.4.4): diffuse 0.5, specular 0, normal 0, roughness 0. The G-buffer
+    // clears them to 0, which made them diffuse 0.01 (the reflectance floor) and, through the medium
+    // blend's normalize(lerp(0, n, 0)), NaN normals. Off reproduces that.
+    bool gSkyDefaults;
+
+    // Which image the guides describe: 0 = the composited pixel (Blend, above), 1 = the surface layer
+    // of the two-layer path (pure G-buffer guides), 2 = its medium layer (the medium's own guides).
+    uint gLayer;
+    // Surface layer only: divide the layer's radiance by the medium's transmittance, floored here.
+    bool gDemodColor;
+    float gMinTransmittance;
+    // Medium layer: scale the diffuse albedo by coverage (default) or leave it the single-scatter albedo.
+    bool gMediumAlbedoByCoverage;
 };
 
 // Inputs (from GBufferRaster).
@@ -70,6 +85,11 @@ RWTexture2D<float4> gOutDiffuseAlbedo;
 RWTexture2D<float4> gOutSpecularAlbedo;
 RWTexture2D<float4> gOutNormals;
 RWTexture2D<float> gOutRoughness;
+
+// Two-layer path, surface layer: its radiance in, divided by transmittance out, and the divisor.
+Texture2D<float4> gColor;
+RWTexture2D<float4> gOutColorDemod;
+RWTexture2D<float4> gOutDemodDivisor;
 
 [numthreads(16, 16, 1)]
 void main(uint3 dispatchThreadId: SV_DispatchThreadID)
@@ -90,33 +110,57 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
     const float ggxAlpha = roughness * roughness;
     float3 specularAlbedo = approxSpecularIntegralGGX(f0, ggxAlpha, NdotV);
 
-    float3 outDiffuse = diffuseAlbedo;
-    float3 outSpecular = specularAlbedo;
-    float3 outNormal = normalW;
-    float outRoughness = roughness;
+    // No geometry: GBufferRaster clears every channel to 0, and a surface's guide normal never is.
+    const bool isSky = gSkyDefaults && dot(normalW, normalW) == 0.f;
 
-    if (gBlendMedium)
+    float3 outDiffuse = isSky ? float3(0.5f) : diffuseAlbedo;
+    float3 outSpecular = isSky ? float3(0.f) : specularAlbedo;
+    float3 outNormal = normalW;
+    float outRoughness = isSky ? 0.f : roughness;
+
+    if (gLayer == 2)
+    {
+        // Medium layer: guides for the medium alone. Its diffuse albedo is the share of incident light
+        // it scatters toward the camera -- single-scatter albedo x coverage -- so RR's own division by
+        // albedo turns the layer into the medium's in-scattered LIGHTING, as flat across the thin rim
+        // as in the core, instead of a signal that fades to nothing at the edge. Where there is no
+        // medium the layer is black and the albedo falls to the reflectance floor: another material.
+        const float alpha = saturate(gMediumAlpha[pixel] * gAlphaScale);
+        outDiffuse = gMediumScatterAlbedo * (gMediumAlbedoByCoverage ? alpha : 1.f);
+        outSpecular = float3(0.f);
+        outRoughness = gMediumRoughness;
+        const float3 n = gMediumNormal[pixel].rgb;
+        outNormal = dot(n, n) > 0.f ? normalize(n) : viewW;
+    }
+    else if (gBlendMedium && gLayer == 0)
     {
         // alpha = 0 leaves every guide byte-identical to the surface-only path, which is what makes
         // this safe to enable: a scene with no medium in front of a pixel is unaffected.
         const float alpha = saturate(gMediumAlpha[pixel] * gAlphaScale);
 
+        // Every blend starts from out*, not the raw G-buffer value, so a sky pixel blends from its sky
+        // default. Identical wherever there is geometry, where the two are the same.
+        //
         // Diffuse: toward the medium's single-scatter albedo. The highest-value guide -- it tells
         // RR the medium is a flat, untextured, non-metallic scatterer, so it stops trying to
         // preserve surface detail that is not there.
         if (gBlendDiffuse)
-            outDiffuse = lerp(diffuseAlbedo, gMediumScatterAlbedo, alpha);
+            outDiffuse = lerp(outDiffuse, gMediumScatterAlbedo, alpha);
         // Specular: toward zero. A participating medium has no specular lobe.
         if (gBlendSpecular)
-            outSpecular = lerp(specularAlbedo, float3(0.f), alpha);
+            outSpecular = lerp(outSpecular, float3(0.f), alpha);
         // Roughness: toward fully rough. Isotropic scattering has no glossy direction, and this is
         // what stops RR sharpening smoke into streaks.
         if (gBlendRoughness)
-            outRoughness = lerp(roughness, gMediumRoughness, alpha);
+            outRoughness = lerp(outRoughness, gMediumRoughness, alpha);
         // Normal: toward the medium's camera-facing stand-in. Normalize after the lerp, since
-        // interpolating two unit vectors does not preserve length.
+        // interpolating two unit vectors does not preserve length -- but not a zero vector, which
+        // normalize() turns into NaN: a sky pixel with no medium in front is lerp(0, n, 0).
         if (gBlendNormal)
-            outNormal = normalize(lerp(normalW, gMediumNormal[pixel].rgb, alpha));
+        {
+            const float3 n = lerp(normalW, gMediumNormal[pixel].rgb, alpha);
+            outNormal = (gSkyDefaults && dot(n, n) == 0.f) ? float3(0.f) : normalize(n);
+        }
     }
 
     // Ablation: substitute a neutral constant so RR still receives a well-formed guide while the
@@ -129,6 +173,17 @@ void main(uint3 dispatchThreadId: SV_DispatchThreadID)
         outRoughness = 1.f;
     if (gNeutralNormal)
         outNormal = viewW; // camera-facing: no orientation information
+
+    if (gDemodColor)
+    {
+        // The surface layer is T * L_surface, and T belongs to the medium in FRONT of the surface: it
+        // moves with the smoke, not along the surface's motion vectors. Divided out, RR sees the
+        // unoccluded surface; the composite multiplies back by exactly this divisor. mediumAlpha is
+        // 1 - transmittance (VolumetricReSTIR's GenerateFeatures).
+        const float divisor = max(1.f - saturate(gMediumAlpha[pixel]), gMinTransmittance);
+        gOutColorDemod[pixel] = float4(gColor[pixel].rgb / divisor, 1.f);
+        gOutDemodDivisor[pixel] = float4(divisor, divisor, divisor, 1.f);
+    }
 
     gOutDiffuseAlbedo[pixel] = float4(max(gMinReflectance, outDiffuse), 1.f);
     gOutSpecularAlbedo[pixel] = float4(max(gMinReflectance, outSpecular), 1.f);

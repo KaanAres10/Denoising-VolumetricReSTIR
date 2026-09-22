@@ -20,6 +20,17 @@ const char kRoughnessOutput[] = "roughness";
 const char kMediumAlphaInput[] = "mediumAlpha";
 const char kMediumNormalInput[] = "mediumNormal";
 
+// Two-layer path (layer = Surface): the layer's radiance in, divided by transmittance out, plus the
+// exact divisor so the composite can multiply back by the same number.
+const char kColorInput[] = "color";
+const char kColorDemodOutput[] = "colorDemod";
+const char kDemodDivisorOutput[] = "demodDivisor";
+
+const char* layerName(DLSSDGuides::Layer l)
+{
+    return l == DLSSDGuides::Layer::Surface ? "Surface" : l == DLSSDGuides::Layer::Medium ? "Medium" : "Blend";
+}
+
 const char kMinReflectance[] = "minReflectance";
 const char kMediumScatterAlbedo[] = "mediumScatterAlbedo";
 } // namespace
@@ -57,6 +68,8 @@ DLSSDGuides::DLSSDGuides(ref<Device> pDevice, const Properties& props) : RenderP
             mNeutralRoughness = value;
         else if (key == "neutralNormal")
             mNeutralNormal = value;
+        else if (key == "skyDefaults")
+            mSkyDefaults = value;
         else if (key == "outputSize")
             mOutputSizeSelection = value;
         else if (key == "fixedOutputSize")
@@ -65,6 +78,18 @@ DLSSDGuides::DLSSDGuides(ref<Device> pDevice, const Properties& props) : RenderP
             mUpscaling = value;
         else if (key == "upscaleRatio")
             mUpscaleRatio = value;
+        else if (key == "layer")
+        {
+            const std::string s = value;
+            if (s == "Blend") mLayer = Layer::Blend;
+            else if (s == "Surface") mLayer = Layer::Surface;
+            else if (s == "Medium") mLayer = Layer::Medium;
+            else logWarning("DLSSDGuides: unknown layer '{}' (expected Blend|Surface|Medium)", s);
+        }
+        else if (key == "minTransmittance")
+            mMinTransmittance = value;
+        else if (key == "mediumAlbedoByCoverage")
+            mMediumAlbedoByCoverage = value;
         else
             logWarning("Unknown property '{}' in DLSSDGuides properties.", key);
     }
@@ -87,12 +112,16 @@ Properties DLSSDGuides::getProperties() const
     props["neutralSpecular"] = mNeutralSpecular;
     props["neutralRoughness"] = mNeutralRoughness;
     props["neutralNormal"] = mNeutralNormal;
+    props["skyDefaults"] = mSkyDefaults;
     props["outputSize"] = mOutputSizeSelection;
     if (mOutputSizeSelection == RenderPassHelpers::IOSize::Fixed)
         props["fixedOutputSize"] = mFixedOutputSize;
     props["upscale"] = mUpscaling;
     if (mUpscaling)
         props["upscaleRatio"] = mUpscaleRatio;
+    props["layer"] = std::string(layerName(mLayer));
+    props["minTransmittance"] = mMinTransmittance;
+    props["mediumAlbedoByCoverage"] = mMediumAlbedoByCoverage;
     return props;
 }
 
@@ -141,6 +170,11 @@ RenderPassReflection DLSSDGuides::reflect(const CompileData& compileData)
     r.addOutput(kSpecularAlbedoOutput, "Pre-integrated specular albedo guide").format(ResourceFormat::RGBA16Float).texture2D(sz.x, sz.y).bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
     r.addOutput(kNormalsOutput, "World-space normal guide").format(ResourceFormat::RGBA16Float).texture2D(sz.x, sz.y).bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
     r.addOutput(kRoughnessOutput, "Roughness guide (unpacked)").format(ResourceFormat::R16Float).texture2D(sz.x, sz.y).bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource);
+    // Two-layer path, layer = Surface: RR's colour for the surface layer and the divisor to undo it.
+    // Float32 like the estimator's colour: the divided values can be large where transmittance is low.
+    r.addInput(kColorInput, "Layer radiance to divide by transmittance (layer = Surface)").flags(RenderPassReflection::Field::Flags::Optional);
+    r.addOutput(kColorDemodOutput, "Layer radiance / max(transmittance, minTransmittance)").format(ResourceFormat::RGBA32Float).texture2D(sz.x, sz.y).bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource).flags(RenderPassReflection::Field::Flags::Optional);
+    r.addOutput(kDemodDivisorOutput, "The divisor used, for re-modulation after denoising").format(ResourceFormat::RGBA16Float).texture2D(sz.x, sz.y).bindFlags(ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource).flags(RenderPassReflection::Field::Flags::Optional);
     return r;
 }
 
@@ -171,8 +205,34 @@ void DLSSDGuides::execute(RenderContext* pRenderContext, const RenderData& rende
     var["CB"]["gNeutralSpecular"] = mNeutralSpecular;
     var["CB"]["gNeutralRoughness"] = mNeutralRoughness;
     var["CB"]["gNeutralNormal"] = mNeutralNormal;
+    var["CB"]["gSkyDefaults"] = mSkyDefaults;
     if (pMediumAlpha) var["gMediumAlpha"] = pMediumAlpha;
     if (pMediumNormal) var["gMediumNormal"] = pMediumNormal;
+
+    // Layer mode. Surface and Medium both need the medium's coverage (the transmittance divisor, the
+    // medium's albedo); Medium also needs its normal. Fall back to Blend's behaviour without them.
+    uint32_t layer = (uint32_t)mLayer;
+    if (mLayer == Layer::Surface && !pMediumAlpha)
+        layer = (uint32_t)Layer::Blend;
+    if (mLayer == Layer::Medium && !blendMedium)
+    {
+        logWarning("DLSSDGuides: layer=Medium needs mediumAlpha and mediumNormal connected; using Blend.");
+        layer = (uint32_t)Layer::Blend;
+    }
+    var["CB"]["gLayer"] = layer;
+    var["CB"]["gMinTransmittance"] = mMinTransmittance;
+    var["CB"]["gMediumAlbedoByCoverage"] = mMediumAlbedoByCoverage;
+    auto pColor = renderData.getTexture(kColorInput);
+    auto pColorDemod = renderData.getTexture(kColorDemodOutput);
+    auto pDivisor = renderData.getTexture(kDemodDivisorOutput);
+    const bool demod = pColor && pColorDemod && pDivisor && pMediumAlpha;
+    var["CB"]["gDemodColor"] = demod;
+    if (demod)
+    {
+        var["gColor"] = pColor;
+        var["gOutColorDemod"] = pColorDemod;
+        var["gOutDemodDivisor"] = pDivisor;
+    }
 
     var["gDiffuseOpacity"] = renderData.getTexture(kDiffuseOpacityInput);
     var["gSpecRough"] = renderData.getTexture(kSpecRoughInput);
@@ -189,10 +249,20 @@ void DLSSDGuides::execute(RenderContext* pRenderContext, const RenderData& rende
 
 void DLSSDGuides::renderUI(Gui::Widgets& widget)
 {
+    widget.text(fmt::format("Layer: {}", layerName(mLayer)));
+    widget.tooltip("Blend = guides for the composited pixel (one RR). Surface / Medium = one layer each of "
+                   "the two-layer path (VR_RR_LAYERS=1). Set when the graph is built.", true);
     widget.var("Min reflectance", mMinReflectance, 0.f, 1.f);
     widget.tooltip(
         "Floor applied to the albedo guides. A zero guide makes the denoiser demodulate by nothing, "
         "producing fireflies on black materials. Mirrors kNRDMinReflectance.",
+        true
+    );
+    widget.checkbox("Sky defaults", mSkyDefaults);
+    widget.tooltip(
+        "No-geometry pixels get NVIDIA's documented sky guides (diffuse 0.5, specular/normal/roughness 0) "
+        "instead of the G-buffer's cleared zeros, which reached RR as diffuse 0.01 and NaN normals. "
+        "Off reproduces the RR numbers recorded before this existed.",
         true
     );
 
