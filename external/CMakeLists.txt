@@ -664,8 +664,38 @@ macro(copy_file IN_FILE OUT_DIR)
 endmacro()
 
 # Fetch agility-sdk
-if(FALCOR_HAS_D3D12 AND (CMAKE_SYSTEM_NAME STREQUAL "Windows"))
-    set(AGILITY_SDK_VERSION "1.717.0-preview")
+#
+# FALCOR_ENABLE_AGILITY_SDK exists because 9.0 pins a PREVIEW Agility SDK (1.717.0-preview), and
+# Windows only loads a preview D3D12 runtime when Developer Mode is on. The failure is not graceful:
+# the executable exports D3D12SDKVersion, so when the runtime will not load D3D12 refuses to create a
+# device at all rather than falling back to the inbox one. OFF drops the export and uses the OS
+# runtime, which is the right setting on a machine without Developer Mode.
+set(FALCOR_ENABLE_AGILITY_SDK ON CACHE BOOL "Use the D3D12 Agility SDK (a preview SDK needs Windows Developer Mode)")
+set(AGILITY_SDK_VERSION "1.717.0-preview")
+
+# Detect Developer Mode and turn the SDK off when it is absent, rather than letting the build
+# produce a binary that cannot start. Diagnosing this from the runtime error alone is genuinely
+# hard: the only symptom is "Failed to create device on GPU 0" -- no mention of D3D12, the Agility
+# SDK or Developer Mode anywhere.
+if(FALCOR_ENABLE_AGILITY_SDK AND (CMAKE_SYSTEM_NAME STREQUAL "Windows"))
+    set(_devmode "")
+    if(NOT CMAKE_VERSION VERSION_LESS "3.24")
+        cmake_host_system_information(RESULT _devmode
+            QUERY WINDOWS_REGISTRY "HKLM/SOFTWARE/Microsoft/Windows/CurrentVersion/AppModelUnlock"
+            VALUE "AllowDevelopmentWithoutDevLicense"
+            ERROR_VARIABLE _devmode_err
+        )
+    endif()
+    if(NOT "${_devmode}" STREQUAL "1")
+        message(STATUS "Agility SDK: disabled -- Windows Developer Mode is off and ${AGILITY_SDK_VERSION} is a preview SDK.")
+        message(STATUS "  Enable Developer Mode (Settings > System > For developers) to use it, or set")
+        message(STATUS "  FALCOR_ENABLE_AGILITY_SDK=OFF explicitly to silence this. Without it D3D12 uses the")
+        message(STATUS "  inbox runtime, which on Windows 11 supports SM 6.8 but not SM 6.9.")
+        set(FALCOR_ENABLE_AGILITY_SDK OFF)
+    endif()
+endif()
+
+if(FALCOR_ENABLE_AGILITY_SDK AND FALCOR_HAS_D3D12 AND (CMAKE_SYSTEM_NAME STREQUAL "Windows"))
     FetchPackage(agility_sdk URL "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/${AGILITY_SDK_VERSION}")
     copy_file(${agility_sdk_SOURCE_DIR}/build/native/bin/x64/D3D12Core.dll D3D12)
     copy_file(${agility_sdk_SOURCE_DIR}/build/native/bin/x64/d3d12SDKLayers.dll D3D12)

@@ -497,7 +497,13 @@ Device::Device(const Desc& desc) : mDesc(desc)
     gfx::D3D12ExperimentalFeaturesDesc experimentalFeaturesDesc = {};
     experimentalFeaturesDesc.numFeatures = (uint32_t)mDesc.experimentalFeatures.size();
     experimentalFeaturesDesc.featureIIDs = mDesc.experimentalFeatures.data();
-    if (gfxDesc.deviceType == gfx::DeviceType::DirectX12)
+    // Only ask for the extended desc when features were actually requested. Passing it with an EMPTY
+    // list still makes gfx call D3D12EnableExperimentalFeatures, which requires Windows Developer
+    // Mode; without it the call fails and gfx then fails device creation outright. Nothing in this
+    // repository ever populates mDesc.experimentalFeatures, so the desc only ever cost us the
+    // Developer Mode requirement. Upstream pushes it unconditionally -- harmless on the older gfx
+    // that shipped with 8.0, fatal on the one in Slang 2025.13.2.
+    if (gfxDesc.deviceType == gfx::DeviceType::DirectX12 && !mDesc.experimentalFeatures.empty())
         extendedDescs.push_back(&experimentalFeaturesDesc);
 #endif
     gfxDesc.extendedDescCount = extendedDescs.size();
