@@ -8,7 +8,8 @@
 #   VR_RATIO=             override the ratio directly (0.25 .. 1.0); VR_PROFILE still sets the profile
 #   VR_DISPLAY=1920x1080  output resolution (capped by the window -- a swapchain cannot exceed it)
 #   VR_VOLGUIDES=1        RR only: blend volumetric guides (0 = surface guides only, for the A/B)
-#   VR_PRESET=E           RR render preset: D or E
+#   VR_PRESET=E           RR render preset: D, E or F (F = RR2, needs VR_SDK=Current)
+#   VR_SDK=Current        which DLSS DLLs: Current (310.9.1) | Previous310_7 | LegacyCNN (SR only)
 #   VR_TONEMAP=1          0 leaves the output linear HDR, which is what MSE comparisons need
 #   VR_CAPTURE_FRAME=0    >0 captures that frame and the run is otherwise unattended
 #   VR_REFERENCE=0        brute-force path tracing, accumulated -- ignores VR_DENOISER
@@ -69,9 +70,10 @@ REFERENCE = vr.env_bool("VR_REFERENCE", False)
 # nrd only: 0 bypasses the denoiser (NRDPass blits input->output), leaving just the
 # demodulate/re-modulate round trip -- an identity check on the adapter.
 NRD_ENABLED = vr.env_bool("VR_NRD_ENABLED", True)
-# Super Resolution only. Current = 310.7.0 transformer, LegacyCNN = 3.7.20 convolutional -- the only
-# way to reach a CNN, since the 310.x line removed every CNN preset. Ray Reconstruction has no legacy
-# equivalent at all: no 3.x SDK ever shipped nvngx_dlssd.dll.
+# Current = the DLLs beside the executable (310.9.1), Previous310_7 = 310.7.0 (both transformer, both
+# SR and RR), LegacyCNN = 3.7.20 convolutional -- SR only, and the only way to reach a CNN, since the
+# 310.x line removed every CNN preset. Ray Reconstruction has no legacy equivalent at all: no 3.x SDK
+# ever shipped nvngx_dlssd.dll.
 SDK_VARIANT = vr.env("VR_SDK", "Current")
 SR_PRESET = vr.env("VR_SR_PRESET", "Default")
 CAPTURE = vr.env_int("VR_CAPTURE_FRAME", 0)
@@ -94,15 +96,23 @@ def render_graph():
     # NRD needs the volume guides too: scatterDistance rides the same gate, and it needs linearZ as
     # its viewZ, which mOutputDepth controls. RR takes depth from the G-buffer instead, hence the
     # asymmetry.
+    # VR_REF_JITTER=1 jitters the REFERENCE, so it converges to the pixel-area integral rather than to
+    # the pixel centre. That is what a DLSS row reconstructs -- RR runs on a jittered camera and returns
+    # an anti-aliased image -- so against a centre-sampled reference every edge scores as error, and on
+    # bistro, where lamps sit on black, those edges swamp any relative metric. Off by default: the
+    # unjittered rows (raw, OIDN, OptiX) estimate the pixel centre and belong with the default.
     restir = vr.add_restir(g, scene, upscale=UPSCALE, profile=PROFILE, ratio=EFFECTIVE_RATIO,
-                           guides=(MODE in ("rr", "nrd") and VOLGUIDES), jitter=False,
+                           guides=(MODE in ("rr", "nrd") and VOLGUIDES),
+                           jitter=REFERENCE and vr.env_bool("VR_REF_JITTER", False),
                            reference=REFERENCE,
                            # Deterministic mvec is enabled so VR_NRD_VOLMV=1 has something to read --
                            # the pass defaults to Off, and an unconnected output would hand NRD an
                            # empty texture, i.e. "nothing moved". Costs one write when unused. See the
                            # mvec note in vr_graph.add_denoiser for why VR_NRD_VOLMV defaults off.
+                           # RR needs it too: its motion vectors come from the estimator by default
+                           # (VR_RR_VOLMV) -- the G-buffer's describe the wall behind the smoke.
                            **({"mOutputDepth": True, "mMotionVecMode": "Deterministic"}
-                              if MODE == "nrd" else {}))
+                              if MODE in ("nrd", "rr") else {}))
     color = restir + ".accumulated_color"
 
     if REFERENCE:

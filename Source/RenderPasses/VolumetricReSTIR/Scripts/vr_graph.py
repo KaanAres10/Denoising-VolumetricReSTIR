@@ -131,10 +131,12 @@ def pixel_fraction(render, display):
 
 # The passes name their presets descriptively now (a bare letter tells you nothing, and the letters
 # mean different networks for RR and SR). Scripts and env vars may still use the plain letter.
-RR_PRESETS = {"Default": "Default", "D": "D_Transformer", "E": "E_TransformerLatest"}
+# F is RR2, the 310.9.1 default; it exists only in the Current SDK variant -- Previous310_7 silently
+# runs its default (D) for it, which the pass warns about.
+RR_PRESETS = {"Default": "Default", "D": "D_Transformer", "E": "E_TransformerLatest", "F": "F_RR2"}
 # A..F are the convolutional models and exist only in the LegacyCNN (3.7.20) DLL; J..M are the
-# transformer models and exist only in Current (310.7.0). Pairing a letter with the wrong SDK variant
-# does not fail -- NGX quietly substitutes that DLL's default.
+# transformer models and exist only in the 310.x DLLs (Current = 310.9.1, Previous310_7 = 310.7.0).
+# Pairing a letter with the wrong SDK variant does not fail -- NGX quietly substitutes that DLL's default.
 SR_PRESETS = {"Default": "Default",
               "A": "A_CNN", "B": "B_CNN", "C": "C_CNN", "D": "D_CNN", "E": "E_CNN", "F": "F_CNN",
               "J": "J_TransformerLessGhost", "K": "K_TransformerBestQuality",
@@ -172,7 +174,9 @@ def load_plume(frame="0198"):
     reprojection.
     """
     m.loadScene(DATA_DIR + r"\default.obj")
-    m.scene.setEnvMap(DATA_DIR + r"\hansaplatz_8k.hdr")
+    # VR_PLUME_ENV swaps the environment (a file in VolumetricReSTIRData), e.g. lakeside_8k.hdr for a
+    # daylight sky brighter than the smoke -- the opposite of hansaplatz's night square.
+    m.scene.setEnvMap(DATA_DIR + "\\" + env("VR_PLUME_ENV", "hansaplatz_8k.hdr"))
     # Shared by both paths so the two cannot drift apart.
     vol = dict(sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=0.0,
                numMips=4, densityScale=0.1, hasEmission=False, LeScale=0.01,
@@ -242,7 +246,35 @@ def load_bistro():
     }
 
 
-SCENES = {"plume": load_plume, "bistro": load_bistro}
+def load_explosion():
+    """The Volumetric ReSTIR paper's explosion (run_LGHExplosion.py): an EMISSIVE medium -- blackbody
+    emission from its temperature grid -- here under a night sky. The case where a sliver of medium can
+    be most of a pixel's light, which is what a coverage threshold gets wrong and a light-share one
+    should not. (The paper's skylight-dusk.exr crashes setEnvMap in this build, hence the .hdr.)"""
+    m.loadScene(DATA_DIR + r"\default.obj")
+    m.scene.setEnvMap(DATA_DIR + r"\satara_night_8k.hdr")
+    m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(10, 10, 10), g=0.0,
+                          dataFile=DATA_DIR + r"\LGHExplosion\LGHExplosion.183", numMips=4, densityScale=0.02,
+                          hasVelocity=False, hasEmission=True, LeScale=env_float("VR_EXPLOSION_LESCALE", 1.0),
+                          # The paper's temperatureScale 750 maps this bake below the blackbody LUT's first
+                          # non-zero row: measured, LeScale 1 and 100 render byte-identical, i.e. emission
+                          # is exactly zero. 7500 gives the fireball.
+                          temperatureCutoff=0.0, temperatureScale=env_float("VR_EXPLOSION_TSCALE", 7500.0))
+    m.scene.camera.animated = False
+    m.scene.camera.position = float3(-29.487331, 10.408340, 0.493491)
+    m.scene.camera.target = float3(-28.505859, 10.597045, 0.460278)
+    m.scene.camera.up = float3(0.0, 1.0, 0.0)
+    # See load_plume: the derived depth range does not include the volume.
+    m.scene.camera.nearPlane = 0.1
+    m.scene.camera.farPlane = 1000.0
+    return {
+        "scatterAlbedo": float3(0.5, 0.5, 0.5),   # 10 / (10 + 10)
+        "exposure": 0.0,
+        "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False},
+    }
+
+
+SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion}
 
 
 def load_scene(name):
@@ -297,11 +329,25 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
         "samplePattern": "Halton" if jitter else "Center",
         "sampleCount": 32,
         "mOutputVolumeGuides": bool(guides),
-        # What goes into the medium's guide normal. The default reproduces the previous behaviour
-        # (-rayDir), which carries no volume information at all; "gradient" writes the density
-        # gradient. Left as a switch because the gradient was rejected once on stated grounds and
-        # that objection deserves a measurement.
-        "mVolumeNormalMode": "Gradient" if env("VR_VOL_NORMAL", "camera").lower() == "gradient" else "Camera",
+        # What goes into the medium's guide normal. "camera" is the -rayDir stand-in, which carries no
+        # volume information at all; "gradient" writes the density gradient.
+        #
+        # MEASURED (bistro orbit, 300 frames at 1080p, RELAX-SH, the density gradient's A3 question):
+        #   camera    s=32 9.32   plume 14.00   surfaces 27.23   plume detail 0.0505
+        #   gradient  s=32 9.34   plume 14.06   surfaces 27.24   plume detail 0.0520
+        # The gradient buys +3% plume detail for -0.4% stability -- close to a wash, so the plan's
+        # own caution was right: it does NOT clearly beat the stand-in. The knob is live, not dead
+        # (19-36% of pixels differ frame to frame).
+        #
+        # Default is "gradient" because every recorded measurement in STATE.md was taken that way
+        # (the .vscode Look: tasks all set it), and a default that disagrees with every published
+        # number is the more dangerous inconsistency. Detail inside the medium is also the axis this
+        # project is trying to protect.
+        #
+        # NOTE this is a no-op on the OptiX path: measured byte-identical output between the two
+        # modes even though the estimator's mediumNormal differs in 20.6% of pixels and
+        # DLSSDGuides.normals in 20.1%. OptiX consumes the albedo guide, not the normal one.
+        "mVolumeNormalMode": "Camera" if env("VR_VOL_NORMAL", "gradient").lower() == "camera" else "Gradient",
         # Knee of the volume-half confinement mask, cov = saturate(mediumAlpha / knee). SMALLER is
         # gentler: the mask reaches 1 sooner, so more of the plume's genuine soft edge survives.
         # Measured leak ratio (ring+12 / core) against raw's 0.3262: knee 0.5 gives 0.2208 (over-
@@ -314,6 +360,14 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
         "mUseReference": bool(reference),
         "mEnableTemporalReuse": not reference,
         "mEnableSpatialReuse": not reference,
+        # Temporal reuse picks last frame's pixel from the current sample's own depth, which biases it
+        # while the camera moves: thin medium at a moving silhouette loses up to ~40% of its light (bistro,
+        # stop-and-go, vs a 256-frame truth; right again once the camera stops). On = pick it from the
+        # pixel alone (TemporalReuse.cs.slang). Off by default: it changes the estimator.
+        "mTemporalReprojectIndependent": env_bool("VR_TR_INDEPENDENT", False),
+        # With it: follow the medium's motion as often as the medium supplies the pixel's light (the
+        # guides' light-share statistics) rather than as often as it covers the pixel.
+        "mTemporalReprojectByLightShare": env_bool("VR_TR_LIGHT_SHARE", False),
     })
     for k, v in params.items():
         if k == "mParams":
@@ -331,25 +385,37 @@ def add_gbuffer(g, render, jitter=True, name="GBufferRaster", upscale=False, rat
     resolution the script *asked* for, and the window manager does not have to honour it -- fullscreen
     is the common case. The ratio resolves against the real swapchain inside the pass, so estimator,
     G-buffer and guides all land on the same number whatever the window turns out to be.
+
+    `render=None` follows the swapchain, like the estimator does -- what an interactive window needs,
+    since a fixed size here stays put when the window is resized and the estimator does not.
     """
     props = {"samplePattern": "Halton" if jitter else "Center", "sampleCount": 32}
     if upscale:
         props.update({"upscale": True, "upscaleRatio": ratio if ratio is not None else 0.58})
-    else:
+    elif render is not None:
         props.update({"outputSize": "Fixed", "fixedOutputSize": render})
     g.addPass(createPass("GBufferRaster", props), name)
     return name
 
 
 def add_rr_guides(g, scene, gbuffer="GBufferRaster", restir=None, render=None, name="DLSSDGuides",
-                  upscale=False, ratio=None):
+                  upscale=False, ratio=None, layer=None):
     """G-buffer -> Ray Reconstruction guides, blending in the medium where it covers the pixel.
 
     `render` must be the same size as the colour handed to DLSSDPass. Left at the graph default the
     guides are allocated at swapchain size, and with upscaling on RR then gets guides misregistered
     by the upscale factor -- visible as silhouette/edge fringing, never as an error.
     """
-    props = {"mediumScatterAlbedo": scene["scatterAlbedo"]}
+    # VR_RR_SKY=0 hands no-geometry pixels the G-buffer's cleared zeros again (diffuse 0.01 after the
+    # floor, NaN normals out of the medium blend) instead of NVIDIA's sky defaults -- i.e. reproduces
+    # every RR number recorded before the fix. The previous RR model barely reacts to it; RR2 does.
+    props = {"mediumScatterAlbedo": scene["scatterAlbedo"], "skyDefaults": env_bool("VR_RR_SKY", True)}
+    if layer is not None:
+        props["layer"] = layer   # Surface / Medium: one layer of add_rr_layers
+    if layer == "Medium":
+        # VR_RR_LAYER_ALBEDO_COV=0: the medium layer's albedo guide is the single-scatter albedo alone
+        # rather than scaled by coverage (see DLSSDGuides).
+        props["mediumAlbedoByCoverage"] = env_bool("VR_RR_LAYER_ALBEDO_COV", True)
     if upscale:
         props.update({"upscale": True, "upscaleRatio": ratio if ratio is not None else 0.58})
     elif render is not None:
@@ -361,6 +427,74 @@ def add_rr_guides(g, scene, gbuffer="GBufferRaster", restir=None, render=None, n
         g.addEdge(restir + ".mediumAlpha", name + ".mediumAlpha")
         g.addEdge(restir + ".mediumNormal", name + ".mediumNormal")
     return name
+
+
+def add_rr_layers(g, scene, gbuffer, restir, render, sdk_variant, preset, name="RRLayers"):
+    """Ray Reconstruction on the medium and the surfaces SEPARATELY, then added back together.
+
+    One RR keeps one history and takes one motion vector per pixel, but at the smoke's edge a pixel
+    holds two layers moving differently on screen: whichever motion it is given, the other layer's
+    history is misplaced. Given the smoke's, RR dragged smoke history over the ground (the veil);
+    given the ground's, the smoke's rim is reprojected with the ground. (The rim's DIMMING while the
+    camera moves was first blamed on this and is not it: the estimator's own temporal reuse loses thin
+    medium at a moving silhouette -- see VR_TR_INDEPENDENT in add_restir.) Denoising the layers
+    separately -- as NVIDIA's "Joint Neural Denoising of Surfaces and Volumes" (Hofmann et al. 2023) and
+    this project's NRD split do -- gives each its own history:
+
+      surface layer   surfaceColor / T (the estimator's own split; T = medium transmittance, floored),
+                      the G-buffer's guides, depth and motion -- the unoccluded surface, moving with
+                      the surface;
+      medium layer    volumeColor, the medium's guides (albedo = single-scatter albedo x coverage),
+                      and the estimator's depth and motion at the medium's scattering depth wherever
+                      the ray meets it (mGuideMediumMinShare = 0) -- the smoke, moving with the smoke;
+      composite       T * surface + medium, via ModulateIllumination, as the NRD split does.
+
+    Guide-only with respect to the estimator: its outputs are read, never changed. The split is exact
+    (volumeColor + surfaceColor == accumulated_color). Native resolution only for now (DLAA): the
+    composite multiplies the RR output by a render-resolution divisor.
+    """
+    # The medium layer needs the medium's motion wherever the medium is -- the estimator's default rule.
+    g.get_pass(restir).set_properties({"mGuideMediumMinShare": 0.0})
+    rr = {"enabled": True, "sdkVariant": sdk_variant, "profile": "DLAA", "preset": rr_preset(preset),
+          "isHDR": True, "motionVectorsRelative": True}
+
+    def guides(layer, pass_name):
+        return add_rr_guides(g, scene, gbuffer, restir, render=render, name=pass_name, layer=layer)
+
+    def denoise(pass_name, color, depth, mvec, gd):
+        g.addPass(createPass("DLSSDPass", rr), pass_name)
+        g.addEdge(color, pass_name + ".color")
+        g.addEdge(depth, pass_name + ".depth")
+        g.addEdge(mvec, pass_name + ".mvec")
+        for ch in ("diffuseAlbedo", "specularAlbedo", "normals", "roughness"):
+            g.addEdge(gd + "." + ch, pass_name + "." + ch)
+        return pass_name + ".output"
+
+    gs = guides("Surface", "DLSSDGuidesSurface")
+    g.addEdge(restir + ".surfaceColor", gs + ".color")
+    surf = denoise("DLSSDPassSurface", gs + ".colorDemod", gbuffer + ".linearZ", gbuffer + ".mvec", gs)
+    gm = guides("Medium", "DLSSDGuidesMedium")
+    # The medium layer is averaged over the last few frames ALONG ITS OWN MOTION before RR sees it
+    # (MediumAccumulation): its thin rim arrives as sparse bright samples. That lowers the layer's noise,
+    # but it cannot restore light the layer lacks, and the rim's dimming in motion was in the layer
+    # itself (the estimator's temporal reuse). Bistro stop 3, frozen lights, vs a 256-frame truth, on
+    # screen while moving (typical pixel, thin / edge): two-layer 0.81 / 0.80, with VR_TR_INDEPENDENT=1
+    # 0.94 / 0.91 -- and one RR with it 1.03 / 1.00. VR_RR_LAYER_ACCUM=0 feeds RR the raw layer.
+    med_color = restir + ".volumeColor"
+    if env_bool("VR_RR_LAYER_ACCUM", True):
+        g.addPass(createPass("MediumAccumulation", {"maxFrames": env_int("VR_RR_LAYER_ACCUM_N", 8)}),
+                  "MediumAccumulation")
+        g.addEdge(restir + ".volumeColor", "MediumAccumulation.color")
+        g.addEdge(restir + ".mvec", "MediumAccumulation.mvec")
+        g.addEdge(restir + ".mediumAlpha", "MediumAccumulation.coverage")
+        med_color = "MediumAccumulation.output"
+    med = denoise("DLSSDPassMedium", med_color, restir + ".linearZ", restir + ".mvec", gm)
+
+    g.addPass(createPass("ModulateIllumination"), name)
+    g.addEdge(surf, name + ".diffuseRadiance")
+    g.addEdge(gs + ".demodDivisor", name + ".diffuseReflectance")
+    g.addEdge(med, name + ".residualRadiance")
+    return name + ".output"
 
 
 # Denoisers that are a single pass taking colour in and colour out.
@@ -782,7 +916,9 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
     `sr` and `rr` need a GBuffer; it is created on demand if one was not passed in. Upscaling is
     implied by render != display, and the DLSS profile must match that ratio.
     """
-    upscaling = tuple(render) != tuple(display)
+    # render=None (and display=None): no upscaling, and every pass follows the swapchain -- see
+    # add_gbuffer. Otherwise a render size different from the display means upscaling.
+    upscaling = render is not None and display is not None and tuple(render) != tuple(display)
 
     if mode == "none":
         return color
@@ -793,6 +929,32 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         g.addEdge(color, "Denoiser." + cin)
         if mode == "optix":
             gbuffer = gbuffer or add_gbuffer(g, render, jitter=False)
+            # OptiX accepts albedo and normal guides and was never given them here -- the graph wired
+            # colour only, which is how the legacy scripts did it too. These are the SAME volume-aware
+            # guides Ray Reconstruction gets, blending the medium in by mediumAlpha/mediumNormal/
+            # scatterAlbedo, so inside the smoke they describe the smoke rather than the wall behind it.
+            #
+            # ON by default on measurement, bistro orbit, 300 frames at 1080p, shipped config:
+            # instability at sigma=32 12.22 -> 11.65, plume 20.60 -> 19.94, surfaces 30.07 -> 29.22,
+            # detail unchanged (0.0639 -> 0.0640). Set VR_OPTIX_GUIDES=0 for the colour-only path the
+            # legacy scripts used.
+            #
+            # These numbers REPLACE an earlier set (30.05 -> 24.33, "19% better for 3.6% of detail")
+            # measured before the dropped ray-origin offset in InlineRayTracingHelpers.slang was
+            # found. Guides looked far more valuable then because they were compensating for an
+            # estimator that left 56% of surface pixels black; with that fixed the real gain is 4.7%
+            # and it costs no detail. A denoiser aid measured against a broken input overstates
+            # itself -- worth remembering before trusting any other tuning in this file.
+            #
+            # Worth trying specifically for the medium: these are the SAME volume-aware guides Ray
+            # Reconstruction gets, blending the medium in by mediumAlpha/mediumNormal/scatterAlbedo,
+            # so inside the smoke they describe the smoke rather than the wall behind it. A denoiser
+            # edge-stopping on a guide that describes the wall is the failure this project already
+            # diagnosed for NRD; OptiX has been running with no guide at all.
+            if env_bool("VR_OPTIX_GUIDES", True):
+                _gd = add_rr_guides(g, scene, gbuffer, restir if guides else None, render=render)
+                g.addEdge(_gd + ".diffuseAlbedo", "Denoiser.albedo")
+                g.addEdge(_gd + ".normals", "Denoiser.normal")
         if mode == "optix" and env_bool("VR_OPTIX_MV", True):
             # Motion vectors switch OptiX to its TEMPORAL model; without them it denoises each frame
             # independently. The pass negates them itself (OptiX points forward in time, Falcor
@@ -803,14 +965,45 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
             # than an assumption: a temporal denoiser fed bad reprojection is WORSE than one with
             # none, which is precisely what the NRD matrix bug turned out to be, so "we added the
             # temporal path" is not automatically an improvement and has to be measured.
-            g.addEdge(gbuffer + ".mvec", "Denoiser.mvec")
+            #
+            # WHICH mvec matters more than whether. The G-buffer's are RASTERIZED, so at a pixel the
+            # smoke covers they describe the wall BEHIND the smoke, not the smoke -- the plume is not
+            # in the G-buffer at all. The estimator's deterministic mvec is computed at `expectedT`,
+            # the expected scattering depth inside the medium (GenerateFeatures.cs.slang), so it is
+            # the only one that reprojects the plume itself. Both use the same convention:
+            # current -> previous, normalized [0,1] screen space.
+            #
+            # With a pinned camera the two agree and the choice is unmeasurable -- which is why
+            # VR_NRD_VOLMV was left off on the note "revisit with a moving camera". This orbit IS
+            # that camera: 180 degrees of parallax between the plume's depth and the wall's, applied
+            # to every plume pixel, on the one denoiser input whose entire job is reprojection.
+            _mv = gbuffer + ".mvec"
+            # MEASURED AND REJECTED. Bistro orbit, 300 frames at 1080p, shipped config otherwise:
+            # sigma=32 30.05 -> 30.08, plume region 31.45 -> 31.47, surfaces 58.46 -> 58.53. The edge
+            # is live, not dead -- 41-44% of pixels differ, max delta 105/255 -- so this is a real
+            # negative result and not the "identical rows mean the knob isn't wired" trap. Kept as a
+            # switch because it is the physically correct input and a scene with an animated medium
+            # (bistro's is static in world space) could still need it.
+            if env_bool("VR_OPTIX_VOLMV", False) and restir is not None:
+                # An mvec output the estimator is not configured to write is an EMPTY texture, which
+                # a temporal denoiser reads as "nothing moved anywhere" -- a working-looking denoiser
+                # that never reprojects. Refuse rather than measure that. Read the mode back off the
+                # pass rather than trusting the caller: getProperties reports the mode it settled on.
+                mvmode = g.get_pass(restir).properties.get("mMotionVecMode")
+                if mvmode != "Deterministic":
+                    raise RuntimeError(
+                        "VR_OPTIX_VOLMV=1 needs the estimator writing volume-aware motion vectors, "
+                        "but '%s' reports mMotionVecMode=%r (need 'Deterministic')." % (restir, mvmode))
+                _mv = restir + ".mvec"
+            g.addEdge(_mv, "Denoiser.mvec")
         return "Denoiser." + cout
 
     if mode == "sr":
         gbuffer = gbuffer or add_gbuffer(g, render, jitter=True)
-        # sdk_variant picks the DLL, and therefore the network architecture: Current = 310.7.0
-        # transformer, LegacyCNN = 3.7.20 convolutional. sr_preset must belong to the same family --
-        # a mismatch does not fail, it silently falls back to that DLL's default.
+        # sdk_variant picks the DLL, and therefore the network architecture: Current = the DLL beside
+        # the executable (310.9.1), Previous310_7 = 310.7.0, both transformer; LegacyCNN = 3.7.20
+        # convolutional. sr_preset must belong to the same family -- a mismatch does not fail, it
+        # silently falls back to that DLL's default.
         g.addPass(createPass("DLSSPass", {"enabled": True, "profile": profile,
                                           "sdkVariant": sdk_variant,
                                           "preset": sr_preset(sr_render_preset),
@@ -821,16 +1014,87 @@ def add_denoiser(g, mode, color, scene, render, display, profile="Balanced", pre
         return "DLSSPass.output"
 
     if mode == "rr":
+        # sdk_variant picks nvngx_dlssd.dll: Current = 310.9.1 (presets D/E/F, F = RR2 is its default),
+        # Previous310_7 = 310.7.0 (D/E), which every RR number recorded before 310.9.1 used. Refused
+        # rather than passed through for LegacyCNN: that directory has no nvngx_dlssd.dll at all, and
+        # NGX reports a missing feature DLL exactly as it reports unsupported hardware.
+        if sdk_variant not in ("Current", "Previous310_7"):
+            raise ValueError("Ray Reconstruction has no '%s' SDK variant (have: Current, Previous310_7)"
+                             % sdk_variant)
         gbuffer = gbuffer or add_gbuffer(g, render, jitter=True, upscale=upscaling, ratio=upscale_ratio)
+        # VR_RR_LAYERS=1: the smoke and the surfaces denoised by separate RR instances (add_rr_layers).
+        if env_bool("VR_RR_LAYERS", False):
+            if restir is None or upscaling:
+                raise RuntimeError("VR_RR_LAYERS=1 needs the estimator's split outputs and native resolution")
+            rprops = g.get_pass(restir).properties
+            if rprops.get("mMotionVecMode") != "Deterministic" or not rprops.get("mOutputDepth"):
+                raise RuntimeError("VR_RR_LAYERS=1 needs '%s' with mMotionVecMode=Deterministic and mOutputDepth"
+                                   % restir)
+            return add_rr_layers(g, scene, gbuffer, restir, render, sdk_variant, preset)
         gd = add_rr_guides(g, scene, gbuffer, restir if guides else None, render=render,
                            upscale=upscaling, ratio=upscale_ratio)
         # DLAA is native; anything else must match the ratio the estimator is rendering at.
         g.addPass(createPass("DLSSDPass", {
-            "enabled": True, "profile": profile if upscaling else "DLAA",
+            "enabled": True, "sdkVariant": sdk_variant, "profile": profile if upscaling else "DLAA",
             "preset": rr_preset(preset), "isHDR": True, "motionVectorsRelative": True}), "DLSSDPass")
         g.addEdge(color, "DLSSDPass.color")
-        g.addEdge(gbuffer + ".linearZ", "DLSSDPass.depth")
-        g.addEdge(gbuffer + ".mvec", "DLSSDPass.mvec")
+        # RR's motion vectors and depth. The G-buffer's are RASTERIZED, so at a pixel the smoke covers
+        # they describe the wall BEHIND it -- the plume is not in the G-buffer at all. Under an orbit
+        # about the plume the smoke barely moves on screen while that wall sweeps past, so RR drags
+        # the smoke's history along with the wall: a smeared halo around the silhouette while the
+        # camera moves. The estimator writes both at the medium's expected scattering depth (the
+        # surface hit elsewhere, the far plane on sky) -- VR_RR_VOLMV / VR_RR_VOLDEPTH hand RR those.
+        #
+        # MEASURED (bistro orbit at 960x540, record_look.py, instability: lower = steadier):
+        #                         plume   whole   surfaces  detail
+        #   previous RR (E)  G-buffer mvec  16.83   9.74   27.19   0.0471
+        #                    volume mvec    15.51   9.48   27.08   0.0484
+        #                    + volume depth 15.45   9.45   27.04   0.0482
+        #   RR2 (F)          G-buffer mvec  17.74  10.10   27.80   0.0506
+        #                    volume mvec    16.50   9.83   27.62   0.0514
+        # Visibly: the smoke's own smear is gone and the billows keep their shape in motion -- but a veil
+        # over the GROUND beside the silhouette remained; that one is the fringe rule just below.
+        # Both versions gain alike, so the E-vs-F ranking stands. mvec is ON by default; depth adds
+        # ~0.4% and stays opt-in. VR_RR_VOLMV=0 restores the G-buffer mvec every RR number before
+        # 2026-09-18 was measured with.
+        mv_src, z_src = gbuffer + ".mvec", gbuffer + ".linearZ"
+        rprops = g.get_pass(restir).properties if restir is not None else {}
+        if env_bool("VR_RR_VOLMV", True) and restir is not None:
+            # An mvec output the estimator is not configured to write is an EMPTY texture, i.e. "nothing
+            # moved" -- a working-looking RR that never reprojects. Refuse rather than measure that.
+            if rprops.get("mMotionVecMode") != "Deterministic":
+                raise RuntimeError("VR_RR_VOLMV=1 needs '%s' with mMotionVecMode=Deterministic, it reports %r"
+                                   % (restir, rprops.get("mMotionVecMode")))
+            mv_src = restir + ".mvec"
+            # ...and the medium's motion only where the medium is what the pixel SHOWS. The estimator's
+            # default gives it to every pixel whose ray touches the smoke at all, i.e. the whole faint
+            # outer fringe (bistro mid-orbit: 28k pixels, 11k below 0.1% coverage), where what the pixel
+            # shows is the ground behind: under camera motion RR reprojected that ground as if it were
+            # smoke and laid a veil of smoke history over it, ~50 px wide -- the halo that survived the
+            # switch to volume mvec. RR denoises the whole pixel, so it wants the layer that supplies the
+            # pixel's light. (NRD's volume half denoises only the medium's light and keeps the
+            # estimator's default.) Also what TAA_LDR reads when it shares this mvec.
+            #
+            # The rule is a share of LIGHT, estimated from the estimator's own previous-frame light split
+            # (GuideLightStats), so one threshold carries across scenes where no coverage threshold does.
+            # Guide-only: the estimator's rendered frame is byte-identical with it on and off. MEASURED
+            # (stop-and-go, E, m_halo_alpha.py; mean |arrival - settled| /255 over 0 < coverage < 0.9):
+            #                                   bistro  plume night  plume day  explosion
+            #   any medium (old rule)            6.34      2.91        2.87       4.78
+            #   coverage 2% (tuned on bistro)    5.16      2.96        2.75       4.56
+            #   light share 5%                   5.09      2.89        2.72       4.49   <- default
+            #   light share 10%                  5.13      2.92        2.68       4.49
+            #   light share 20%                  5.32      3.02        2.63       4.56
+            # 5% is the one setting that helps, or is neutral on, every scene. VR_RR_MV_MIN_SHARE=0 restores
+            # the old rule; VR_RR_MV_SHARE_STATS=0 makes the threshold a plain coverage one.
+            g.get_pass(restir).set_properties({"mGuideMediumMinShare": env_float("VR_RR_MV_MIN_SHARE", 0.05),
+                                               "mGuideLightShareFromStats": env_bool("VR_RR_MV_SHARE_STATS", True)})
+        if env_bool("VR_RR_VOLDEPTH", False) and restir is not None:
+            if not rprops.get("mOutputDepth"):
+                raise RuntimeError("VR_RR_VOLDEPTH=1 needs '%s' with mOutputDepth=True" % restir)
+            z_src = restir + ".linearZ"
+        g.addEdge(z_src, "DLSSDPass.depth")
+        g.addEdge(mv_src, "DLSSDPass.mvec")
         for ch in ("diffuseAlbedo", "specularAlbedo", "normals", "roughness"):
             g.addEdge(gd + "." + ch, "DLSSDPass." + ch)
         return "DLSSDPass.output"

@@ -38,6 +38,15 @@
 #                                                    BLACK unless you raise exposure in Mogwai.
 #   VR_NRD_VALIDATION=1                              add NRD's overlay as an output
 #   VR_DENOISER=rr                                   DLSS Ray Reconstruction instead of NRD
+#   VR_SDK=Current | Previous310_7                   rr: which nvngx_dlssd.dll -- 310.9.1 (presets D/E/F,
+#                                                    F = RR2) or 310.7.0 (D/E). Fixed for the process;
+#                                                    open two windows to see both at once.
+#   VR_PRESET=E                                      rr: starting preset. Switch live in the DLSSDPass
+#                                                    UI; the log prints "preset hint N" on every switch.
+#   VR_DISPLAY=1920x1080                             resolution; the recorded orbits are 1920x1080
+#   VR_WINDOW_POS=x,y                                where the window opens (its content area's top-left,
+#                                                    in screen pixels). rr_compare_windows.cmd uses it to
+#                                                    put two windows side by side.
 import os
 import sys
 
@@ -64,17 +73,34 @@ MODE = vr.env("VR_DENOISER", "nrd").lower()
 # likely to disagree with bistro: animated, 1 spp, and genuinely firefly-heavy, which is exactly what
 # the anti-firefly setting was originally tuned for (on plume, before the matrix fix).
 SCENE = vr.env("VR_SCENE", "bistro").lower()
-g = RenderGraph(SCENE + "_relax")
+# The graph name is what Mogwai's Graphs panel shows, so it names the denoiser actually wired below.
+# It was SCENE + "_relax" whatever ran -- an RR window read "bistro_relax". For rr it carries the SDK
+# variant (fixed per process), not the preset, which can change live: DLSSDPass shows that, plus the
+# DLL version actually loaded, on its "Running:" line.
+_GRAPH_KIND = {"rr": "RR_" + vr.env("VR_SDK", "Current"),
+               "nrd": "NRD_" + vr.env("VR_NRD_METHOD", "RelaxDiffuseSh")}
+g = RenderGraph(SCENE + "_" + _GRAPH_KIND.get(MODE, MODE))
 scene = vr.load_scene(SCENE)
-restir = vr.add_restir(g, scene, render=RENDER, guides=True, mOutputDepth=True,
+# RR: every pass follows the WINDOW, so resizing it at runtime keeps colour, depth and guides the same
+# size. Pinned to RENDER, the G-buffer and guides stayed put while the estimator followed the window,
+# and RR combined misregistered inputs -- garbage, with a "DLSSDPass: input 'depth' is 960x540 but
+# color is 2560x1351" warning per size. VR_DISPLAY still sets the size the window opens at. NRD keeps
+# the fixed size: its volume blur radius is derived from the render height when the graph is built.
+LIVE_SIZE = None if MODE == "rr" else RENDER
+restir = vr.add_restir(g, scene, render=LIVE_SIZE, guides=True, mOutputDepth=True,
                        mMotionVecMode="Deterministic")
-out = vr.add_denoiser(g, MODE, restir + ".accumulated_color", scene, RENDER, RENDER,
-                      restir=restir, guides=True)
+PRESET = vr.env("VR_PRESET", "E")
+SDK_VARIANT = vr.env("VR_SDK", "Current")
+out = vr.add_denoiser(g, MODE, restir + ".accumulated_color", scene, LIVE_SIZE, LIVE_SIZE,
+                      restir=restir, guides=True, preset=PRESET, sdk_variant=SDK_VARIANT)
 tm = vr.add_tonemapper(g, out, exposure=scene.get("exposure", 0.0))
 if vr.env_bool("VR_TAA_LDR", True):
     g.addPass(createPass("TAA", vr.taa_props()), "TAA_LDR")
     g.addEdge(tm, "TAA_LDR.colorIn")
-    g.addEdge("GBufferRaster.mvec", "TAA_LDR.motionVecs")
+    # Same motion vectors as capture_orbit.py (see the measurements there): the estimator's volume-
+    # aware mvec, since the G-buffer's describe the wall behind the smoke. VR_TAA_VOLMV=0 restores the
+    # G-buffer's, which is what this script used before the orbit script switched.
+    g.addEdge((restir + ".mvec") if vr.env_bool("VR_TAA_VOLMV", True) else "GBufferRaster.mvec", "TAA_LDR.motionVecs")
     tm = "TAA_LDR.colorOut"
 
 g.markOutput(tm)
@@ -106,13 +132,18 @@ if vr.env_bool("VR_MARK_DEBUG", False) and MODE == "nrd":
 m.addGraph(g)
 m.resizeSwapChain(RENDER[0], RENDER[1])
 m.ui = True
+# setWindowPos is a global from `falcor` (SampleApp binds it), not a method on m; a no-op when headless.
+_pos = vr.env("VR_WINDOW_POS", "")
+if "," in _pos:
+    setWindowPos(int(_pos.split(",")[0]), int(_pos.split(",")[1]))
 
 # Deliberately does NOT name the default value: it is set in NRDPass.cpp and has already moved twice
 # (2 -> 20 -> 35), so a number repeated here goes stale silently and misreports what you are looking at.
-print("[look] scene=%s denoiser=%s method=%s  disocclusionThreshold=%s  split=%s"
+print("[look] scene=%s denoiser=%s method=%s  disocclusionThreshold=%s  split=%s%s"
       % (SCENE, MODE, vr.env("VR_NRD_METHOD", "RelaxDiffuseSh"),
          (vr.env("NRD4_DISOCC") + "%") if vr.env("NRD4_DISOCC") else "NRDPass default",
-         vr.env("VR_NRD_SPLIT", "1")))
+         vr.env("VR_NRD_SPLIT", "1"),
+         ("  rr preset=%s sdk=%s" % (PRESET, SDK_VARIANT)) if MODE == "rr" else ""))
 print("[look] move the camera with WASD + mouse; switch outputs in the Graphs panel")
 sys.stdout.flush()
 

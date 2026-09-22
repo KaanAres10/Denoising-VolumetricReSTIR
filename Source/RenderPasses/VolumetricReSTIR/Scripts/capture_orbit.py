@@ -18,6 +18,7 @@
 #                             denoisers are converged when frame 0 is written. Without it the first
 #                             seconds of every clip are a different algorithm than the rest.
 #   VR_ORBIT_DEG=-180         VR_OUT_DIR=<where to write>   VR_TAG=<filename prefix>
+#   VR_PRESET=E               rr only: D | E | F (F = RR2)  VR_SDK=Current | Previous310_7 (DLSS DLLs)
 import math
 import os
 import sys
@@ -45,6 +46,10 @@ OUT_DIR = os.environ["VR_OUT_DIR"]
 TAG = vr.env("VR_TAG", "orbit")
 SCENE = vr.env("VR_SCENE", "bistro").lower()
 MODE = vr.env("VR_DENOISER", "nrd").lower()
+# Defaults are what every orbit before 310.9.1 was captured with: preset E on the DLL beside the
+# executable. That DLL is now 310.9.1, so VR_SDK=Previous310_7 is what reproduces those captures.
+PRESET = vr.env("VR_PRESET", "E")
+SDK_VARIANT = vr.env("VR_SDK", "Current")
 
 g = RenderGraph(SCENE + "_orbit")
 scene = vr.load_scene(SCENE)
@@ -62,14 +67,42 @@ restir = vr.add_restir(g, scene, render=RENDER, guides=True, mOutputDepth=True,
 _NEEDS_GBUFFER = ("oidn", "oidncpu", "none")
 gbuf = vr.add_gbuffer(g, RENDER, jitter=False) if MODE in _NEEDS_GBUFFER else None
 out = vr.add_denoiser(g, MODE, restir + ".accumulated_color", scene, RENDER, RENDER,
-                      restir=restir, gbuffer=gbuf, guides=True)
+                      restir=restir, gbuffer=gbuf, guides=True, preset=PRESET, sdk_variant=SDK_VARIANT)
 # Whoever built it, the pass is named GBufferRaster; TAA's motion vectors come from there.
 gbuf = gbuf or "GBufferRaster"
 tm = vr.add_tonemapper(g, out, exposure=scene.get("exposure", 0.0))
 if vr.env_bool("VR_TAA_LDR", True):
     g.addPass(createPass("TAA", vr.taa_props()), "TAA_LDR")
     g.addEdge(tm, "TAA_LDR.colorIn")
-    g.addEdge(gbuf + ".mvec", "TAA_LDR.motionVecs")
+    # WHICH motion vectors TAA reprojects with. GBufferRaster's are RASTERIZED, so at a pixel the
+    # smoke covers they describe the WALL BEHIND it -- the plume is not in the G-buffer at all. The
+    # estimator's deterministic mvec is computed at `expectedT`, the expected scattering depth inside
+    # the medium, so it is the only one that reprojects the plume itself.
+    #
+    # This is not academic: with the surface mvec, TAA ERASES the plume from the undenoised image
+    # (plume-region p95 0.4367 -> 0.3608 on the bistro orbit) because sparse volumetric samples get
+    # reprojected onto wall history. The denoised paths survive it -- their plume is already a solid
+    # mass that TAA's colour clamp holds -- which is why this only became visible on the raw panel.
+    # ON by default on measurement (bistro orbit, 300 frames at 1080p, surface -> volume mvec):
+    #   RELAX-SH   s=32 9.34 -> 9.24   plume 14.06 -> 13.60
+    #   REBLUR-SH  s=32 9.35 -> 9.28   plume 13.90 -> 13.54
+    #   DLSS RR    s=32 9.32 -> 8.96   plume 15.84 -> 14.54
+    #   OptiX      s=32 11.65 -> 10.70 plume 19.94 -> 17.28
+    #   raw ReSTIR s=32 9.64 -> 9.20   plume 15.66 -> 13.85
+    # Every path improves, most in the plume, which is where the parallax error lives. Plume detail
+    # drops 2-4% (raw 17%) -- that is TAA finally ACCUMULATING instead of leaving smeared
+    # high-frequency residue, not detail being lost. The switch is live, not dead: 45-61% of pixels
+    # differ, max delta 255. VR_TAA_VOLMV=0 restores the G-buffer mvec.
+    _taa_mv = gbuf + ".mvec"
+    if vr.env_bool("VR_TAA_VOLMV", True):
+        _mode = g.get_pass(restir).properties.get("mMotionVecMode")
+        if _mode != "Deterministic":
+            raise RuntimeError(
+                "VR_TAA_VOLMV=1 needs the estimator writing volume-aware motion vectors, but "
+                "'%s' reports mMotionVecMode=%r (need 'Deterministic'). An unwritten mvec output "
+                "would hand TAA an empty texture, i.e. a scene where nothing ever moves." % (restir, _mode))
+        _taa_mv = restir + ".mvec"
+    g.addEdge(_taa_mv, "TAA_LDR.motionVecs")
     tm = "TAA_LDR.colorOut"
 
 # Only the shipped image is marked. Marking the raw HDR buffers as well means the capture can pick one
@@ -119,18 +152,25 @@ os.makedirs(OUT_DIR, exist_ok=True)
 # quietly produces a wrong answer.
 #
 # What this measures is WALL CLOCK END TO END: CPU submit + GPU + present, an upper bound rather than
-# a GPU-only figure. Mogwai exposes no device to Python, so Falcor's GPU profiler is unreachable from
-# a script. It is directly comparable BETWEEN the configurations below, since they run the identical
-# path at the identical resolution, which is what a denoiser comparison needs.
+# a GPU-only figure. It is directly comparable BETWEEN the configurations below, since they run the
+# identical path at the identical resolution, which is what a denoiser comparison needs.
+#
+# VR_PASS_TIMES=1 (with VR_TIME=1) adds Falcor's profiler, which splits that frame per render pass on
+# the CPU and the GPU. This used to be written off as unreachable ("Mogwai exposes no device to
+# Python"), but Mogwai binds it directly as m.profiler, and RenderGraphExe wraps every pass in an event
+# named after it. It is what can see a denoiser's own cost: a 0.3 ms difference inside a ~120 ms frame
+# is below the run-to-run spread of the wall clock. Opt-in, because the timer queries are themselves a
+# cost the wall-clock column should not carry.
 TIMING = vr.env_bool("VR_TIME", False)
+PASS_TIMES = TIMING and vr.env_bool("VR_PASS_TIMES", False)
 if not TIMING:
     m.frameCapture.outputDir = OUT_DIR
     m.frameCapture.baseFilename = TAG
     # Frame indices are absolute, so the captured range starts after the warm-up.
     m.frameCapture.addFrames(g, [WARM + k for k in range(FRAMES)])
 
-print("[orbit] scene=%s denoiser=%s method=%s  %dx%d  %d frames @ %d fps  warm=%d"
-      % (SCENE, MODE, vr.env("VR_NRD_METHOD", "RelaxDiffuseSh"),
+print("[orbit] scene=%s denoiser=%s method=%s preset=%s sdk=%s  %dx%d  %d frames @ %d fps  warm=%d"
+      % (SCENE, MODE, vr.env("VR_NRD_METHOD", "RelaxDiffuseSh"), PRESET, SDK_VARIANT,
          RENDER[0], RENDER[1], FRAMES, FPS, WARM))
 print("[orbit] r=%.3f about (%.2f,%.2f,%.2f), %.4f rad/frame -> %s"
       % (_radius, _cx, _cy, _cz, _step, OUT_DIR))
@@ -142,6 +182,11 @@ for _ in range(WARM):
     m.renderFrame()
 
 import time
+
+if PASS_TIMES:
+    # After the warm-up, so NGX feature creation and shader compiles are not in the capture.
+    m.profiler.enabled = True
+    m.profiler.start_capture(FRAMES + 16)
 
 times = []
 for i in range(FRAMES):
@@ -165,6 +210,25 @@ if TIMING:
     mean = sum(times) / len(times)
     print("[time] %s  mean %.2f ms (%.1f fps)  median %.2f  p95 %.2f  min %.2f  max %.2f  -> %s"
           % (TAG, mean, 1000.0 / mean, s[len(s) // 2], s[int(len(s) * 0.95)], s[0], s[-1], csv))
+    if PASS_TIMES:
+        import json
+        cap = m.profiler.end_capture()
+        lanes = {}
+        for name, lane in (cap or {}).get("events", {}).items():
+            # The first records can predate the GPU timestamps resolving; the median ignores them.
+            rec = sorted(r for r in lane["records"] if r == r)
+            if rec:
+                lanes[name] = {"mean": lane["stats"]["mean"], "std_dev": lane["stats"]["std_dev"],
+                               "median": rec[len(rec) // 2], "p95": rec[int(len(rec) * 0.95)],
+                               "n": len(rec)}
+        js = os.path.join(OUT_DIR, "%s_pass_times.json" % TAG)
+        with open(js, "w") as fh:
+            json.dump({"frame_count": (cap or {}).get("frame_count", 0), "lanes": lanes}, fh, indent=1)
+        for name in sorted(lanes):
+            if name.endswith("/gpu_time") and ("DLSS" in name or "Denoiser" in name or "NRD" in name):
+                print("[pass] %s  median %.3f ms  mean %.3f  p95 %.3f"
+                      % (name, lanes[name]["median"], lanes[name]["mean"], lanes[name]["p95"]))
+        print("[pass] %d lanes -> %s" % (len(lanes), js))
     # MUST exit explicitly. Mogwai's main loop keeps running once the script returns, so without this
     # the timing pass finishes its ~1 minute of work and then idle-spins forever -- which looked
     # exactly like a slow renderer (11 minutes wall against 152 s of CPU) and was not one. The capture
