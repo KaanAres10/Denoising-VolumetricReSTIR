@@ -1781,3 +1781,665 @@ justification is a thing that rots silently. `atrousIterationNum 6` and `fastAcc
 carryovers, but unlike that one they now have measurements behind them, so they stay.
 
 **Untested still:** plume, on everything above and on the anti-firefly change in particular.
+
+---
+
+## SOLVED: v8's OptiX instability was a dropped ray-origin offset (2026-08-23)
+
+**One line, lost in the 8.0 port of `VolumetricReSTIR/InlineRayTracingHelpers.slang`:**
+
+```hlsl
+sd.posW = computeScatterRayOrigin(sd.posW, sd.frontFacing ? sd.faceN : -sd.faceN);
+```
+
+4.x applied it in `computeSurfaceShadingInfo`; 8.0 did not. `computeScatterRayOrigin` was left
+DEFINED BUT NEVER CALLED -- grepping for a zero-use helper is what found it.
+
+Every shadow ray in this pass is `{ shadingInfo.posW, dir, 0, distance }`, i.e. **tMin = 0**. Without
+the offset the ray starts exactly ON the surface it must leave, self-intersects at t~0, visibility
+returns 0, and the pixel is left black. The restored line matches 8.0's own idiom in
+`Scene/ShadingData.slang:79`, `computeRayOrigin(posW, (frontFacing == viewside) ? faceN : -faceN)`.
+
+### Result, bistro orbit, 300 frames at 1080p, legacy-matched config
+
+|                   | s=32  | plume | surfaces | detail |
+|-------------------|-------|-------|----------|--------|
+| legacy (target)   | 18.42 | 27.33 | 37.81    | 0.0650 |
+| v8 before         | 56.26 | 47.70 | 95.70    | 0.0580 |
+| **v8 after**      | **17.37** | **25.70** | **36.66** | **0.0735** |
+
+3.2x better, now slightly ahead of the 4.x fork on every axis AND 13% sharper -- not a
+stability-for-sharpness trade. Raw estimator pixels with NO contribution: surfaces 55.90% -> 16.89%
+(4.x: 34.38%), frame mean 0.004309 -> 0.004436 (4.x: 0.004467).
+
+### Why every earlier check missed it
+
+It **conserves total energy** -- the surviving pixels carry it -- so frame means, firefly counts and
+energy-concentration percentiles all reported "the estimator output is equivalent". Only SPARSITY
+changed. And because it strikes surfaces rather than the medium (plume 30.67% vs surfaces 55.90%),
+it presented as unstable *volumetrics* while the damage was on bistro's geometry. Every hypothesis
+about ReSTIR, motion vectors, guides and the denoiser was chasing a symptom one stage downstream.
+
+### Three retractions this produced
+
+* **"Different OptiX SDK / driver."** Wrong. The Aug-13 legacy binary re-run 10 days later is
+  BIT-IDENTICAL (md5-equal frames, 0.000% pixels differing), so the driver never moved; and
+  `legacy/Source/Externals/.packman/OptiX_9.0.0` is a stale FOLDER NAME whose `optix.h` reads
+  `OPTIX_VERSION 90100` and `diff -rq`s clean against v8's copy. Both builds were always on 9.1.
+* **"Legacy cannot render bistro's volume."** Wrong, and it blocked this comparison for weeks. The
+  failure is `Can't find file 'Bistro_5_1/BistroExterior.fbx'` -- a Falcor 4 MEDIA SEARCH PATH
+  problem. Absolute paths fix it (`legacy/Scripts/_probe_optix_today.py`, `_probe_raw_today.py`).
+* **"The raw estimator output is equivalent."** Rested on `legacy/outputs/Bistro_Raw_Video`, an
+  ABORTED 4-frame run whose frame 2 has 3x its neighbours' mean. Superseded by `Bistro_Raw_Today`.
+
+### Traps worth keeping
+
+* **Shaders are served from `build/.../bin/Release/shaders/`, not from `Source/`.** Editing the
+  source and re-running measures the OLD shader. The tell was the classic one: "after" identical to
+  "before" to four decimals. Deploy with `cmake --build ... --target VolumetricReSTIR`.
+* **Every number recorded in this file before 2026-08-23 was measured on the broken shadow rays**
+  and is superseded. That includes the RELAX/REBLUR/RR comparisons and the NRD tuning.
+
+### Shipped configuration (mvec + TAA), after the fix
+
+|            | s=32  | plume | surfaces | detail |
+|------------|-------|-------|----------|--------|
+| guides OFF | 12.22 | 20.60 | 30.07    | 0.0639 |
+| guides ON  | 11.65 | 19.94 | 29.22    | 0.0640 |
+
+30.05 -> 12.22 for the shipped path, i.e. the fix is worth 2.5x there too. Note what it does to the
+GUIDES result: they were recorded as "19% better for 3.6% of detail" (30.05 -> 24.33) and are really
+4.7% better at no detail cost. They had been compensating for an estimator leaving 56% of surface
+pixels black. **A denoiser aid measured against a broken input overstates itself** -- the same
+caution applies to every other tuning number in this file.
+
+Plume scene re-checked after the fix: renders correctly (frame means 0.19-0.20, 97-100% non-black).
+
+### The denoiser ranking, re-measured on the fixed build
+
+Every earlier comparison in this file was made against an estimator throwing away half its surface
+pixels. Re-run at matched settings (SH + split + NRD TAA + emission + volmask, gradient volume
+normals, LDR TAA on), bistro, 300 frames at 1080p:
+
+|                          | s=32  | plume | surfaces | detail |
+|--------------------------|-------|-------|----------|--------|
+| DLSS Ray Reconstruction  | 9.32  | 15.84 | 26.93    | 0.0638 |
+| RELAX-SH                 | 9.34  | 14.06 | 27.24    | 0.0651 |
+| REBLUR-SH                | 9.35  | 13.90 | 26.94    | 0.0645 |
+| raw ReSTIR (+ TAA)       | 9.64  | 15.66 | 28.06    | 0.0992 |
+| OptiX (+ volume guides)  | 11.65 | 19.94 | 29.22    | 0.0640 |
+
+**The fix collapsed the field.** RR / RELAX / REBLUR now sit within 0.3% of each other -- a three-way
+tie where the old numbers had RELAX at 10.74 against OptiX's 30.05, a ~3x spread. Most of what used
+to read as denoiser quality was each denoiser coping differently with a broken input. For the
+project's actual question -- denoising strength vs additional sampling under fixed compute -- that
+is the result: on a CORRECT input, the choice among the strong denoisers buys very little here.
+
+Two cautions on reading that table:
+
+* **sigma=32 looks saturated.** Everything lands near 9.3, which reads as a floor rather than genuine
+  parity. The plume column (sigma=16) separates them: REBLUR 13.90 and RELAX 14.06 lead, RR 15.84 and
+  raw 15.66 are mid, OptiX 19.94 trails. Prefer that column for a real ranking.
+* **The raw row is a FLOOR, not a contender.** `VR_TAA_LDR=1` applies TAA to the no-denoiser path, so
+  it is raw + TAA; and the metric blurs at sigma before differencing, so the pixel-level noise that
+  dominates raw is removed before it is ever measured. Its 0.0992 "detail" is noise energy --
+  Laplacian variance cannot tell noise from detail. Same trap class as "ghosting is temporally smooth
+  so it lowers the score while looking wrong".
+
+### A3 answered: density gradient vs the camera-facing stand-in
+
+The plan left this open ("the density gradient may lose to the camera-facing stand-in -- that is a
+result worth reporting"). Measured on RELAX-SH, bistro orbit, 300 frames at 1080p, everything else
+matched:
+
+|                        | s=32 | plume | surfaces | plume detail |
+|------------------------|------|-------|----------|--------------|
+| camera-facing stand-in | 9.32 | 14.00 | 27.23    | 0.0505       |
+| density gradient       | 9.34 | 14.06 | 27.24    | 0.0520       |
+
+**+3% plume detail for -0.4% stability -- close to a wash.** The gradient does not clearly win, so
+the original objection to it was not wrong. The knob IS live (19-36% of pixels differ frame to
+frame, max delta 173/255), so this is a real negative-ish result, not an unwired switch.
+
+Default moved to `gradient` (`VR_VOL_NORMAL`), because every number recorded in this file was
+measured that way -- the `.vscode` `Look:` tasks all set it -- and a default disagreeing with every
+published number is the worse inconsistency. Detail inside the medium is also the axis this project
+is trying to protect.
+
+### The OptiX normal guide is inert
+
+`VR_OPTIX_GUIDES` was described as wiring volume-aware albedo AND normal guides. Only the albedo
+half does anything on that path. Traced end to end:
+
+* estimator `mediumNormal`, Camera vs Gradient: **20.6%** of pixels differ
+* `DLSSDGuides.normals`, same A/B: **20.1%** differ -- so the volume normal reaches the guides
+* OptiX denoised output: **byte-identical**, 0.000% of pixels differing
+
+So OptiX's 12.22 -> 11.65 comes from the albedo guide alone, and `VR_VOL_NORMAL` is a no-op there.
+The guides pass is not at fault: `mBlendNormal`, `mAlphaScale` and `blendMedium` are all live and
+permissive by default. Unresolved whether OptiX's HDR/TEMPORAL model simply weights the normal guide
+at ~0 here, or whether `guideNormal` is not reaching `optixDenoiserCreate` -- worth a look if the
+normal guide is ever wanted on that path.
+
+Also seen: 0.003% NaN/Inf pixels in `DLSSDGuides.normals`, in BOTH modes and only outside the plume,
+so they originate in the G-buffer's `guideNormalW`, not in the gradient code. Small, but it is
+feeding a denoiser guide.
+
+### Still open
+
+* The fix OVERSHOOTS: v8 now has fewer dead surface pixels than 4.x (16.89% vs 34.38%). Suspect the
+  other half of the offset pair -- 4.x's `sampleTriangle` also offset the LIGHT position before
+  computing the light vector, 8.0 removed it, and the fork code re-applies it only to the shadow ray,
+  leaving `ls.dir`/`ls.distance` inconsistent with `ls.rayDir`/`ls.rayDistance`. It measures better,
+  so it is not urgent, but it is not parity.
+* Shadow rays never alpha-test: `FindSurfaceHit`/`FindIfOccluded` commit every non-opaque candidate
+  (`TODO(surface-scene): alpha test via gScene.materials`), so alpha-cut foliage occludes as solid.
+
+---
+
+## Superseded: the investigation that led there (kept for the ruled-out list)
+
+## Why v8's OptiX looks less stable than the falcor4-legacy OptiX video (2026-08-23)
+
+The question was whether some ReSTIR or volumetric change made the medium unstable on the OptiX
+path. It did not. **The estimator is not the cause, and the difference is not in this repository.**
+
+### Ruled out, by direct comparison against `legacy/`
+
+* **The ReSTIR algorithm.** `VolumetricReSTIRParams` defaults diff to zero differing values across
+  every shared field. RNG seeds are character-identical (`SampleGenerator(DTid.xy, gNumTotalRounds *
+  gFrameCount + gRoundOffset)`), `mFrameCount++` advances per execute in both, and `TemporalReuse.cs
+  .slang` diffs to Falcor-8 renames plus two `IsWithinRange` bounds guards. Emissive sampler is
+  `Power` in both; `mUseAnalyticLights` false in both; `emissiveIntensityMultiplier` 1 in both.
+* **`mTemporalReuseMThreshold`.** Looks like a difference -- the legacy script passes 10.0 against a
+  C++ default of 4.0 -- but `vr_graph.load_bistro` sets 10.0 too. Both builds run 10.0.
+* **The estimator's OUTPUT.** Raw frames are equivalent: relative high-frequency energy ratio
+  v8/legacy 0.92, 0.91, 1.15 (the 1.94 outlier is legacy's own frame 2, whose mean is 3x its
+  neighbours -- that 4-frame raw set is an aborted run, do not lean on it). Frame-mean radiance,
+  and the share of total energy in the top 0.01/0.1/1% of pixels, all match within a few percent.
+* **The capture configuration.** v8 reconfigured to the legacy script exactly (colour only -> HDR
+  model, no TAA, Linear+autoExposure, no warm-up) still measures 56.26 against legacy's 18.42.
+* **Scene animation.** legacy froze the scene (`t.pause()` + `m.scene.animated = False`); v8's
+  `pin_clock` lets it run. Adding `VR_FREEZE_ANIM=1` moves the score 56.26 -> 55.84. Not it.
+* **Camera path.** Phase correlation on consecutive frames: 3.32 px/frame legacy, 3.10 v8-matched,
+  3.36 v8-shipped. The orbits are the same speed.
+
+### What the videos' apparent difference IS mostly made of
+
+Configuration, and it is large. TAA alone accounts for 61.01 -> 30.05 at sigma=32. Legacy's
+auto-exposure renormalises brightness every frame, which is exactly what the instability metric
+measures, so it suppresses the score without the renderer being steadier (`VR_TONEMAP_AUTOEXP`).
+
+### The residual, and where it lives
+
+Given equivalent raw input, the two builds' OptiX output differs by a **stable 2.0x in surface-region
+median** (legacy 0.000113-0.000116, v8 0.000056-0.000057, every frame) while the *means* match --
+so it is not a global scale, it is the dim pixels specifically. v8 also retains LESS detail
+(plume 0.0362 vs 0.0448, surfaces 0.0611 vs 0.0707). Blurrier *and* less stable at once is not a
+tuning trade-off.
+
+**RETRACTED: "it is a different denoiser / different OptiX SDK".** That was wrong, and testing it
+killed it three ways:
+
+* **The legacy build runs today and reproduces BIT-IDENTICALLY.** Same Aug-13 binary, same 300-frame
+  orbit, run 10 days later: md5-identical PNGs, 0.000% of pixels differing, and all four metrics
+  equal to the decimal (18.42 / 27.33 / 37.81 / 0.0650). The renderer is deterministic and **the
+  driver has not changed**, so the driver cannot be the variable.
+* **Both builds use the SAME OptiX SDK.** `legacy/Source/Externals/.packman/OptiX_9.0.0` is a stale
+  FOLDER NAME: its `optix.h` says `OPTIX_VERSION 90100`, and `diff -rq` against v8's
+  `external/packman/optix/include` reports no differences at all. Headers dated 2025-11-19, months
+  before the Aug-13 build. Same SDK, same driver, same model.
+* **The earlier "legacy cannot render bistro's volume" was also wrong** -- and it is what blocked
+  this test for weeks. The failure is `Can't find file 'Bistro_5_1/BistroExterior.fbx'`: a Falcor 4
+  MEDIA SEARCH PATH problem, not GVDB, not CUDA, not the bake. Absolute paths in the script fix it
+  outright (`legacy/Scripts/_probe_optix_today.py`). Legacy renders bistro fine.
+
+So the denoiser, its model, the driver and the SDK are all held fixed, and the gap remains. **The
+difference is in v8's own code.** Since the OptiX denoiser is deterministic and identical, output
+that differs means INPUT that differs -- so the estimator comparison has to be redone properly. The
+old `legacy/outputs/Bistro_Raw_Video` is an ABORTED 4-frame run whose frame 2 has 3x its neighbours'
+mean and a max of 6.8; every "the raw is equivalent" claim above rests on it and is not trustworthy.
+Superseded by the 300-frame `Bistro_Raw_Today` capture.
+
+### Two changes that came out of this
+
+* **`VR_OPTIX_GUIDES`, now ON by default.** OptiX accepts albedo/normal guides and this graph had
+  never wired them (colour only, as legacy did). Feeding it the volume-aware DLSSDGuides:
+  sigma=32 30.05 -> 24.33, sigma=128 18.61 -> 13.36, whole-frame 16.39 -> 11.30, for 3.6% of detail.
+* **`VR_OPTIX_VOLMV`, measured and left OFF.** The G-buffer's motion vectors are rasterized, so at a
+  plume pixel they describe the wall behind the smoke, while the estimator's are computed at
+  `expectedT` inside the medium. Physically the right input, and on this orbit it does nothing:
+  30.05 -> 30.08, plume 31.45 -> 31.47. The edge is live (41-44% of pixels differ, max delta 105),
+  so this is a real negative, not an unwired knob.
+
+
+---
+
+## Falcor 8 vs the 4.x fork: frame cost (2026-08-23)
+
+Raw ReSTIR estimator only (no denoiser, no TAA; identical tonemapper both sides), bistro orbit,
+300 frames at 1080p, 3 runs each, alternating builds with a process kill between.
+
+|                                   | mean ms | gap    |
+|-----------------------------------|---------|--------|
+| Falcor 4 fork                     | 102.47  | --     |
+| v8, as first measured             | 121.74  | +19.27 |
+| v8, animation frozen to match     | 118.39  | +15.91 |
+| **v8, atlas compression restored**| **116.4** | **+13.9** |
+
+Run-to-run spread is 0.5% (v8) and 3.2% (legacy), so the gap is far outside noise.
+
+### Fix 1: the comparison was unfair (3.4 ms)
+
+The fork's scripts set `m.scene.animated = False`; `vr_graph.load_scene` only freezes under
+`VR_FREEZE_ANIM`. So v8 was re-updating the light collection every frame and legacy was not.
+The profiler shows it exactly: `EmissivePowerSampler::update` **6.03 ms -> 0.00 ms** when frozen.
+Any cross-build timing MUST set `VR_FREEZE_ANIM=1`.
+
+### Fix 2: the port dropped the GVDB atlas compression (2.6 ms, and a real bug)
+
+`SceneGVDB.cpp` allocated every density atlas as `R32Float` -- 4 bytes/voxel against the fork's
+0.5 (BC4) or 1 (R8Unorm) -- and pinned `densityCompressScaleFactor` to 1.0 while the shader's
+`getValueAtlasCoord()` still multiplied by it. Its own comment admitted the omission:
+"the fork's optional BC4 path (ATLAS_COMPRESSION==2, via BCHelper) is omitted".
+
+Restored as R8Unorm (the fork's ATLAS_COMPRESSION==1 arrangement) on both the VBX and the BAKED
+loader. **The baked one is the one that matters** -- bistro loads `smoke-plume-2.bin`, so patching
+only the VBX path produced byte-identical output and unchanged timing, the classic "knob isn't
+wired" result. Costs image fidelity: mean |delta| 9.19/255, correlation 0.94, plume median
+0.2627 -> 0.2601. The fork accepts more loss than this (BC4), so it moves toward parity, not away.
+
+### The remaining ~13.9 ms is NOT in this repository
+
+Volume-only (`mUseSurfaceScene=False`, which also links no type conformances in either build):
+legacy 21.47 vs v8 32.09 -- still +10.6 ms with identical everything. Verified identical:
+
+* `Scene/GVDB/gvdb.slang` -- the traversal inner loop -- **byte-identical**
+* reservoir count and size (2,073,600 x 32 B), samplers (filter/border/addressing), `tStep`
+  formula, every sampling/tracking/mip parameter, `SURFACE_SCENE` gating, compiler flags, FP mode,
+  debug-info settings
+
+Hypotheses tested and killed, each with a number rather than an argument:
+
+* **MaterialSystem `evalEmissive`** -- stubbed out entirely in the build-copy shader: saved 1.8 ms.
+* **Type conformances** -- refuted by construction: `createSceneComputePass` is used only when
+  `mUseSurfaceScene`, so the volume-only path never links them, and it is still +67% slower.
+* **Shader model** -- the fork pins 6_5, the port takes the device default 6_7. Pinning 6_5
+  measured SLOWER (116.55 vs 115.80). Reverted.
+* **Light-sample scaling** -- invalid: `mInitialLightSamples` is documented "only 1 or 0" in both.
+* **Env-map isolation** -- unusable: `EnvMap.createFromFile` needs an active scene builder in 8.0.
+* **`noemissive` isolation** -- invalid: bistro is lit ONLY by emissive geometry, so it renders
+  black (p90 = 0.0000, 1.8% lit) and times two empty frames against each other.
+
+### Compiler-option space: exhausted, every lever tested
+
+Every setting Falcor exposes that could affect codegen was measured on the full config
+(3 runs each, frozen scene, against the 116.4 ms baseline):
+
+| lever                                    | result                       |
+|------------------------------------------|------------------------------|
+| `DisableShortCircuit` removed (Slang's new short-circuit `&&`/`||`) | **120.79 -- SLOWER** |
+| `Optimization = SLANG_OPTIMIZATION_LEVEL_MAXIMAL`                   | **117.06 -- SLOWER** |
+| `shaderModel = SM6_5` (matching the fork's explicit pin)            | **116.55 -- SLOWER** |
+| `GenerateDebugInfo`, FP mode, matrix layout                         | already identical    |
+
+All reverted. This is a useful negative: the difference is not in anything Falcor or this project
+*configures*, it is inside the Slang -> DXIL translation itself. Note the short-circuit result is
+counter-intuitive and worth remembering -- forcing both operands to evaluate is FASTER here, because
+branch divergence costs more than the redundant work in these loops.
+
+The residual is uniform -- v8's Spatial Reuse is 53.1% of its frame, legacy's 53.0% of its own --
+which is the signature of codegen, not a hotspot. The last known data difference is BC4 vs R8, worth
+~0.6 ms by extrapolation (R32->R8 saved 3 bytes/voxel for 3.86 ms), and `BCHelper` exists only in a
+nested vendored copy, not in the active tree. **Closing the rest means Falcor engine work** --
+comparing generated DXIL and register allocation between Slang versions -- not Volumetric ReSTIR work.
+
+### Also fixed while looking: a dangling `if` left the scene unbound
+
+All four passes had this:
+
+```cpp
+if (mParams.mUseSurfaceScene)
+if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(...); else mpScene->bindShaderData(...);
+```
+
+The `else` binds to the INNER `if`, so with `mUseSurfaceScene == false` BOTH branches are skipped and
+`gScene` is never bound for TraceRays, Temporal Reuse, Spatial Reuse or Final Shading. Volume-only
+scenes ran on whatever binding persisted from `setScene`. Fixed in all four. **No timing effect**
+(full 116.32 before and after, volume-only 32.29 vs 32.09), so the earlier `nosurface` measurements
+still stand -- but they were taken through that path, which is worth knowing.
+
+### Compiler and toolchain: every lever eliminated
+
+| lever                                   | result                                   |
+|-----------------------------------------|------------------------------------------|
+| DXC 1.5 (the fork's) vs 1.7 (the port's) | **no change** -- 116.65 vs 116.4         |
+| Slang `Optimization = MAXIMAL`           | slower -- 117.06                         |
+| Slang short-circuit `&&`/`||` restored   | slower -- 120.79                         |
+| `shaderModel = SM6_5` (fork pins this)   | slower -- 116.55                         |
+| `[loop]` on the GVDB traversal loops     | no change, image byte-identical          |
+
+The DXC swap was verified live: hiding `dxcompiler.dll` makes Mogwai fail to start, so it is
+genuinely the compiler in use.
+
+### Control: the gap is not measurement drift
+
+Legacy re-measured at the END of the session: **100.96 ms** (101.24 / 99.77 / 101.89) against 102.47
+hours earlier -- stable, slightly faster if anything. The machine did not drift; the gap is real.
+
+### Where it actually is
+
+With the shader source byte-identical AND the DXIL compiler identical, the only remaining variable is
+the **Slang version**, which generates the HLSL that DXC consumes. v8's dumped DXIL for the largest
+pass is ~45,000 instructions with 186 alloca sites -- real register pressure -- but there is no
+legacy baseline to compare it against: enabling `DumpIntermediates` in the fork needs its
+VolumetricReSTIR plugin rebuilt, and a standalone build fails with 111 unresolved Falcor symbols
+(its Falcor.lib will not link against the v143 toolset the way the small OptixDenoiserRecent plugin
+did). Swapping Slang itself is not viable -- Falcor 8 uses the `CompilerOptionEntry` API that the
+fork's Slang predates.
+
+**Final: legacy 100.96 ms, v8 116.3 ms, +15.4 ms (+15%). 6 ms of the original 19.27 closed.**
+The remainder is Falcor 8's Slang codegen and is not reachable from this project's code.
+
+---
+
+## DLSS 310.9.1: RR2 measured against the previous RR, and a NaN guide bug (2026-09-18)
+
+SDK 310.9.1 is vendored (`external/dlss-310.9.1`) and linked; 310.7.0 stays selectable per pass with
+`sdkVariant=Previous310_7` (`VR_SDK`). 310.9.1 adds **RR2** (RR preset F, its new default). Full
+tables in `Source/RenderPasses/DLSSPass/README.md`, section "RR2 ... vs the previous RR".
+
+|                           | s=32  | plume | surfaces | detail | RR GPU  | plume relMSE | bistro median err |
+|---------------------------|-------|-------|----------|--------|---------|--------------|-------------------|
+| previous RR (310.7.0, E)  | **8.97** | **14.55** | **26.65** | 0.0628 | 7.79 ms | **1.69e-3** | **0.0184** |
+| RR2 (310.9.1, F)          | 9.29  | 15.27 | 27.33    | 0.0672 | **6.84 ms** | 2.05e-3 | 0.0217 |
+
+A speed/sharpness trade, not a quality upgrade: RR2 is 12% cheaper and resolves more structure in the
+smoke, but is 3-5% less stable, 2-21% less accurate per pixel (by scene and metric), and dims the
+brightest highlights.
+Preset E stays the default. Controls are all exact (byte-identical): the SDK upgrade itself changes
+nothing -- 310.9.1's E is bit-identical to 310.7.0's -- and repeat RR runs are deterministic with the
+clock pinned, so the noise floor for these A/Bs is 0.
+
+**Bug: `DLSSDGuides` fed RR NaN normals on every pixel with no geometry.** `normalize(lerp(0, n, 0))`.
+0.003% of bistro -- the "NaN/Inf in DLSSDGuides.normals" noted above in the OptiX section, which
+come from this normalize and not from the G-buffer's guideNormalW as guessed there -- but 79% of the
+plume scene. The 310.7.0 model's output is bit-identical with NaN or zero normals; RR2's
+changes on 99.98% of pixels, and it had measured 2.7x worse than E on the plume because of it. Fixed
+with NVIDIA's documented sky guides (`skyDefaults`, on; `VR_RR_SKY=0` reproduces every earlier number
+bit for bit). On the bistro orbit the fix is 0.5/255 mean change, so the rankings above stand.
+
+Also: `compare_denoisers_plume.py` never set the camera depth range (far plane 0.35 -- the load_plume
+trap), and `ImageCompare` clamps to [0,1], so the README's "HDR MSE" table is LDR-range. And Falcor's
+profiler IS reachable from scripts (`m.profiler`); `capture_orbit.py VR_PASS_TIMES=1` uses it.
+
+### The halo around the smoke in motion (2026-09-18)
+
+RR's motion vectors came from GBufferRaster, which has no smoke: at a plume pixel RR was told the pixel
+moves like the wall behind it, and under the orbit it smeared the smoke's history along with that wall
+-- a haze around the silhouette while moving, gone when the camera stops. `vr_graph` now hands RR the
+estimator's volume-aware mvec by default (`VR_RR_VOLMV`, the same source TAA_LDR already used). 960x540
+orbit: plume instability 16.83 -> 15.51 (E), 17.74 -> 16.50 (RR2); surfaces and detail improve too.
+Every RR number above this entry used the G-buffer mvec; `VR_RR_VOLMV=0` reproduces them.
+
+Also fixed on the way: resizing a live window garbled RR (the estimator's per-pixel buffers kept their
+startup size -- its resize check compared the output texture with the render size, which always match
+-- and the G-buffer/guides were pinned while the estimator followed the window). Orbit captures are
+byte-identical before and after both fixes, since they never resize.
+
+### The halo, second cause: the ground was given the smoke's motion (2026-09-19)
+
+What remained after the switch to volume mvec was a veil ~50 px wide lying over the GROUND beside the
+silhouette while the camera moves -- both RR versions, gone within ~1 s of stopping, absent from the raw
+input, unchanged by volume depth or TAA off. GenerateFeatures takes the medium's expected scattering
+depth for depth/mvec wherever the primary ray meets ANY medium, so the plume's faint outer fringe
+(mid-orbit: 28k pixels, 11k below 0.1% coverage) carried the smoke's motion, 6.9 px/frame away from the
+ground those pixels show, and RR reprojected that ground as smoke.
+
+Fix, guide-only: new estimator property `mGuideMediumMinShare` -- depth/mvec follow the medium only where
+it supplies at least that share of the pixel's LIGHT, estimated as a*Lm / (a*Lm + T*Ls) from the pixel's
+own coverage/transmittance and the neighbourhood's medium light per unit coverage and surface light per
+unit transmittance. Those come from a new pass, GuideLightStats.cs.slang, run after final shading: a
+running average of (medium light, coverage, surface light, transmittance) using final shading's own
+volume/surface classification, read through its mips next frame. The estimator never reads it:
+accumulated_color and mediumAlpha byte-identical with the rule on and off over 60 frames of motion.
+`vr_graph` sets 5% when RR takes the estimator's mvec (`VR_RR_MV_MIN_SHARE`, 0 restores); the estimator
+default 0 keeps NRD's volume half as it was.
+
+How it got there: a coverage threshold first (0.02 best on bistro; 0.5 removes the veil but cuts the
+smoke's soft edge off in motion). I explained 0.02 with "the lit smoke outshines the night ground ~50x"
+-- inferred, and refuted by the estimator's light split (~2x per unit coverage; the smoke's light
+overtakes the ground's only at 10-30% coverage). A coverage threshold does not transfer: across bistro,
+the plume under a night env, the plume under a daylight env (VR_PLUME_ENV=lakeside_8k.hdr) and the
+paper's emissive explosion (VR_SCENE=explosion), fringe error (stop-and-go, E, m_halo_alpha.py):
+bistro 6.34 -> 5.16 at coverage 2% vs 5.09 at light share 5%; night plume 2.91 -> 2.96 (worse than
+nothing) vs 2.89; daylight plume 2.87 -> 2.75 vs 2.72; explosion 4.78 -> 4.56 vs 4.49. 5% share is the
+only setting that helps or is neutral everywhere (10%/20% win on daylight, lose on the night plume).
+Bistro orbit instability E 9.47 -> 9.43, RR2 9.82 -> 9.69; the central plume columns E 15.50 -> 15.77.
+`VR_RR_MV_SHARE_STATS=0` reproduces the coverage rule byte for byte. NOT covered: in NRD mode the Look
+script's TAA_LDR still reads the estimator mvec under the old rule.
+
+Found on the way to the explosion test: emissive volumes rendered as plain smoke -- the baked loader set
+the emission flag but never built the blackbody LUT, and the LUT file was missing from data/. Fixed
+(data/LUT from legacy/); non-emissive captures byte-identical after the fix. The paper's temperatureScale
+750 still gives exactly zero emission on this bake (LeScale 1 and 100 identical), so the scene uses 7500;
+skylight-dusk.exr crashes setEnvMap, so it uses satara_night_8k.hdr.
+
+Retracted (my measurement error): "a dark band 1-12 px outside the smoke, in the raw input even without
+temporal reuse". The stops occupy frames 74..224, 299..449, 524..674 (schedule index == file index); that
+metric took 75..225 etc., so its "settled" frame was the first one after the camera moved on and the mask
+no longer fit. With the right frames there is no band without temporal reuse. `outputs/m_halo_band.py`
+now asserts the indices.
+
+Retracted too (and this retraction is itself wrong for the medium -- see "The moving dim rim is ReSTIR's
+temporal reuse" below): "the estimator's temporal reuse loses energy while the camera moves" (-2/255 across the
+frame, -9 at the smoke's edge in the TONE-MAPPED stop-and-go frames). Checked in HDR instead: stop 3 of
+the stop-and-go path, plain ReSTIR (no denoiser, no TAA), 8 seeds (VR_RECORD_WARM 60..67 shifts the
+seeds, not the poses), true light moving / stopped:
+    plain ground 0.998 +- 0.003    outer fringe (<1%) 1.015 +- 0.048    smoke edge (30-90%) 1.045 +- 0.076
+    fringe 1-10% 0.878 +- 0.037    deep smoke 0.985 +- 0.009
+while the per-pixel noise is 1.9x (ground) to 3.9x (smoke edge) higher while moving. So the edge does not
+get darker; it gets NOISIER -- temporal reuse finds less usable history at a moving silhouette -- and the
+tone curve, concave, turns extra variance into a lower average on screen (the same data reproduces the
+-9.3/255). The "lost energy, not clipped noise" argument (near-black pixels doubled, bright LDR tail
+unchanged) was wrong: fireflies saturate at 255, so an LDR tail cannot show the energy they carry. A real
+loss remains only in the thin 1-10% coverage band (-12%, a ring a few pixels wide, invisible under the
+noise). Plain ReSTIR shows no halo either way. The measurements above that used the same LDR metric
+(history cap -6.4 -> -1.8, MIS off, spatial off) mostly measure noise. Also refuted, and removed:
+rejecting temporal/spatial neighbours whose primary-ray transmittance differs (band -6.9/-7.5 vs -6.4).
+
+Also fixed: VolumetricReSTIR::setProperties dereferenced the scene unconditionally, so setting a property
+while a graph is being built (before the scene is bound) crashed without a message, and a runtime set on
+bistro would have crashed on its missing environment map.
+
+### RR's smoke edge is dimmer while the camera moves -- RR, not ReSTIR (2026-09-19)
+
+SUPERSEDED: it is ReSTIR -- its temporal reuse loses thin medium at a moving silhouette. See "The moving
+dim rim is ReSTIR's temporal reuse, not RR" below; the first bullet here measured the noisy total.
+
+After the veil fix, RR's smoke edge still reads ~6/255 darker while moving (typical edge pixel -13.5%),
+recovering over seconds after the camera stops. Measured in HDR with 8 seeds at stop 3 (VR_RECORD_WARM
+60..67; outputs of each stage captured):
+  * RR's INPUT at the edge carries the same average light moving and stopped, and the same typical noise
+    (0.70x vs 0.73x of the true light); only its rare bright samples get rarer and brighter while moving
+    (99.9th percentile 8x -> 11.6x the mean).
+  * RR's OUTPUT at the moving edge: typical pixel darker, a few brighter blotches (HDR mean even +26%,
+    median -13.5%) -- visibly, the thin, softly glowing rim of the smoke is missing while moving.
+  * Not the depth/mvec mismatch: VR_RR_VOLDEPTH=1 changes nothing (-6.64 vs -6.69/255).
+  * Not input noise as such: stopped, a far noisier input (ReSTIR temporal reuse off) leaves RR's edge
+    unchanged (83.4 vs 83.8/255).
+  * With ReSTIR temporal reuse off the moving darkening drops to -2.3/255: about a third is RR's own
+    behaviour while moving, two thirds come with ReSTIR's temporal reuse at a moving silhouette (the
+    lumpier, and temporally correlated, edge samples).
+So the thin glow's light arrives in rare bright samples that RR can only average out over a stable
+history; while the view changes it cannot, and draws the edge harder and dimmer. TAA adds nothing
+(-6.07 after TAA). Not fixed: RR is a black box; reducing it would mean changing ReSTIR's temporal reuse
+at the silhouette or feeding RR a layer guide, both untested.
+
+### Two-layer RR (VR_RR_LAYERS=1): the veil gone by construction, the moving rim not (2026-09-19)
+
+The smoke and the surfaces denoised by SEPARATE RR instances (vr_graph add_rr_layers; as in Hofmann et
+al. 2023 and this project's NRD split): surface layer = surfaceColor / T (DLSSDGuides layer=Surface,
+T floored at 0.05) with the G-buffer's guides, depth and mvec; medium layer = volumeColor with the
+medium's guides (DLSSDGuides layer=Medium: albedo = single-scatter albedo x coverage, normal =
+mediumNormal) and the estimator's depth/mvec with mGuideMediumMinShare = 0; composite T*surface +
+medium via ModulateIllumination. Needed NGXWrapper to hold one RR feature PER PASS in the shared NGX
+session (a single shared handle made two DLSSDPass instances recreate each other's feature). The
+single-RR path stays byte-identical (750/750 stop-and-go frames).
+
+Stop 3, 8 seeds, HDR, previous RR (E); output / true light:
+    region                 one RR moving|stopped    two-layer moving|stopped
+    ground beside smoke        0.77 | 0.93              0.73 | 0.97
+    smoke edge 30-90%       (blotchy) | 0.81            0.71 | 0.90
+    deep smoke                 1.00 | 1.01              1.00 | 0.99
+(Not confirmed against a proper truth -- see the dim-rim entry below.) Stopped, the two-layer image is the
+more accurate one -- edge 0.90 vs 0.81, and its colour (blue 0.82 vs
+0.64: one RR loses the lamps' pink/blue at the edge). No veil, by construction. But the thin rim still
+dims while moving (typical edge pixel 0.79 of the stopped value; on screen -9.5 vs one RR's -6.7/255,
+because the stopped image is brighter). A plain (not coverage-scaled) medium albedo changes nothing.
+So the moving dim rim is not a motion-vector problem: with its own exact history RR still accumulates
+less while things move, and the rim's light arrives in sparse samples. Cost at 960x540: 44.3 vs 42.1 ms
+per frame (second RR 2.0 ms). Off by default. The split makes the next step possible -- a
+motion-compensated pre-accumulation of the medium layer (its motion is exact) before RR.
+
+### The moving dim rim is ReSTIR's temporal reuse, not RR (2026-09-19)
+
+Supersedes the two entries above on this point. The smoke's thin rim is dimmer while the camera moves
+because the ESTIMATOR loses the medium's light there; RR (one or two instances) and the medium
+pre-accumulation only pass it on. Measured on the estimator's split -- volumeColor, the medium's own light:
+exact, and far less noisy than the total, which is dominated by the lamps' fireflies -- at stop 3 of the
+stop-and-go path, 8 seeds, against the true light at that pose (256 frames with temporal reuse off,
+averaged: +-2.3% thin, +-1.1% edge), with the scene animation frozen (VR_FREEZE_ANIM=1, see below):
+
+    medium light / true       moving    still
+    thin smoke (1-30%)         0.60      0.99
+    smoke edge (30-90%)        0.80      1.01
+    deep smoke                 0.99      1.00
+    temporal reuse off: the same moving and still (thin 1.09 +- 0.12, edge 1.06 +- 0.03 moving/still).
+
+Cause: TemporalReuse picks last frame's pixel ("reprojection point") from the CANONICAL sample's own depth
+when that sample scattered in the medium (else the surface with probability T, or a density-drawn point).
+The Talbot weights assume the temporal neighbour does not depend on the sample; here the canonical sample's
+weight is computed against a neighbour chosen for it, the neighbour's samples against the neighbours chosen
+for the other canonical samples, and the two no longer sum to one. With a still camera every choice lands on
+the same pixel: no effect, which is why the static bias tests never saw it. In motion, parallax sends medium
+and surface to different pixels; at thin smoke most neighbours are picked through the surface, whose
+previous pixel sees less of the medium at that depth, and the loss compounds through the history. Deep
+smoke, where every choice sees medium, is unaffected. Check: no reprojection at all -- a neighbour that
+trivially cannot depend on the sample -- removes most of it too (0.95 / 0.98, lanterns animating).
+
+Fix, opt-in (it changes the estimator): `mTemporalReprojectIndependent` / `VR_TR_INDEPENDENT=1` draws the
+point from the pixel alone, as the surface-sample branch already did. Off is byte-identical (8/8 captured
+images). On, same test: medium light moving 0.99 thin / 1.00 edge, still 1.01 / 1.02; cost +0.06 ms
+(temporal reuse 4.55 -> 4.60 ms at 960x540, frame unchanged); per-pixel noise at a MOVING silhouette
+1.7-2x (thin 1.76 vs 0.90, edge 1.08 vs 0.65 of the true light; the history now matches it less often),
+still frames and deep smoke unchanged. On screen (typical pixel vs the truth, thin / edge):
+
+    moving                       as shipped     VR_TR_INDEPENDENT=1
+    one RR                       0.87 / 0.89    1.03 / 1.00
+    two-layer RR + pre-accum.    0.81 / 0.80    0.94 / 0.91
+    still: all four 1.01-1.03.
+
+One RR's moving/still typical edge pixel goes 0.86 -> 0.98 (thin 0.86 -> 1.00): visibly, the lamp-lit glow
+at the silhouette stays while moving. Its output noise there barely changes (0.13 / 0.22 vs 0.12 / 0.21),
+the few bright blotches get slightly stronger (regional mean moving/still at thin smoke 1.31 vs 1.27).
+The two-layer path is smoother at the moving edge (0.12 / 0.14) but its medium RR still dims ~7-9% in
+motion even with a correct, pre-accumulated input (0.98 / 0.94 of the true medium light).
+
+Corrections, all mine:
+  * "RR's INPUT at the edge carries the same average light moving and stopped" (entry above): measured on
+    the total, whose 8-seed noise (+-8-16%) hid a 10-13% loss. Its closing guess -- "two thirds come with
+    ReSTIR's temporal reuse" -- was the right direction.
+  * The retraction "the estimator's temporal reuse loses energy while the camera moves" (the halo entry)
+    is itself wrong for the medium: it does, at the silhouette. What that entry measured was the total.
+  * Two-layer RR "stopped, the more accurate image -- edge 0.90 vs 0.81, blue 0.82 vs 0.64": against a
+    proper truth (frozen lanterns, 256 frames) the still images are equal within a few percent, one RR
+    slightly ahead (edge regional mean 0.93 vs 0.89, blue 0.89 vs 0.86). That truth averaged moving and
+    still frames, so the moving loss biased it low, and the lanterns were animating.
+  * MediumAccumulation cannot restore light its input lacks: with normal ReSTIR the accumulated layer was
+    0.62 / 0.77 of the true medium light while moving -- exactly its input.
+
+Also found: the bistro's lanterns and string lights sway (14 wind animations, `m.scene.animations`), and
+they are its only lights. With them moving, ReSTIR shows transient bright bursts at the top of the plume
+some 120-150 frames after the camera stops: 2-3x there at +120-130 frames as shipped, up to 10x at
++140-155 with the switch (every seed, decaying over ~15 frames; the rest of the thin smoke 1.4-2x for those
+frames). None with the animation frozen, none with temporal reuse off. Not investigated further. A truth
+has to be taken with the animation frozen: with the lights moving, the medium's light drifts +-5% over
+30 s. Reproduce: `outputs/rim_tr/run_all.sh`, then `frozen_report.py` / `frozen_rr_report.py` there;
+pictures `outputs/rim_tr/rim_fix_rr{,_zoom}.jpg` (stopped / moving as shipped / moving with the fix).
+
+#### Following the layer by light share instead of by coverage (2026-09-19)
+
+The fix above follows the surface with probability T, so at thin medium (T 0.7-0.99) the medium almost
+never gets a matching history and its light is noisier in motion. `mTemporalReprojectByLightShare`
+(`VR_TR_LIGHT_SHARE=1`, only with `mTemporalReprojectIndependent`) follows it with the surface's share of
+the pixel's LIGHT instead -- the same estimate the guides use (GuideLightStats, last frame's running
+average, so still independent of this frame's sample; the statistics pass now runs whenever either
+consumer needs it). Same test (lanterns frozen, stop 3, 8 seeds, vs the 256-frame truth):
+
+    medium light / true, moving      thin      edge        noise, moving (std / true mean)
+    as shipped                       0.60      0.80        smoke 0.90 / 0.65   total 0.68 / 0.82
+    fix, by T                        0.99      1.00        smoke 1.76 / 1.08   total 0.72 / 0.90
+    fix, by light share              1.03      1.00        smoke 1.62 / 0.89   total 0.70 / 0.84
+
+So it keeps the correction and buys back about half the extra noise at the silhouette (a third at thin
+medium); in the total light the penalty over as-shipped drops to 2-3%. RR's own output noise is
+unchanged either way (0.13 / 0.22 of the true light, moving); its typical moving pixel is 1.04 thin /
+1.01 edge of the true light (by T: 1.03 / 1.00; as shipped 0.87 / 0.89). Both switches off is
+byte-identical, and so is the by-T fix with the light-share switch off (12/12 images each). It costs
+nothing to read (temporal reuse 4.60 -> 4.59 ms at 960x540, i.e. within run-to-run noise); where the
+guide rule is off the statistics pass has to run for it, 0.13 ms at 960x540 and 0.54 ms at 1080p.
+
+#### Is the change itself unbiased? (2026-09-19)
+
+Checked against brute-force volumetric path tracing (`mUseReference`), which the repo's own bias tests use
+but only with a STILL camera -- where this bias does not exist, since every depth then reprojects to the
+same pixel.
+
+  * The reference the numbers above are measured against -- ReSTIR with temporal reuse off, 256 frames at
+    stop 3's pose -- is itself within 1% of a path-traced reference at that pose (256 frames x 4 spp,
+    +-1.5% / 1.6% / 0.3%): thin 1.009, edge 0.994, deep 1.027. So "0.60 of the true light" is measured
+    against something that is genuinely the true light, give or take a percent. (Deep smoke sits ~2.7%
+    above the path tracer in EVERY configuration and both states -- the estimator's ray-marched
+    transmittance and mip levels, untouched by this change.)
+  * On the plume, where a path-traced reference converges in a minute, all three configurations agree
+    with it within ~1% in both states (total light, 4 seeds, ground plane shaded so the surface-or-medium
+    branch runs): as shipped 0.985 / 1.000 (thin / edge) moving, by T 0.992 / 1.009, by light share
+    0.990 / 1.008; stopped 1.007-1.015 everywhere. The effect is small there because the plume's
+    background is the environment map, i.e. at infinity, so the two reprojection choices land on nearly
+    the same pixel -- it takes bistro's near background to separate them.
+  * The TOTAL light on bistro cannot resolve this at 8 seeds (+-12% at thin, the lamps' fireflies),
+    which is why every number above is the medium's own light, where the split is exact and the 8-seed
+    error is 2-6%.
+
+#### Without touching the code: what the shipped settings can do (2026-09-20)
+
+Same test (lanterns frozen, stop 3, 8 seeds, vs the 256-frame truth). Both of these are parameters of the
+original implementation, no code change:
+
+    moving                        medium light, thin | edge    noise (smoke) thin | edge | deep
+    as shipped                          0.60 | 0.80                 0.90 | 0.65 | 0.53
+    Reprojection Mode = None            0.98 | 0.98                 1.33 | 0.84 | 0.73
+    history cap 10x -> 2x               0.77 | 0.92                 1.40 | 1.17 | 1.05
+    code fix, by light share            1.03 | 1.00                 1.62 | 0.89 | 0.54
+
+"No Reprojection" recovers the rim nearly as well as the code fix -- the neighbour is then this pixel in
+the previous frame, which cannot depend on the sample -- and blotches LESS on screen (RR's regional mean
+moving/still at thin smoke 1.18, against 1.27 as shipped and 1.31/1.32 for the code fixes; RR's typical
+moving pixel 1.03 thin / 1.01 edge of the truth). Its cost is deep medium, which loses motion
+compensation entirely: noise 0.73 against 0.53 (RR's own output 0.09 against 0.07). Note this path
+flatters it: the orbit is centred on the plume, so the medium barely moves on screen (the ground behind
+it moves 6.9 px/frame), and "the same pixel" is nearly the right neighbour FOR THE MEDIUM. A pan, where
+the medium crosses the screen, should behave differently -- untested.
+
+The history cap is the poor lever: it only halves the loss and it costs noise everywhere, including
+still frames (smoke 1.59 | 1.15 stopped, against 1.20 | 0.71 as shipped), since it shortens every
+history and not just the mismatched ones.
+
+Why a guide-side rescale cannot stand in for either. The light-share rule fixed the halo because that
+was a ROUTING problem -- which layer's motion a pixel is given. This is an energy problem: the light is
+already gone from ReSTIR's output. Reconstructing it from the guides would mean knowing the rim's true
+brightness, and the medium's light per unit coverage is not flat across the silhouette -- measured on the
+truth, 2.70x the deep-smoke value at 1-3% coverage, 2.36x at 3-10%, 2.21x at 10-30%, 1.12x at 90-99%.
+The correction the moving frames would need runs from 1.01x (deep) to 2.08x (thinnest) and grows with
+camera speed, so any fixed curve fits the bias rather than fixing it.
