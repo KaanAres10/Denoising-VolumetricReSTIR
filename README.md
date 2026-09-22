@@ -14,12 +14,19 @@ The work builds based on the original implementation of **Volumetric ReSTIR** by
 The original Volumetric ReSTIR implementation can be found at:  
 https://github.com/DQLin/VolumetricReSTIRRelease
 
-> **Now ported to Falcor 8.0.** This codebase originally targeted Falcor 4.x. It has since been
-> ported to **Falcor 8.0**, including the GVDB sparse-volume subsystem, the surface-scene path, the
-> animated volume sequences and all three denoisers. The algorithm and shaders are preserved; the
-> host/engine glue was rewritten for the 8.0 API. The original Falcor 4.x version is preserved on
-> the `falcor4-legacy` branch. Detailed porting notes are in
+> **Now ported to Falcor 9.0.** This codebase originally targeted Falcor 4.x, was ported to
+> **Falcor 8.0**, and now runs on **Falcor 9.0** -- including the GVDB sparse-volume subsystem, the
+> surface-scene path, the animated volume sequences and all the denoisers. The algorithm and shaders
+> are preserved; the host/engine glue was rewritten for the 8.0 API, and 9.0 needed only a handful of
+> changes on top. The Falcor 4.x version is preserved on the `falcor4-legacy` branch. Detailed
+> porting notes are in
 > [`Source/RenderPasses/VolumetricReSTIR/README.md`](Source/RenderPasses/VolumetricReSTIR/README.md).
+>
+> **Windows Developer Mode.** Falcor 9.0 pins a *preview* D3D12 Agility SDK, which Windows loads only
+> under Developer Mode; without it D3D12 will not create a device at all, and the only symptom is
+> "Failed to create device on GPU 0". Configure detects this and disables the SDK, falling back to the
+> inbox runtime (SM 6.8 rather than SM 6.9). Enable Developer Mode, or pass
+> `-DFALCOR_ENABLE_AGILITY_SDK=OFF`, to choose deliberately.
 
 ---
 
