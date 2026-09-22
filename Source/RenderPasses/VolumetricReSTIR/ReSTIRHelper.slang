@@ -15,7 +15,18 @@ __exported import HostDeviceSharedConstants;
 */
 bool sampleTriangleOffset(const float3 posW, const uint triangleIndex, const float2 u, out TriangleLightSample ls)
 {
-    if (!sampleTriangle(posW, triangleIndex, u, ls)) return false;
+    // [9.0 port] sampleTriangle gained a fifth parameter, isPrevFrame, with no default -- part of
+    // 9.0's previous-frame state handling for temporal algorithms.
+    //
+    // Passed false deliberately, which is exactly what 8.0 did: there is no previous-frame path
+    // here to preserve, so false keeps this call bit-identical across the engine bump and leaves the
+    // 8.0-vs-9.0 comparison measuring the PORT rather than a sampling change smuggled in with it.
+    //
+    // Worth revisiting as its own measured change: two of the three callers of sampleTriangleOffset
+    // (evaluate_L_in_volume, evaluate_L_on_surface) already carry isLastFrame, so a reused temporal
+    // sample could be evaluated against the emissive state it was actually taken under. That is a
+    // correctness improvement for animated emitters, not a port fix.
+    if (!sampleTriangle(posW, triangleIndex, u, ls, false)) return false;
 
     ls.posW = computeRayOrigin(ls.posW, ls.normalW);
     float3 toLight = ls.posW - posW;
