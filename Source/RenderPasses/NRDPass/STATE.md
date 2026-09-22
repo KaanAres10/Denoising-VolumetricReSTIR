@@ -14,6 +14,49 @@ asked. Three fixes were declared on metrics alone and two changed nothing a view
 The corollary, which cost a whole evening on its own: **check the output FILES exist** before
 believing an exit code. See the harness traps at the end.
 
+## Falcor 9.0 port: re-baselined, and the conclusions hold (2026-09-22)
+
+Branch `falcor9-port`. The same matched table, re-measured on both engines: bistro orbit, 300 frames at
+1080p, 30 warm-up, the Look tasks' settings. **The 8.0 column is the preserved 8.0 binary re-run with
+today's scripts**, not the one in "The denoiser ranking, re-measured on the fixed build": that table
+predates later script and guide changes (volume
+mvec for TAA, the DLSSDGuides sky defaults), so even the 8.0 binary no longer reproduces it exactly.
+Scored with `outputs/m_rebaseline_v9.py`, which reuses `m_denoisers.py`'s metric as written.
+
+|                          | s=32 8.0 → 9.0 | plume 8.0 → 9.0 | surfaces 8.0 → 9.0 | detail 8.0 → 9.0 |
+|--------------------------|----------------|-----------------|--------------------|------------------|
+| raw ReSTIR (+ TAA)       | 9.25 → 9.27    | 13.87 → 13.84   | 27.43 → 27.58      | 0.0910 → 0.0910  |
+| OptiX (+ guides)         | 10.81 → **10.58** | 17.48 → **16.93** | 28.69 → 28.71   | 0.0638 → **0.0673** |
+| RELAX-SH                 | 9.27 → 9.34    | 13.59 → 13.61   | 27.15 → 27.40      | 0.0640 → 0.0640  |
+| REBLUR-SH                | 9.32 → 9.41    | 13.55 → 13.59   | 26.90 → 27.13      | 0.0637 → 0.0638  |
+| DLSS Ray Reconstruction  | 8.75 → 8.80    | 13.77 → 13.84   | 26.51 → 26.67      | 0.0651 → 0.0651  |
+
+Raw, RELAX, REBLUR and RR move by 1% or less, and the ranking is the same in every column. OptiX is the
+one real change, and it is an improvement: plume 3.1% more stable, 5.5% more detail. That fits 9.0's
+OptiX normal-guide fix (`ConvertNormalsToBuf.cs.slang` decoded an already-signed normal with
+`(n - 0.5) * 2`), which is the likely answer to "The OptiX normal guide is inert" below -- likely,
+not isolated: nothing else was held fixed.
+
+**The comparison is exact, not statistical.** Two runs of the same build are byte-identical, so every
+difference is the engine. That is also what made the two faults below findable.
+
+**Two false regressions came first, and both would have gone into this file on metrics alone:**
+
+* **RELAX -7% in the plume was the matrix fix, applied twice.** Slang 2025.13.2 delivers NRD's
+  matrices correctly, so `patch_nrd_matrix_layout.py`'s transpose -- the fix on 8.0 -- is the bug on
+  9.0. The A/B rows swap across the diagonal (8.0 fixed ≈ 9.0 untransposed, 8.0 untransposed ≈ 9.0
+  fixed), and on the pixels 9.0-untransposed is closer to 8.0-fixed than 9.0-as-shipped is. NRDPass
+  now reads the matrices untransposed by default; `NRD4_TRANSPOSE_MATRICES=1` is the fault for an A/B,
+  and `NRD4_RAW_MATRICES` has no effect any more. **The correct read depends on the Slang version**,
+  so re-run this A/B after any Slang bump.
+* **RR +10% on s=32 was one run whose capture clock stalled.** 96% of the excess sat in 8 frames; the
+  frames showed the camera jumping to the final pose at file 299 and parking. A re-run was
+  byte-identical through 298 and clean after, scoring within 0.6% of 8.0. `capture_orbit.py` now writes
+  `CLOCK_STALL.txt` and says so when the clock stops tracking the loop. Cause not established.
+
+Also from the port: `libprotoc.dll` / `z.dll` vanished from `bin/Release` twice more, once while no
+build touched them. The harness traps below still apply; check for them before a batch.
+
 ## SOLVED: REBLUR's medium was transparent under motion
 
 Symptom: with the camera orbiting, REBLUR's plume read as haze -- doors, wall panels, plant pots and
