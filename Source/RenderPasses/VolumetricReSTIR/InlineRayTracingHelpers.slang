@@ -140,6 +140,18 @@ SurfaceShadingData computeSurfaceShadingInfo(SurfaceHitInfo hitInfo, float3 view
     const uint materialID = gScene.getMaterialID(triangleHit.instanceID);
     ShadingData sd = gScene.materials.prepareShadingData(v, materialID, viewDir);
     sd.V = viewDir;
+    // Offset the shading point off the surface along the face normal. The 4.x fork did this here
+    // (computeSurfaceShadingInfo) and the port dropped it, leaving computeScatterRayOrigin defined
+    // but never called -- dead code is what gave it away.
+    //
+    // It is NOT cosmetic. Every shadow ray in this pass is built as { shadingInfo.posW, dir, 0, d },
+    // i.e. tMin = 0, so without the offset the ray starts exactly ON the surface it must leave and
+    // self-intersects at t ~ 0. Visibility comes back 0 and the pixel is left black. Measured on the
+    // bistro orbit: surface pixels with NO contribution 34.38% (4.x) vs 55.90% (unfixed 8.0), while
+    // the plume is unaffected (32.79% vs 30.67%) because a medium scatter point has no surface to
+    // self-intersect. That sparsity is what the denoiser then has to reconstruct from, which is why
+    // the gap showed up as blur + temporal instability on SURFACES rather than in the smoke.
+    sd.posW = computeScatterRayOrigin(sd.posW, sd.frontFacing ? sd.faceN : -sd.faceN);
 
     let lod = ExplicitLodTextureSampler(0.f);
     let mi = gScene.materials.getMaterialInstance(sd, lod, getSurfaceMaterialInstanceHints());
