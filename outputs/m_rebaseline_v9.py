@@ -37,3 +37,23 @@ for label, a, b in ROWS:
         fmt = " %6.2f %6.2f %+6.1f%% " if i < 3 else " %.4f %.4f %+5.1f%% "
         cells.append(fmt % (x, y, 100 * (y / x - 1)))
     print("%-26s" % label + "".join(cells))
+
+# --- Why the numbers move (see STATE.md, "Falcor 9.0 port") -----------------------------------------
+#
+# 1. Brightness. The metric divides by the capture's mean level, so a darker image scores worse at
+#    identical flicker. A mean-level drop of b% alone reads as roughly +b% on every column.
+print()
+print("%-26s %8s %8s %10s" % ("mean level (m_denoisers)", "8.0", "9.0", "change"))
+for label, a, b in ROWS:
+    ma = float(np.mean([x.mean() for x in load(a)]))
+    mb = float(np.mean([x.mean() for x in load(b)]))
+    print("%-26s %8.4f %8.4f %+9.2f%%" % (label, ma, mb, 100 * (mb / ma - 1)))
+
+# 2. OptiX: rb_v9_optix_olddecode is 9.0 with 8.0's `(n - 0.5) * 2` normal decode put back for one
+#    run. 8.0 -> olddecode is everything else in the engine, including the dispatch fix that made the
+#    normal guide reach OptiX at all; olddecode -> fixed is the decode fix alone.
+print()
+va, vo, vb = vals("", "rb_v8_optix"), vals("", "rb_v9_optix_olddecode"), vals("", "rb_v9_optix")
+print("%-34s %8s %8s %9s %8s" % ("OptiX", "s=32", "plume", "surfaces", "detail"))
+print("%-34s" % "8.0 -> 9.0 with the old decode" + "".join(" %+7.1f%%" % (100 * (y / x - 1)) for x, y in zip(va, vo)))
+print("%-34s" % "old decode -> fixed decode" + "".join(" %+7.1f%%" % (100 * (y / x - 1)) for x, y in zip(vo, vb)))

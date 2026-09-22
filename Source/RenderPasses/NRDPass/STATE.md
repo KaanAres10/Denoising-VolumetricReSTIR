@@ -32,10 +32,34 @@ Scored with `outputs/m_rebaseline_v9.py`, which reuses `m_denoisers.py`'s metric
 | DLSS Ray Reconstruction  | 8.75 → 8.80    | 13.77 → 13.84   | 26.51 → 26.67      | 0.0651 → 0.0651  |
 
 Raw, RELAX, REBLUR and RR move by 1% or less, and the ranking is the same in every column. OptiX is the
-one real change, and it is an improvement: plume 3.1% more stable, 5.5% more detail. That fits 9.0's
-OptiX normal-guide fix (`ConvertNormalsToBuf.cs.slang` decoded an already-signed normal with
-`(n - 0.5) * 2`), which is the likely answer to "The OptiX normal guide is inert" below -- likely,
-not isolated: nothing else was held fixed.
+one real change, and it is an improvement: plume 3.1% more stable, 5.5% more detail.
+
+**That ~1% drift is brightness, not stability.** Every configuration renders ~1% darker on 9.0
+(-0.93% to -1.33% mean level), and the metric divides by the mean, so a 1% darker image scores ~1%
+worse at identical flicker. The observed +0.1..+1.0% for RELAX/REBLUR/RR is at or below that, so
+their absolute flicker is unchanged or marginally lower. The darkening is in the renderer (raw shows
+it too), not the tone mapper (9.0's change there is a type declaration only), and spread thinly over
+lit surfaces rather than in one object; the plume differs in both directions, i.e. different samples.
+Which 9.0 change causes it is NOT found -- candidates are the emissive light sampler / LightCollection
+and material changes. Finding it would take a bisection.
+
+**The OptiX gain is 8.0's normal guide never reaching OptiX.** Answers "The OptiX normal guide is
+inert" below: in 8.0's `OptixDenoiser_::convertNormalsToBuf` the conversion shader's variables are
+bound and then `mpConvertTexToBuf->execute()` runs -- the generic texture copy, not the normals pass.
+The normals shader never ran, so the guide buffer never got the normals, which is why changing the
+volume normal mode left OptiX byte-identical. 9.0 fixes the dispatch (`mpConvertNormalsToBuf`), the
+staging format (FLOAT3 -> FLOAT4) and the decode (`(n - 0.5) * 2` on an already-signed normal).
+Isolated by putting the old decode back into 9.0 for one run (`rb_v9_optix_olddecode`):
+
+|                                   | s=32  | plume | detail |
+|-----------------------------------|-------|-------|--------|
+| 8.0 -> 9.0 with the old decode    | -1.7% | -2.5% | +4.5%  |
+| old decode -> fixed decode        | -0.5% | -0.7% | +0.9%  |
+
+So most of it is the guide being delivered at all; the decode is the smaller part. The first row also
+carries the ~1% darkening, which counts AGAINST OptiX's score, so the dispatch fix is if anything
+larger than shown. **Every OptiX number measured on 8.0 was OptiX without a normal guide.** OptiX
+still ranks last on 9.0, so the conclusion stands, but its gap to the others is smaller than 8.0 said.
 
 **The comparison is exact, not statistical.** Two runs of the same build are byte-identical, so every
 difference is the engine. That is also what made the two faults below findable.
