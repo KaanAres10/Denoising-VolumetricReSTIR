@@ -24,6 +24,14 @@ legacy build.
 | 6 | `.packman/{CUDA_13.0,OptiX_9.0.0,oidn}` never fetched | directory junctions to the installed CUDA 12.8, OptiX SDK 9.1.0/include, and `C:/oidn-2.3.3.x64.windows` | minor version gaps, see below |
 | 7 | empty `.packman/nvapi` SHADOWED the vendored SDK at `Source/Externals/nvapi`, so deploycommon's `IF exist` passed and its three copies silently failed, leaving `Shaders/NVAPI` empty and crashing LightCollection | replaced the empty dir with a junction to the real SDK | no |
 
+**Rebuilding Falcor alone breaks the shaders -- restore the fork's DXC afterwards.** The fork runs DXC
+1.5.2010 from `Source/Falcor/Data/FixedCompiler/`, copied into `Bin/x64/Release/` by MOGWAI's post-build
+step. Rebuilding only Falcor (as on 2026-09-21) lets the deploy step copy the Windows SDK's DXC
+1.8.2502 over it. The fork's Slang does not pin an HLSL version, and 1.8 defaults to HLSL 2021, which
+rejects a vector ternary Slang emits: every program fails with "condition for short-circuiting ternary
+operator must be scalar" (`BuildTriangleList.cs.slang` first). Copy `dxcompiler.dll` + `dxil.dll` back
+from `FixedCompiler`. The 1.8 pair is kept in `legacy/_dxc18_backup/`.
+
 Runtime also needs the media path, which the script does not set:
 
     FALCOR_MEDIA_FOLDERS = <repo>/VolumetricReSTIRData;<repo>/legacy/Media

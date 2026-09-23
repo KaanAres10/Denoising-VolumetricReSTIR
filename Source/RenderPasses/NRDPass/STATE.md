@@ -237,6 +237,72 @@ which the DXIL cannot show. Nsight GPU Trace would, but on this machine it still
 Performance Counters unavailable", even with `RmProfilingAdminOnly = 0` and after a reboot.
 `outputs/gputrace_v8_v9.ps1 v8|v9 <dir>` is the one-frame trace to run once counters work.
 
+### Against the Falcor 4.x fork: 4.x 105 ms, 8.0 116, 9.0 124 (2026-09-23)
+
+The raw estimator alone, as in "Falcor 8 vs the 4.x fork" below: VolumetricReSTIR -> Linear tonemapper
+at a fixed +8 EV, nothing else in the graph. Bistro orbit, 300 frames at 1080p, scene and camera
+animation frozen as the fork's scripts do. `legacy/Scripts/_time_raw_legacy.py` and its new twin
+`Scripts/time_raw.py` hold graph, estimator settings, scene, orbit and timing identical. 3 runs per
+engine, order rotated, each its own process (`outputs/legacy_cmp/time_batch.ps1`, scored by
+`outputs/m_legacy_cmp.py`).
+
+A verify frame from each engine at orbit pose 150 came first (`VR_VERIFY=1`): same shot, plume
+present and lit. 8.0 vs 9.0 correlate 0.9998 at the same mean. Legacy correlates 0.97 and is sparser
+(71% of pixels lit against 88%); that is the shadow-ray offset difference under "Still open" further
+down, so the new engines do somewhat more lighting work per frame.
+
+| wall clock / frame | runs                  | median | vs 4.x |
+|--------------------|-----------------------|--------|--------|
+| Falcor 4.x         | 105.1 / 106.4 / 102.4 | 105.1  | --     |
+| Falcor 8.0         | 115.7 / 115.7 / 115.6 | 115.7  | +10%   |
+| Falcor 9.0         | 133.3 / 124.1 / 123.7 | 124.1  | +18%   |
+
+9.0's first run is an outlier (its profiled run measured 122.8). 8.0 was flat whatever its position in
+the order, so it is not the GPU's temperature.
+
+**8.0 -> 9.0 here is Final Shading.** With the scene frozen, 8.0 no longer rebuilds the emissive
+power table either, so the saving that levels the two engines on the animated matched configuration
+(see "Performance" above) is absent. Final Shading's +4.4 ms (OPEN, above) shows through, plus
+~1.8 ms in Spatial Reuse. Which comparison applies depends on whether the scene animates.
+
+**4.x -> 8.0/9.0 is the volume path, and it is NOT uniform.** Per pass, GPU ms (median). Falcor 4's
+profiler slows Falcor 4 itself: its profiled frame is 117.7 ms against 104.6 unprofiled, while 8.0/9.0's
+costs ~1 ms. So read the full-scene 4.x column by share:
+
+| full scene       | 4.x           | 8.0           | 9.0           |
+|------------------|---------------|---------------|---------------|
+| Generate Samples | 12.35 (10.7%) | 27.45 (23.9%) | 27.03 (22.4%) |
+| Temporal Reuse   | 17.45 (15.1%) | 15.81 (13.8%) | 15.76 (13.1%) |
+| Spatial Reuse    | 75.02 (65.0%) | 61.78 (53.8%) | 63.54 (52.8%) |
+| Final Shading    | 8.16 (7.1%)   | 8.23 (7.2%)   | 12.59 (10.5%) |
+
+| volume only (no surfaces) | 4.x   | 8.0   | 9.0   |
+|---------------------------|-------|-------|-------|
+| Generate Samples          | 2.67  | 7.86  | 7.79  |
+| Temporal Reuse            | 4.07  | 5.26  | 5.25  |
+| Spatial Reuse             | 6.25  | 13.49 | 13.31 |
+| Final Shading             | 2.93  | 4.40  | 4.87  |
+| whole estimator           | 17.16 | 32.10 | 32.39 |
+
+(`VR_NO_SURFACE=1` on the legacy script, `VR_USE_SURFACE=0` on the new one, one profiled run each.)
+
+* **The volume march costs ~1.9x on both new engines**: Generate Samples 2.9x, Spatial Reuse 2.2x,
+  with 8.0 = 9.0. So it came with the 8.0 port, not with 9.0.
+* **The surface work is cheaper on the new engines.** In the full scene Spatial Reuse drops from 65% to
+  54% of the estimator, which is why the full-scene gap (+10%) is much smaller than the volume-only one.
+* **Not the density atlas:** the port applies BC4 under the fork's exact condition
+  (`useTextureCompression`, SceneGVDB.cpp vs the fork's Scene.cpp, `ATLAS_COMPRESSION == 2`).
+* **This does not reproduce "The residual is uniform" in the August section below.** Note for any
+  re-run: Falcor 4's `tc.capturePassTime` looks events up by their full `#`-joined path
+  (`#onFrameRender#RenderGraphExe::execute()#VolumetricReSTIR#Spatial Reuse`), and a bare pass name,
+  which is what `_time_raw_legacy.py` passed until today, silently records zeros.
+
+Open: what in the volume march costs twice as much. The next step is Generate Samples' kernel on both
+builds, side by side: DXIL, and Nsight now that GPU counters work.
+
+Also found: legacy's `Bin/` had the Windows SDK's DXC 1.8 over the fork's own DXC 1.5, and every
+legacy shader failed to compile. See `legacy_build_notes.md`.
+
 ## SOLVED: REBLUR's medium was transparent under motion
 
 Symptom: with the camera orbiting, REBLUR's plume read as haze -- doors, wall panels, plant pots and
@@ -2315,6 +2381,10 @@ All reverted. This is a useful negative: the difference is not in anything Falco
 counter-intuitive and worth remembering -- forcing both operands to evaluate is FASTER here, because
 branch divergence costs more than the redundant work in these loops.
 
+**[2026-09-23: NOT REPRODUCED -- measured with legacy's profiler keyed correctly, the split is not
+uniform (legacy Spatial Reuse 65% of its estimator, 8.0 54%); see "Against the Falcor 4.x fork" under
+the 9.0 port. How the 53.0% below was obtained is not recorded; the legacy script's pass capture, as
+it stood, recorded zeros.]**
 The residual is uniform -- v8's Spatial Reuse is 53.1% of its frame, legacy's 53.0% of its own --
 which is the signature of codegen, not a hotspot. The last known data difference is BC4 vs R8, worth
 ~0.6 ms by extrapolation (R32->R8 saved 3 bytes/voxel for 3.86 ms), and `BCHelper` exists only in a
