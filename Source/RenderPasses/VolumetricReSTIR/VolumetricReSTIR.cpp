@@ -1182,7 +1182,10 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             DefineList d;
             d.add("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
             if (mParams.mVertexReuse) d.add("VERTEX_REUSE");
-            mGuideLightStatsPass = ComputePass::create(mpDevice, kShaderDirectory + "GuideLightStats.cs.slang", "main", d);
+            ProgramDesc statsDesc;
+            statsDesc.addShaderLibrary(kShaderDirectory + "GuideLightStats.cs.slang").csEntry("main");
+            applyEstimatorCompilerFlags(statsDesc); // precise FP, like every estimator program (Utils.cpp)
+            mGuideLightStatsPass = ComputePass::create(mpDevice, statsDesc, d);
             mGuideLightStatsDefines = defines;
         }
         if (!mGuideLightStats || mGuideLightStats->getWidth() != scrWidth || mGuideLightStats->getHeight() != scrHeight)

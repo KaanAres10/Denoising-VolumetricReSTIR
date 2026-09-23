@@ -84,6 +84,30 @@ ref<Texture> createNeighborOffsetTexture(ref<Device> pDevice, int numSamples)
     return pDevice->createTexture1D(numSamples, ResourceFormat::RG8Int, 1, 1, offsets.get());
 }
 
+void applyEstimatorCompilerFlags(ProgramDesc& desc)
+{
+    // PRECISE floating point for every Volumetric ReSTIR program. Falcor 9.0 ships Slang 2025.13.2,
+    // whose DEFAULT floating-point mode emits fast-math DXIL: every float op in the largest kernel is
+    // flagged `fast` and none is `dx.precise`. Slang 2024.1.34 (Falcor 8.0) emitted the same kernel
+    // with 4,869 `dx.precise` markers and 9 fast ops -- effectively precise. Same source, same DXC.
+    //
+    // The estimator runs ~20% slower under Slang 2025's default (bistro orbit, raw, 1080p, interleaved
+    // runs: 123.6 ms on 8.0 -> 149.5 ms on 9.0; Spatial Reuse 63.6 -> 85). Isolated three ways: the 8.0
+    // engine with 8.0's own shaders slows to 9.0's speed when only slang.dll is swapped for 9.0's (old
+    // gfx.dll kept); the two compilers' DXIL is otherwise within 0.7% in instructions and identical in
+    // allocas; and this flag brings 9.0 to 123.2 ms, level with 8.0. PRECISE on Slang 2025 reproduces
+    // Slang 2024's default almost exactly: 4,899 vs 4,869 dx.precise, the same 2,914 fused mads.
+    // The volume-only path does not show it (it is slightly FASTER under fast math), which is what made
+    // it look like a material problem rather than a compiler one.
+    //
+    // VR_FP_MODE=fast|default restores the other modes for an A/B.
+    static const std::string mode = [] { const char* v = std::getenv("VR_FP_MODE"); return std::string(v ? v : "precise"); }();
+    if (mode == "fast")
+        desc.setCompilerFlags(SlangCompilerFlags::FloatingPointModeFast);
+    else if (mode != "default")
+        desc.setCompilerFlags(SlangCompilerFlags::FloatingPointModePrecise);
+}
+
 ref<ComputePass> createSimpleComputePass(ref<Device> pDevice, const std::string& file, const std::string& mainEntry,
     DefineList defs)
 {
@@ -96,7 +120,10 @@ ref<ComputePass> createSimpleComputePass(ref<Device> pDevice, const std::string&
 
     // Defer program compilation/var creation until setScene() has supplied the real scene defines
     // (Scene.slang requires SCENE_GEOMETRY_TYPES etc. which are only known once a scene is loaded).
-    return ComputePass::create(pDevice, file, mainEntry, matlDefs, /*createVars*/ false);
+    ProgramDesc desc;
+    desc.addShaderLibrary(file).csEntry(mainEntry);
+    applyEstimatorCompilerFlags(desc);
+    return ComputePass::create(pDevice, desc, matlDefs, /*createVars*/ false);
 }
 
 ref<ComputePass> createSceneComputePass(ref<Device> pDevice, const std::string& file, const std::string& mainEntry,
@@ -114,5 +141,6 @@ ref<ComputePass> createSceneComputePass(ref<Device> pDevice, const std::string& 
     desc.addShaderModules(pScene->getShaderModules());
     desc.addShaderLibrary(file).csEntry(mainEntry);
     desc.addTypeConformances(pScene->getTypeConformances());
+    applyEstimatorCompilerFlags(desc);
     return ComputePass::create(pDevice, desc, matlDefs, /*createVars*/ false);
 }

@@ -42,6 +42,8 @@ Falcor::ref<Falcor::Texture> createNeighborOffsetTexture(Falcor::ref<Falcor::Dev
 
 /** Helper to create a simplistic/basic Falcor compute pass with minimal code.
 */
+/// Compiler flags every Volumetric ReSTIR program must use (precise FP -- see Utils.cpp).
+void applyEstimatorCompilerFlags(Falcor::ProgramDesc& desc);
 Falcor::ref<Falcor::ComputePass> createSimpleComputePass(Falcor::ref<Falcor::Device> pDevice, const std::string& file, const std::string& mainEntry, Falcor::DefineList defs = {});
 Falcor::ref<Falcor::ComputePass> createSceneComputePass(Falcor::ref<Falcor::Device> pDevice, const std::string& file, const std::string& mainEntry, Falcor::DefineList defs, const Falcor::ref<Falcor::Scene>& pScene);
 
