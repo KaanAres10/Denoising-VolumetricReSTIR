@@ -5,7 +5,7 @@
 # counting through the warm-up, so VR_WARM = 30/31/32/33 gives every captured frame different random
 # numbers at IDENTICAL camera poses (capture_orbit places the camera by loop index). Bistro's volume
 # is a single static frame and the camera is detached from the scene animation, so nothing else moves.
-#   seed 30: rb_v8_<cfg>, rb_v9uv_<cfg>      seeds 31-33: sd_<v8|v9uv>_<cfg>_w31..33
+#   seed 30: rb_v8_<cfg>, rb_<V9>_<cfg>      seeds 31-33: sd_<v8|V9>_<cfg>_w31..33   (V9 = v9p or v9uv)
 #
 # Per metric: seed-to-seed spread (sample std as % of the mean) and the change in the mean, with a
 # 95% confidence interval from Welch's t (n = 4 per engine). "real" = the interval excludes zero.
@@ -14,8 +14,9 @@ import io
 import math
 import sys
 
-# argv[1] = which 9.0 build: "v9uv" (Slang default FP, before b6628b4) or "v9p" (precise FP, final).
-V9 = sys.argv[1] if len(sys.argv) > 1 else "v9uv"
+# argv[1] = which 9.0 build: "v9p" (precise FP, the final build; default) or "v9uv" (Slang's default FP,
+# before b6628b4).
+V9 = sys.argv[1] if len(sys.argv) > 1 else "v9p"
 
 src = open("m_denoisers.py", encoding="utf-8").read().splitlines()
 exec("\n".join(src[:22]))  # load() and row() exactly as m_denoisers.py defines them

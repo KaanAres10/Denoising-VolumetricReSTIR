@@ -106,21 +106,28 @@ difference is the engine. That is also what made the two faults below findable.
 Also from the port: `libprotoc.dll` / `z.dll` vanished from `bin/Release` twice more, once while no
 build touched them. The harness traps below still apply; check for them before a batch.
 
-### Is a sub-1% difference real? Noise spread over 4 seeds (2026-09-23)
+### Is a sub-1% difference real? Noise spread over 4 seeds (2026-09-23, final build)
 
 The table above is one random-number stream per engine. Each configuration was re-rendered with 3
 more seeds on each engine -- the seed is the warm-up length (`VR_WARM` 30..33): the generator is
 seeded by the frame counter, which keeps counting through the warm-up, while capture_orbit places the
 camera by loop index, so poses are identical. Bistro's volume is one static frame and the camera is
-detached, so nothing else moves. `outputs/m_noise_spread.py`, 95% CI from Welch's t, n = 4 each.
+detached, so nothing else moves. `outputs/m_noise_spread.py v9p` (the final build; `v9uv` scores the
+pre-fix one), 95% CI from Welch's t, n = 4 each.
 
-**One run's seed-to-seed spread is 0.1-0.6% on these metrics.** Against that, every raw, RELAX,
-REBLUR and RR change is noise (REBLUR's single-seed +0.9% plume: +0.80%, CI -0.02..+1.62), except
-RELAX's plume +0.76% (CI +0.05..+1.47) -- borderline, and about one false positive is expected in
-20 tests. **OptiX's gain is real on all four metrics** (s=32 -2.94%, plume -2.91%, surfaces -0.56%,
-detail +5.44%). One pattern worth knowing: the plume column moved UP for raw, RELAX, REBLUR and RR
-alike (+0.4..+0.8%); each is within noise, together they hint at a ~0.5% shared plume effect that 4
-seeds cannot resolve.
+**One run's seed-to-seed spread is up to ~0.6% on these metrics.** Against that, raw, RELAX, REBLUR
+and RR are noise on s=32, surfaces and detail. **OptiX's gain is real on all four metrics** (s=32
+-2.92%, plume -2.88%, surfaces -0.57%, detail +5.41%).
+
+**The plume column is the one to watch.** It moved UP, i.e. slightly less stable, for all four of
+raw, RELAX, REBLUR and RR (+0.47..+0.80%). RELAX (+0.76%, CI +0.05..+1.47) and RR (+0.49%, CI
++0.04..+0.95) just clear the 95% bar; raw (+0.47%, CI -0.41..+1.36) and REBLUR (+0.80%, CI
+-0.02..+1.62) just miss it. Two borderline hits in 20 tests is about what chance gives. But all four
+point the same way, all on the plume, and raw shows it too, so if it is real it is a ~0.5% effect in
+the volume, upstream of the denoisers. 4 seeds cannot settle it; more seeds of raw alone would.
+
+The pre-fix build (`v9uv`) gave the same verdicts except RR's plume, which was inside noise there:
+the floating-point mode did not change any conclusion.
 
 ### Every scene, switch and VS Code task (2026-09-23)
 

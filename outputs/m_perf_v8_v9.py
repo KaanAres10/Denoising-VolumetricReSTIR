@@ -1,6 +1,6 @@
 # Frame cost, Falcor 8.0 vs 9.0: bistro orbit, 1080p, 300 frames, the matched configuration.
-#   perf_<v8|v9>_<cfg>_r<1|2>/<cfg>_frame_times.csv   wall clock per frame (VR_TIME=1), 2 interleaved reps
-#   perfpass_<v8|v9>_<cfg>/<cfg>_pass_times.json      Falcor profiler, per-pass GPU time (VR_PASS_TIMES=1)
+#   <PFX>_<v8|v9>_<cfg>_r<1|2>/<cfg>_frame_times.csv   wall clock per frame (VR_TIME=1), 2 interleaved reps
+#   perfpass<N>_<v8|v9>_<cfg>/<cfg>_pass_times.json      per-pass GPU time (VR_PASS_TIMES=1); PFX perf2 -> perfpass2
 # Wall clock is CPU submit + GPU + present -- an upper bound, but directly comparable between engines.
 # The rep-to-rep spread is printed next to each engine so a small difference can be judged against it.
 import csv
@@ -9,9 +9,9 @@ import os
 import statistics as st
 import sys
 
-# argv[1] = directory prefix: "perf" (first measurement, 9.0 with Slang's default FP) or
-# "perf2" (after the precise-FP fix, 8.0 re-run in the same session).
-PFX = sys.argv[1] if len(sys.argv) > 1 else "perf"
+# argv[1] = directory prefix: "perf2" (the final build, after the precise-FP fix, 8.0 re-run in the same
+# session; default) or "perf" (the first measurement, 9.0 under Slang's default FP).
+PFX = sys.argv[1] if len(sys.argv) > 1 else "perf2"
 
 CFGS = [("raw ReSTIR (+TAA)", "raw"), ("OptiX (+guides)", "optix"), ("RELAX-SH", "relax"),
         ("REBLUR-SH", "reblur"), ("DLSS Ray Reconstruction", "rr")]
