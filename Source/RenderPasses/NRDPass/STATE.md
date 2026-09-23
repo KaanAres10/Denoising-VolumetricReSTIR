@@ -144,7 +144,28 @@ the floating-point mode did not change any conclusion.
   (`DLSSPass: Input 'depth' has mismatching size`), and "Bistro RR: Ultra Quality"
   (NGX `NVSDK_NGX_Result_FAIL_UnsupportedParameter`).
 
-### Performance: the ~25% slowdown was Slang 2025's fast-math default -- FIXED, 9.0 matches 8.0 (2026-09-23)
+### Performance: 9.0 is now ~20% FASTER than 8.0 (2026-09-24); the first slowdown was Slang 2025's fast-math default (2026-09-23)
+
+**Since 7f40d30 (register pressure, see "Against the Falcor 4.x fork" below), 9.0 beats 8.0 on every
+configuration.** Wall clock per frame, bistro orbit 1080p, 300 frames, animated scene, the matched
+configuration, 2 interleaved reps per engine (`outputs/m_perf_v8_v9.py`, default `perf3`):
+
+| after 7f40d30     | 8.0 ms | 9.0 ms | change |
+|-------------------|--------|--------|--------|
+| raw ReSTIR (+TAA) | 120.7  | 93.0   | -23%   |
+| OptiX (+guides)   | 155.2  | 123.2  | -21%   |
+| RELAX-SH          | 134.9  | 110.6  | -18%   |
+| REBLUR-SH         | 128.9  | 100.5  | -22%   |
+| DLSS RR           | 133.5  | 107.7  | -19%   |
+
+Per pass (raw, GPU ms, 8.0 -> 9.0): Spatial Reuse 62.1 -> 46.3, Generate Samples 27.9 -> 20.0,
+Temporal Reuse 15.9 -> 13.7, Final Shading 8.2 -> 8.0, the emissive power-table rebuild 5.5 -> 0.
+Some small non-estimator passes read 5-20% higher on 9.0 (G-buffer, guides, NRD; 0.1-0.3 ms each),
+most likely GPU clock: the busier estimator draws more power. The image is byte-identical to before
+the fix, so the quality and noise tables above still hold.
+
+The rest of this section is the first slowdown and its fix, as measured then (`perf2`):
+
 
 Wall clock per frame, bistro orbit 1080p, 300 frames, 2 interleaved reps per engine
 (`outputs/m_perf_v8_v9.py perf2`; the "before" column is `m_perf_v8_v9.py perf`, a different session,
@@ -202,8 +223,11 @@ Per pass after the fix (GPU ms, median, raw; `perfpass2_*`), 8.0 -> 9.0:
 9.0 no longer rebuilds the emissive power table every frame, which saves 4.3-5.0 ms. That saving is
 what cancels the one pass that is still slower:
 
-**OPEN: Final Shading is +50% on 9.0 (8.4 -> 12.7 ms, in every configuration).** Net-neutral for the
-frame, but unexplained. What is established (short raw config; each edit applied to BOTH engines'
+**RESOLVED (7f40d30): Final Shading was +50% on 9.0 (8.4 -> 12.7 ms, in every configuration).** It
+was register pressure, like the 4.x gap: see "Against the Falcor 4.x fork" below. With the per-pass
+tracking masks and 8x8 groups it takes 8.0 ms against 8.0's 8.1 (raw, frozen scene). What follows is
+the investigation as it stood before that, kept for the ruled-out list. It was net-neutral for the
+frame, and unexplained at the time. What is established (short raw config; each edit applied to BOTH engines'
 shaders and run interleaved, one rep each):
 
 | Final Shading, ms               | 8.0  | 9.0   |
@@ -237,14 +261,14 @@ which the DXIL cannot show. Nsight GPU Trace would, but on this machine it still
 Performance Counters unavailable", even with `RmProfilingAdminOnly = 0` and after a reboot.
 `outputs/gputrace_v8_v9.ps1 v8|v9 <dir>` is the one-frame trace to run once counters work.
 
-### Against the Falcor 4.x fork: 4.x 105 ms, 8.0 116, 9.0 124 (2026-09-23)
+### Against the Falcor 4.x fork: 9.0 is now FASTER -- 4.x 100 ms, 8.0 116, 9.0 96 (2026-09-24)
 
 The raw estimator alone, as in "Falcor 8 vs the 4.x fork" below: VolumetricReSTIR -> Linear tonemapper
 at a fixed +8 EV, nothing else in the graph. Bistro orbit, 300 frames at 1080p, scene and camera
-animation frozen as the fork's scripts do. `legacy/Scripts/_time_raw_legacy.py` and its new twin
-`Scripts/time_raw.py` hold graph, estimator settings, scene, orbit and timing identical. 3 runs per
-engine, order rotated, each its own process (`outputs/legacy_cmp/time_batch.ps1`, scored by
-`outputs/m_legacy_cmp.py`).
+animation frozen as the fork's scripts do. `legacy/Scripts/_time_raw_legacy.py` (tracked copy in
+`outputs/legacy_cmp/`) and its new twin `Scripts/time_raw.py` hold graph, estimator settings, scene,
+orbit and timing identical. 3 runs per engine, order rotated, each its own process
+(`outputs/legacy_cmp/time_batch.ps1`, scored by `outputs/m_legacy_cmp.py`).
 
 A verify frame from each engine at orbit pose 150 came first (`VR_VERIFY=1`): same shot, plume
 present and lit. 8.0 vs 9.0 correlate 0.9998 at the same mean. Legacy correlates 0.97 and is sparser
@@ -253,52 +277,87 @@ down, so the new engines do somewhat more lighting work per frame.
 
 | wall clock / frame | runs                  | median | vs 4.x |
 |--------------------|-----------------------|--------|--------|
-| Falcor 4.x         | 105.1 / 106.4 / 102.4 | 105.1  | --     |
-| Falcor 8.0         | 115.7 / 115.7 / 115.6 | 115.7  | +10%   |
-| Falcor 9.0         | 133.3 / 124.1 / 123.7 | 124.1  | +18%   |
+| Falcor 4.x         | 99.9 / 100.1 / 100.3  | 100.1  | --     |
+| Falcor 8.0         | 115.5 / 117.5 / 115.6 | 115.6  | +15%   |
+| Falcor 9.0, before | 133.3 / 124.1 / 123.7 | 124.1  | +18%   |
+| **Falcor 9.0, now**| 103.5 / 96.1 / 95.0   | **96.1** | **-4%** |
 
-9.0's first run is an outlier (its profiled run measured 122.8). 8.0 was flat whatever its position in
-the order, so it is not the GPU's temperature.
+("before" is the same session's first batch, `outputs/legacy_cmp/before_mask/`; 4.x and 8.0 measured
+105.1 and 115.7 there.) 9.0's first run of a batch tends to read high: 133.3 then, 103.5 now.
 
-**8.0 -> 9.0 here is Final Shading.** With the scene frozen, 8.0 no longer rebuilds the emissive
-power table either, so the saving that levels the two engines on the animated matched configuration
-(see "Performance" above) is absent. Final Shading's +4.4 ms (OPEN, above) shows through, plus
-~1.8 ms in Spatial Reuse. Which comparison applies depends on whether the scene animates.
+**The cause was register pressure, and it came with the 8.0 port.** Nsight GPU Trace, one
+volume-only frame per build (per-pass ranges are reliable there), registers per thread = registers
+allocated / active warps / 32:
 
-**4.x -> 8.0/9.0 is the volume path, and it is NOT uniform.** Per pass, GPU ms (median). Falcor 4's
-profiler slows Falcor 4 itself: its profiled frame is 117.7 ms against 104.6 unprofiled, while 8.0/9.0's
-costs ~1 ms. So read the full-scene 4.x column by share:
+| volume only, before the fix | 4.x: regs / warps per SM | 8.0 and 9.0: regs / warps | GPU cycles |
+|-----------------------------|--------------------------|---------------------------|------------|
+| Generate Samples            | 80 / 21.5                | 200-208 / 7.5             | 3.0x       |
+| Spatial Reuse               | 128 / 14.3               | 232 / 7.3                 | 2.2x       |
+| Temporal Reuse              | 250 / 7.4                | 250 / 7.4                 | 1.0x       |
+| Final Shading               | 128 / 13.7               | 128 / 13.6                | ~1.1x      |
+
+Same threads and warps launched. The ported kernels even did LESS texture traffic (0.64x). Their DXIL
+was the same size as the fork's (Generate Samples: 22,890 vs 22,438 instructions, 137 texture samples
+each, same shader flags), and the estimator shader source is the fork's apart from API renames. What
+differs is how much state is live at once, so the driver allocates ~2.5x the registers, one 256-thread
+group fits per SM instead of three, and texture latency stops being hidden. Temporal Reuse is the
+control: the same registers on both, the same speed.
+
+Ruled out on the way: floating-point mode (the fork is all fast-math; 9.0 fast and precise both give
+200 registers), Slang `-O0..-O3` and DXC `-Gfp` (per-program `compilerArguments`; none below 30 ms
+volume-only), the density atlas (BC4 under the fork's exact condition), the random-number generator
+(same), emissive evaluation (`evalEmissive` is a single texture fetch in both), the reference path
+tracer (compiled in but costs nothing).
+
+**Fix, 7f40d30.** Each change was found by a register probe (`outputs/legacy_cmp/regs_probe.sh`:
+edit one deployed shader, trace, restore) and leaves the image unchanged:
+
+| change | effect |
+|--------|--------|
+| Per-pass transmittance trackers (`VR_TRACKING_MASK`, computeVisibility). The tracker was a runtime option, so every kernel compiled all three and allocated for the worst; each pass now compiles only the methods its options can select, recompiling when they change. | volume only: GS 200 -> 128, SR 232 -> 128, TR 250 -> 188, FS 128 -> 112 |
+| Bounce loop bounded by `MAX_BOUNCES` (host keeps it = gMaxBounces), dropping the unreachable bounce >= 1 path with its ray query | full scene: GS 224 -> 192 |
+| Surface emission via `evalEmissive` instead of a whole material instance (same value: only StandardMaterial emits, front faces only) | full scene: SR 224 -> 208, TR 247 -> 239 |
+| 8x8 thread groups instead of 16x16: at 128-224 registers, 256-thread groups leave most of the register file unused | estimator 101.0 -> 89.5 ms (16x16 101.0, 8x8 89.5, 8x4 92.4, 16x4 93.2, 32x2 108.0) |
+
+**Verified byte-identical** against captures from before the change: bistro raw, RELAX-SH and DLSS RR
+(300 frames each, compared to `rb_v9p_*`) and the plume scene (60 frames, old shaders vs new).
+
+After the fix, per pass, GPU ms (median; Falcor 4's profiler slows Falcor 4 itself, 113.7 ms
+profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column by share):
 
 | full scene       | 4.x           | 8.0           | 9.0           |
 |------------------|---------------|---------------|---------------|
-| Generate Samples | 12.35 (10.7%) | 27.45 (23.9%) | 27.03 (22.4%) |
-| Temporal Reuse   | 17.45 (15.1%) | 15.81 (13.8%) | 15.76 (13.1%) |
-| Spatial Reuse    | 75.02 (65.0%) | 61.78 (53.8%) | 63.54 (52.8%) |
-| Final Shading    | 8.16 (7.1%)   | 8.23 (7.2%)   | 12.59 (10.5%) |
+| Generate Samples | 12.30 (10.9%) | 27.20 (24.0%) | 20.07 (22.3%) |
+| Temporal Reuse   | 17.24 (15.3%) | 15.70 (13.8%) | 13.68 (15.2%) |
+| Spatial Reuse    | 74.27 (65.9%) | 60.94 (53.7%) | 46.67 (51.9%) |
+| Final Shading    | 6.53 (5.8%)   | 8.11 (7.1%)   | 8.02 (8.9%)   |
+| whole estimator  | 113.18        | 113.42        | **90.51**     |
 
 | volume only (no surfaces) | 4.x   | 8.0   | 9.0   |
 |---------------------------|-------|-------|-------|
-| Generate Samples          | 2.67  | 7.86  | 7.79  |
-| Temporal Reuse            | 4.07  | 5.26  | 5.25  |
-| Spatial Reuse             | 6.25  | 13.49 | 13.31 |
-| Final Shading             | 2.93  | 4.40  | 4.87  |
-| whole estimator           | 17.16 | 32.10 | 32.39 |
+| Generate Samples          | 2.68  | 7.36  | 4.89  |
+| Temporal Reuse            | 4.06  | 4.99  | 3.95  |
+| Spatial Reuse             | 6.35  | 12.42 | 8.11  |
+| Final Shading             | 2.97  | 4.04  | 3.88  |
+| whole estimator           | 17.31 | 29.87 | 21.99 |
 
 (`VR_NO_SURFACE=1` on the legacy script, `VR_USE_SURFACE=0` on the new one, one profiled run each.)
 
-* **The volume march costs ~1.9x on both new engines**: Generate Samples 2.9x, Spatial Reuse 2.2x,
-  with 8.0 = 9.0. So it came with the 8.0 port, not with 9.0.
-* **The surface work is cheaper on the new engines.** In the full scene Spatial Reuse drops from 65% to
-  54% of the estimator, which is why the full-scene gap (+10%) is much smaller than the volume-only one.
-* **Not the density atlas:** the port applies BC4 under the fork's exact condition
-  (`useTextureCompression`, SceneGVDB.cpp vs the fork's Scene.cpp, `ATLAS_COMPRESSION == 2`).
+* **Full scene, 9.0 now beats the fork** (-4% wall clock), because the new engines' surface work was
+  already cheaper (Spatial Reuse 65% of the fork's estimator, 52% of 9.0's).
+* **Volume only, it is still 1.27x the fork's** (22.0 vs 17.3 ms, the fork's number inflated by its
+  profiler). The rest is Generate Samples: 128 registers against the fork's 80, i.e. 2 groups per SM
+  where the fork fits 3. Not yet chased. Starting points are the other runtime-gated paths
+  (`noReuse`'s super-voxel sampler, the reference path's non-tracker code) and the per-sample
+  `SurfaceShadingData`.
+* 8.0 gets none of this; the fix is in this repository's shaders and pass, not in the engine.
+* **Nsight notes:** on a full-scene frame the pass ranges are misattributed unless GPU Trace runs
+  with `--hes-enabled 0`, and a legacy full-scene trace collects no counters at all. Volume-only
+  traces work for both.
 * **This does not reproduce "The residual is uniform" in the August section below.** Note for any
   re-run: Falcor 4's `tc.capturePassTime` looks events up by their full `#`-joined path
   (`#onFrameRender#RenderGraphExe::execute()#VolumetricReSTIR#Spatial Reuse`), and a bare pass name,
-  which is what `_time_raw_legacy.py` passed until today, silently records zeros.
-
-Open: what in the volume march costs twice as much. The next step is Generate Samples' kernel on both
-builds, side by side: DXIL, and Nsight now that GPU counters work.
+  which is what `_time_raw_legacy.py` passed until then, silently records zeros.
 
 Also found: legacy's `Bin/` had the Windows SDK's DXC 1.8 over the fork's own DXC 1.5, and every
 legacy shader failed to compile. See `legacy_build_notes.md`.
@@ -1956,6 +2015,12 @@ get a second medium; re-run the halo sweep at 4K to confirm the resolution scali
   because the volume-only path got faster. It was Slang 2025's fast-math default, which slowed only the
   surface path; swapping `slang.dll` alone proved it. After a Slang bump, count the `fast` and
   `dx.precise` flags in the cached DXIL before bisecting source. See "Performance" under the 9.0 port.
+* **Code that never runs still costs registers.** A runtime switch between trackers, a bounce path
+  capped at runtime, a material instance built for one field: none of it executed, yet all of it
+  sized the kernel's register allocation, and occupancy halved. When a pass is slow at unchanged
+  work, measure registers per thread first (Nsight: registers allocated / active warps / 32;
+  `outputs/legacy_cmp/regs_probe.sh`), then make the unused paths compile-time. See "Against the
+  Falcor 4.x fork" under the 9.0 port.
 
 ## Switches added, all default off
 

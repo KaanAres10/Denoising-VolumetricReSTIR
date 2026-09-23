@@ -9,9 +9,10 @@ import os
 import statistics as st
 import sys
 
-# argv[1] = directory prefix: "perf2" (the final build, after the precise-FP fix, 8.0 re-run in the same
-# session; default) or "perf" (the first measurement, 9.0 under Slang's default FP).
-PFX = sys.argv[1] if len(sys.argv) > 1 else "perf2"
+# argv[1] = directory prefix: "perf3" (after the register-pressure fix 7f40d30; default), "perf2" (after
+# the precise-FP fix, before 7f40d30) or "perf" (the first measurement, 9.0 under Slang's default FP).
+# Every set re-runs 8.0 in the same session.
+PFX = sys.argv[1] if len(sys.argv) > 1 else "perf3"
 
 CFGS = [("raw ReSTIR (+TAA)", "raw"), ("OptiX (+guides)", "optix"), ("RELAX-SH", "relax"),
         ("REBLUR-SH", "reblur"), ("DLSS Ray Reconstruction", "rr")]
