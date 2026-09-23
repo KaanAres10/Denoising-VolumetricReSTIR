@@ -28,7 +28,12 @@ Reservoir ComputeInitialSample(VolRay primaryRay, float precomputedHitDistance, 
 
     float primaryScatterDepth = 0;
 
-    for (; bounce < maxBounces; bounce++)
+    // Bounded by MAX_BOUNCES as well as the runtime maxBounces. The host keeps the define equal to
+    // gMaxBounces (VolumetricReSTIR.cpp), so this runs exactly the same iterations -- but with
+    // MAX_BOUNCES == 1 the compiler can now drop the bounce >= 1 path (FindSurfaceHit's ray query and a
+    // second distance sampler), which it had to keep live. Generate Samples on bistro: 224 -> 192
+    // registers/thread (Nsight). See STATE.md, "Against the Falcor 4.x fork".
+    for (; bounce < min(maxBounces, MAX_BOUNCES); bounce++)
     {
         outReservoir = createNewReservoir();
         outReservoir.M = 1;

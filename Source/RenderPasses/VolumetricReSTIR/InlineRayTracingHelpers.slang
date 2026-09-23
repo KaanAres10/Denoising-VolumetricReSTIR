@@ -153,13 +153,17 @@ SurfaceShadingData computeSurfaceShadingInfo(SurfaceHitInfo hitInfo, float3 view
     // the gap showed up as blur + temporal instability on SURFACES rather than in the smoke.
     sd.posW = computeScatterRayOrigin(sd.posW, sd.frontFacing ? sd.faceN : -sd.faceN);
 
-    let lod = ExplicitLodTextureSampler(0.f);
-    let mi = gScene.materials.getMaterialInstance(sd, lod, getSurfaceMaterialInstanceHints());
-
     r.sd = sd;
     r.posW = sd.posW;
     r.N = sd.frame.N;
-    r.emissive = mi.getProperties(sd).emission;
+    // Emission read directly rather than through getMaterialInstance(...).getProperties(sd).emission.
+    // Same value: of Falcor 9's materials only StandardMaterial emits, and its instance computes
+    // exactly this -- the emissive texture at sd.uv with the default sampler and LOD 0, times
+    // emissiveFactor, on the front face only. What it saves is building a whole material instance
+    // (every texture of the material sampled) just to read one field, whose live state raised
+    // register pressure in every pass that shades a surface hit.
+    r.emissive = (sd.frontFacing && sd.mtl.getMaterialType() == MaterialType::Standard)
+        ? gScene.materials.evalEmissive(materialID, sd.uv) : float3(0.f);
     return r;
 }
 

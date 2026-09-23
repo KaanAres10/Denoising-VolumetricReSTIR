@@ -92,7 +92,19 @@ void writeExtraBounceReservoirs(in Reservoir output, int outputStartId, int inpu
 }
 #endif
 
-[numthreads(16, 16, 1)]
+// Thread-group size. 8x8, not 16x16: these kernels need 128-224 registers per thread, and with
+// 256-thread groups the SM's 64K registers hold whole groups only -- at 192 registers that is one group,
+// 8 warps. 64-thread groups pack to the register limit instead (10 warps at 192). Measured on the
+// bistro raw estimator: 16x16 101.0 ms, 8x8 89.5, 8x4 92.4, 16x4 93.2, 32x2 108.0. Every thread's work
+// depends only on its pixel (no groupshared memory, group ids or wave ops), so this changes
+// occupancy, never results -- captures are byte-identical. VR_GROUP=WxH overrides it for an A/B.
+#ifndef VR_GROUP_X
+#define VR_GROUP_X 8
+#endif
+#ifndef VR_GROUP_Y
+#define VR_GROUP_Y 8
+#endif
+[numthreads(VR_GROUP_X, VR_GROUP_Y, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     StructuredBufferArrayDataProvider dataProvider;

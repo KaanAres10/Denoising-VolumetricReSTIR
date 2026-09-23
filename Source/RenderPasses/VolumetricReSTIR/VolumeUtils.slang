@@ -577,6 +577,24 @@ float computeGeneralPathSpaceVisibility(bool includeVolume, bool includeSurface,
 }
 #endif
 
+// Which transmittance trackers this program compiles: bit i = tracking method i
+// (HostDeviceSharedConstants.slang: 0 ratio, 1 analytic, 2 ray marching, 3 residual ratio, 4 analog
+// residual ratio). VolumetricReSTIR.cpp sets it per pass from the sampling options bound to that pass,
+// and re-sets it (recompiling) whenever those options change, so every method a pass can select at
+// runtime is always present. Unset = all of them, the previous behaviour.
+//
+// Why it exists: the method is a runtime value, so without this every kernel carries all three trackers,
+// and the registers are allocated for the worst of them whether or not it runs. On Falcor 8/9's Slang
+// that cost Generate Samples 200 registers/thread instead of 128, and Spatial Reuse 232 instead of 128,
+// halving their occupancy (Nsight, bistro volume-only; the 4.x fork compiled the same source to 80 and
+// 128). See STATE.md, "Against the Falcor 4.x fork".
+#ifndef VR_TRACKING_MASK
+#define VR_TRACKING_MASK 31
+#endif
+#define VR_COMPILES_RATIO_TRACKERS ((VR_TRACKING_MASK & 25) != 0) // bits 0, 3, 4
+#define VR_COMPILES_ANALYTIC_TRACKER ((VR_TRACKING_MASK & 2) != 0) // bit 1
+#define VR_COMPILES_RAY_MARCHING ((VR_TRACKING_MASK & 4) != 0) // bit 2
+
 // Reduce the number of cases to speed up shader compilation
 float computeVisibility(VolRay ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f)
 {
@@ -584,13 +602,22 @@ float computeVisibility(VolRay ray, inout SampleGenerator sg, int visibilitySamp
 
     for (int i = 0; i < visibilitySamples; i++)
     {
+#if VR_COMPILES_RATIO_TRACKERS
         if (trackingMethod == kRatioTracking || trackingMethod == kResidualRatioTracking || trackingMethod == kAnalogResidualRatioTracking)
             visibility += MediumTrResidualRatioTrackingGeneric(ray, mipLevel, sg, trackingMethod == kAnalogResidualRatioTracking, trackingMethod == kRatioTracking);
         else
+#endif
+#if VR_COMPILES_RAY_MARCHING
         if (trackingMethod == kRayMarching)
             visibility += MediumTrRayMarchingGeneric(ray, mipLevel, useLinearSampler, tStepScale, sg);
-        else if (trackingMethod == kAnalyticTracking)
+        else
+#endif
+#if VR_COMPILES_ANALYTIC_TRACKER
+        if (trackingMethod == kAnalyticTracking)
             visibility += MediumTrAnalyticGeneric(ray, mipLevel, sg, useLinearSampler);
+        else
+#endif
+        {}
     }
 
     visibility /= visibilitySamples;

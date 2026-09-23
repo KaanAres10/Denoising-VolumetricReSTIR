@@ -773,6 +773,47 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
     mParams.mFinalTStepScale,
     mParams.mUseEnvironmentLights, mParams.mUseAnalyticLights, mParams.mUseEmissiveLights, mParams.mVertexReuseStartBounce };
 
+    // Compile into each pass only the transmittance trackers its sampling options can select
+    // (VR_TRACKING_MASK, see computeVisibility in VolumeUtils.slang). addDefine only recompiles when a
+    // mask actually changes, i.e. when a tracking method is switched in the UI or reference mode toggles.
+    // The reference path tracer (VolumePathTracingFunctions, in TraceRays) passes the ratio trackers as
+    // literals, so they stay compiled in while reference mode is on.
+    //
+    // TraceRays gets the methods its call sites actually read: the INITIAL LIGHTING method
+    // (ComputeInitialSample -> SampleDirectLighting) and both SPATIAL methods (evaluate_P_hat with
+    // gSpatialSamplingOptions). It never reads the initial VISIBILITY method (kAnalyticTracking, which
+    // is only GenerateFeatures'), and leaving that out is what takes Generate Samples from 200 to 128
+    // registers. If a TraceRays call site ever starts reading it, add it here.
+    {
+        const auto bit = [](uint32_t method) { return 1u << method; };
+        const uint32_t initialMask = bit(initialOptions.visibilityTrackingMethod) | bit(initialOptions.lightingTrackingMethod);
+        const uint32_t spatialMask = bit(spatialOptions.visibilityTrackingMethod) | bit(spatialOptions.lightingTrackingMethod);
+        const uint32_t finalMask = bit(finalOptions.visibilityTrackingMethod) | bit(finalOptions.lightingTrackingMethod);
+        const uint32_t referenceMask = mParams.mUseReference ? (bit(kRatioTracking) | bit(kResidualRatioTracking)) : 0u;
+        const auto setMask = [](const ref<ComputePass>& pass, uint32_t mask) {
+            if (pass) pass->getProgram()->addDefine("VR_TRACKING_MASK", std::to_string(mask));
+        };
+        setMask(mGenerateFeaturePass, initialMask);
+        setMask(mpTraceRaysPass, bit(initialOptions.lightingTrackingMethod) | spatialMask | referenceMask);
+        setMask(mTemporalReusePass, spatialMask);
+        setMask(mSpatialReusePass, spatialMask);
+        setMask(mFinalShadingPass, finalMask);
+
+        // Thread-group size of the four big kernels: 8x8 by default (see the comment at their
+        // [numthreads]); VR_GROUP=WxH overrides it for an A/B, e.g. VR_GROUP=16x16 for the old layout.
+        static const char* kGroupOverride = std::getenv("VR_GROUP");
+        unsigned groupX = 0, groupY = 0;
+        if (kGroupOverride && std::sscanf(kGroupOverride, "%ux%u", &groupX, &groupY) == 2)
+        {
+            for (const auto& pass : {mpTraceRaysPass, mTemporalReusePass, mSpatialReusePass, mFinalShadingPass})
+            {
+                if (!pass) continue;
+                pass->getProgram()->addDefine("VR_GROUP_X", std::to_string(groupX));
+                pass->getProgram()->addDefine("VR_GROUP_Y", std::to_string(groupY));
+            }
+        }
+    }
+
     // Generate Feature Map. Also the producer of the DLSS guide buffers, so it must still run when
     // those are requested even if the frame is otherwise frozen (a stale depth/mvec would desync
     // the upscaler's history).
