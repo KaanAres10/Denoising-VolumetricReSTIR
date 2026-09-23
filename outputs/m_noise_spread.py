@@ -12,6 +12,10 @@
 import contextlib
 import io
 import math
+import sys
+
+# argv[1] = which 9.0 build: "v9uv" (Slang default FP, before b6628b4) or "v9p" (precise FP, final).
+V9 = sys.argv[1] if len(sys.argv) > 1 else "v9uv"
 
 src = open("m_denoisers.py", encoding="utf-8").read().splitlines()
 exec("\n".join(src[:22]))  # load() and row() exactly as m_denoisers.py defines them
@@ -44,7 +48,7 @@ print("%-24s %-9s %8s %8s %11s %11s %20s  %s" % ("", "metric", "8.0", "9.0", "sp
                                                  "change [95% CI]", "verdict"), flush=True)
 for label, cfg in CFGS:
     a = [vals(d) for d in dirs("v8", cfg)]
-    b = [vals(d) for d in dirs("v9uv", cfg)]
+    b = [vals(d) for d in dirs(V9, cfg)]
     for j, met in enumerate(METRICS):
         xa, xb = [r[j] for r in a], [r[j] for r in b]
         ma, va = stats(xa)

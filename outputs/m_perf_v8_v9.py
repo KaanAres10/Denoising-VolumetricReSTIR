@@ -7,13 +7,18 @@ import csv
 import json
 import os
 import statistics as st
+import sys
+
+# argv[1] = directory prefix: "perf" (first measurement, 9.0 with Slang's default FP) or
+# "perf2" (after the precise-FP fix, 8.0 re-run in the same session).
+PFX = sys.argv[1] if len(sys.argv) > 1 else "perf"
 
 CFGS = [("raw ReSTIR (+TAA)", "raw"), ("OptiX (+guides)", "optix"), ("RELAX-SH", "relax"),
         ("REBLUR-SH", "reblur"), ("DLSS Ray Reconstruction", "rr")]
 
 
 def frame_ms(eng, cfg, rep):
-    p = os.path.join("perf_%s_%s_r%d" % (eng, cfg, rep), "%s_frame_times.csv" % cfg)
+    p = os.path.join("%s_%s_%s_r%d" % (PFX, eng, cfg, rep), "%s_frame_times.csv" % cfg)
     if not os.path.exists(p):
         return None
     with open(p) as fh:
@@ -39,7 +44,7 @@ for label, cfg in CFGS:
 
 
 def lanes(eng, cfg):
-    p = os.path.join("perfpass_%s_%s" % (eng, cfg), "%s_pass_times.json" % cfg)
+    p = os.path.join("%s_%s_%s" % (PFX.replace("perf", "perfpass"), eng, cfg), "%s_pass_times.json" % cfg)
     if not os.path.exists(p):
         return {}
     return {k: v for k, v in json.load(open(p))["lanes"].items() if k.endswith("/gpu_time")}
