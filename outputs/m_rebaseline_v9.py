@@ -5,9 +5,12 @@
 # Scripts/capture_orbit.py. The 8.0 column comes from the preserved 8.0 binary, re-run with today's
 # scripts -- NOT copied from STATE.md, whose table predates later script and guide changes.
 #
-# The 9.0 column is rb_v9uv_*: 9.0 with every port fix in -- NRDPass no longer re-applies the 8.0-era
-# matrix transpose, and VolumeUtils.slang inverts 9.0's new TriangleLightSample.uv so reused emissive
-# samples are regenerated at the point that was sampled. Earlier 9.0 runs are kept as the evidence:
+# The 9.0 column is rb_v9p_*: the final 9.0 build, with every port fix in -- NRDPass no longer
+# re-applies the 8.0-era matrix transpose, VolumeUtils.slang inverts 9.0's new TriangleLightSample.uv so
+# reused emissive samples are regenerated at the point that was sampled, and the estimator is compiled
+# with precise floating point (b6628b4, the performance fix). Earlier 9.0 runs are kept as the evidence:
+#   rb_v9uv_*             the same fixes under Slang 2025's default (fast-math) FP; every metric within
+#                         0.01 of rb_v9p_*, so the FP mode moved speed, not quality
 #   rb_v9_*               before both fixes (rb_v9_relax / rb_v9_reblur are double-transposed)
 #   rb_v9fix_relax/reblur matrix fix only
 #   rb_v9_rr              the capture whose clock stalled at file 299; rb_v9_rr_rerun is its clean re-run
@@ -18,11 +21,11 @@ import io
 src = open("m_denoisers.py", encoding="utf-8").read().splitlines()
 exec("\n".join(src[:22]))  # load() and row() exactly as m_denoisers.py defines them
 
-ROWS = [("raw ReSTIR (+TAA)", "rb_v8_raw", "rb_v9uv_raw"),
-        ("OptiX (+guides)", "rb_v8_optix", "rb_v9uv_optix"),
-        ("RELAX-SH", "rb_v8_relax", "rb_v9uv_relax"),
-        ("REBLUR-SH", "rb_v8_reblur", "rb_v9uv_reblur"),
-        ("DLSS Ray Reconstruction", "rb_v8_rr", "rb_v9uv_rr")]
+ROWS = [("raw ReSTIR (+TAA)", "rb_v8_raw", "rb_v9p_raw"),
+        ("OptiX (+guides)", "rb_v8_optix", "rb_v9p_optix"),
+        ("RELAX-SH", "rb_v8_relax", "rb_v9p_relax"),
+        ("REBLUR-SH", "rb_v8_reblur", "rb_v9p_reblur"),
+        ("DLSS Ray Reconstruction", "rb_v8_rr", "rb_v9p_rr")]
 # The same configurations before the lightUV fix, for the brightness comparison below.
 BEFORE_UV = {"raw ReSTIR (+TAA)": "rb_v9_raw", "OptiX (+guides)": "rb_v9_optix",
              "RELAX-SH": "rb_v9fix_relax", "REBLUR-SH": "rb_v9fix_reblur",

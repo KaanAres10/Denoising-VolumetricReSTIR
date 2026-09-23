@@ -25,15 +25,18 @@ Scored with `outputs/m_rebaseline_v9.py`, which reuses `m_denoisers.py`'s metric
 
 |                          | s=32 8.0 → 9.0 | plume 8.0 → 9.0 | surfaces 8.0 → 9.0 | detail 8.0 → 9.0 |
 |--------------------------|----------------|-----------------|--------------------|------------------|
-| raw ReSTIR (+ TAA)       | 9.25 → 9.23    | 13.87 → 13.83   | 27.43 → 27.44      | 0.0910 → 0.0910  |
-| OptiX (+ guides)         | 10.81 → **10.52** | 17.48 → **16.91** | 28.69 → 28.53   | 0.0638 → **0.0673** |
-| RELAX-SH                 | 9.27 → 9.30    | 13.59 → 13.63   | 27.15 → 27.22      | 0.0640 → 0.0640  |
-| REBLUR-SH                | 9.32 → 9.40    | 13.55 → 13.64   | 26.90 → 26.99      | 0.0637 → 0.0637  |
-| DLSS Ray Reconstruction  | 8.75 → 8.75    | 13.77 → 13.80   | 26.51 → 26.49      | 0.0651 → 0.0652  |
+| raw ReSTIR (+ TAA)       | 9.25 → 9.23    | 13.87 → 13.82   | 27.43 → 27.43      | 0.0910 → 0.0910  |
+| OptiX (+ guides)         | 10.81 → **10.52** | 17.48 → **16.92** | 28.69 → 28.53   | 0.0638 → **0.0673** |
+| RELAX-SH                 | 9.27 → 9.30    | 13.59 → 13.63   | 27.15 → 27.21      | 0.0640 → 0.0640  |
+| REBLUR-SH                | 9.32 → 9.40    | 13.55 → 13.63   | 26.90 → 26.99      | 0.0637 → 0.0637  |
+| DLSS Ray Reconstruction  | 8.75 → 8.75    | 13.77 → 13.81   | 26.51 → 26.48      | 0.0651 → 0.0652  |
 
-9.0 here is `rb_v9uv_*`, with every port fix below applied. Raw and RR match 8.0 to 0.3%, RELAX and
+9.0 here is `rb_v9p_*`, the final build: every port fix below applied, and the estimator compiled with
+precise floating point (the performance fix further down). Raw and RR match 8.0 to 0.4%, RELAX and
 REBLUR to under 1%, and the ranking is the same in every column. OptiX is the one real change, and it
-is an improvement: plume 3.3% more stable, 5.5% more detail.
+is an improvement: plume 3.2% more stable, 5.5% more detail. The same build under Slang 2025's
+default (fast-math) floating point, `rb_v9uv_*`, scores within 0.01 of this on every metric: the
+floating-point mode changed the speed, not the image quality.
 
 **A 1% darker render, from a Falcor API whose meaning changed -- FIXED.** Before this fix every
 configuration rendered 0.93-1.33% darker on 9.0, in the renderer itself (raw showed it; the tone
@@ -134,47 +137,98 @@ seeds cannot resolve.
   (`DLSSPass: Input 'depth' has mismatching size`), and "Bistro RR: Ultra Quality"
   (NGX `NVSDK_NGX_Result_FAIL_UnsupportedParameter`).
 
-### Performance: 9.0 is ~25% slower, all of it in surface material shading (2026-09-23)
+### Performance: the ~25% slowdown was Slang 2025's fast-math default -- FIXED, 9.0 matches 8.0 (2026-09-23)
 
-Wall clock, bistro orbit 1080p, 300 frames, 2 interleaved reps (`outputs/m_perf_v8_v9.py`):
+Wall clock per frame, bistro orbit 1080p, 300 frames, 2 interleaved reps per engine
+(`outputs/m_perf_v8_v9.py perf2`; the "before" column is `m_perf_v8_v9.py perf`, a different session,
+so compare its percentages rather than its milliseconds):
 
-|                   | 8.0 ms | 9.0 ms | change |
-|-------------------|--------|--------|--------|
-| raw ReSTIR (+TAA) | 131.4  | 164.6  | +25%   |
-| OptiX (+guides)   | 163.3  | 198.3  | +21%   |
-| RELAX-SH          | 140.5  | 170.1  | +21%   |
-| REBLUR-SH         | 137.3  | 170.8  | +24%   |
-| DLSS RR           | 141.6  | 172.4  | +22%   |
+|                   | 8.0 ms | 9.0 ms | change | 9.0 before the fix |
+|-------------------|--------|--------|--------|--------------------|
+| raw ReSTIR (+TAA) | 125.0  | 126.8  | +1.4%  | +25%               |
+| OptiX (+guides)   | 157.8  | 153.5  | -2.8%  | +21%               |
+| RELAX-SH          | 142.3  | 145.2  | +2.1%  | +21%               |
+| REBLUR-SH         | 136.3  | 135.9  | -0.3%  | +24%               |
+| DLSS RR           | 139.2  | 138.1  | -0.8%  | +22%               |
 
-Rep-to-rep spread is ~1-3 ms (OptiX 9.0: 193.5/203.1), so the ~30 ms is not noise. Per-pass GPU time
-puts ALL of it inside VolumetricReSTIR: every denoiser, the G-buffer and the guide passes are within
-a few percent on both engines. 9.0 also drops the 4-5 ms/frame `EmissivePowerSampler::update` (it no
-longer rebuilds the power table every frame), so the estimator's own shaders are slower by more than
-the total shows.
+Every change is inside the rep-to-rep spread (8.0 alone: OptiX 151.8 / 163.8, RELAX 145.1 / 139.5).
+**For a fixed-compute-budget comparison the two engines are now interchangeable.**
 
-Attributed by switching paths off (`VR_USE_SURFACE` / `VR_USE_EMISSIVE`, new in vr_graph.py;
-`outputs/m_perf_attrib.py`), estimator GPU ms 8.0 -> 9.0:
+**Cause: the compiler, not the materials.** Falcor 9.0 ships Slang 2025.13.2, whose DEFAULT
+floating-point mode emits fast-math DXIL: in the largest estimator kernel every float op is flagged
+`fast` and none is `dx.precise`. Slang 2024.1.34 (Falcor 8.0) compiled the same source with 10 `fast`
+ops out of 14,851 and 4,869 `dx.precise` markers -- effectively precise. Same source, same DXC
+1.7.2207. The estimator is ~20% slower as fast math (short raw config, interleaved: 8.0 123.3 /
+123.8 ms, 9.0 147.4 / 151.7). Proven three ways:
 
-|                  | full bistro  | volume only   | no emissive   | plume scene  |
-|------------------|--------------|---------------|---------------|--------------|
-| whole estimator  | 127.9 -> 165.1 | 35.4 -> 32.1 | 15.2 -> 19.6 | 25.7 -> 24.7 |
-| Spatial Reuse    | +42%         | +4%           | +2%           | -3%          |
-| Generate Samples | +20%         | +3%           | +42%          | -4%          |
-| Final Shading    | +49%         | -1%           | +22%          | -6%          |
+* the 8.0 engine, with 8.0's own shaders and gfx.dll, slows to 9.0's speed when only `slang.dll` is
+  swapped for 9.0's;
+* apart from the float flags, the two compilers' DXIL for the largest kernel differs by 1.9% in
+  instruction count (48,140 vs 49,070) and not at all in allocas (176 in both, the same largest array);
+* compiling with PRECISE brings 9.0 to 123.2 / 123.2 ms. Slang 2025's PRECISE output matches Slang
+  2024's default almost exactly: 4,899 vs 4,869 `dx.precise`, the same 2,913 fused mads.
 
-* **Not the compiler, and not this project's volume code**: volume-only is FASTER on 9.0, every
-  volume stage within +-4%. The 4.x -> 8.0 slowdown above WAS uniform codegen; this one is not.
-* **It needs surfaces**: surfaces with no emissive lights already cost +4 ms in Generate Samples; with
-  emissive lights, Spatial Reuse (light evaluation at surface points) grows by 28 ms. Emissive light
-  evaluated at VOLUME points does not slow down.
-* Ruled out by reading the code: compile settings (identical except matrix layout), Falcor's ray
-  queries and the new `rtAccelPrev` branch (this pass runs its own `RayQuery` on `gScene.rtAccel`),
-  alpha testing (not called in these loops), `ExplicitLodTextureSampler` (unchanged).
-* **What is left is 9.0's standard-material shading** -- StandardMaterial / StandardBSDF /
-  shading-frame / material data, reworked across ~60 files for ReSTIR PT (component-indexed BSDFs,
-  extended `IMaterialInstance`). Naming the line needs a file-by-file bisection through changed
-  interfaces. **For this project's question -- denoising vs sampling under a FIXED compute budget --
-  it matters: on 9.0 the same sample count costs ~25% more on a surface-heavy scene.**
+Fix: `applyEstimatorCompilerFlags()` in `VolumetricReSTIR/Utils.cpp` sets
+`FloatingPointModePrecise` on every program the pass creates. `VR_FP_MODE=fast|default` restores
+the other modes for an A/B.
+
+**Why the first attribution blamed materials, and what not to repeat.** The earlier version of this
+section localised the slowdown to 9.0's standard-material shading. It did so by switching paths off
+(`VR_USE_SURFACE` / `VR_USE_EMISSIVE`, `outputs/m_perf_attrib.py`): volume-only was 35.4 -> 32.1 ms,
+faster on 9.0, and full bistro was 127.9 -> 165.1. That test shows WHERE the codegen change hurts: the
+surface + emissive path is slower under fast math, while the volume path is slightly faster. It does
+not show WHY. "Volume-only is faster, so it is not the compiler" was the wrong inference: a compiler
+change does not have to slow every path. The `slang.dll` swap settled it. After any Slang bump, count
+the `fast` and `dx.precise` flags in the cached DXIL before bisecting source.
+
+Per pass after the fix (GPU ms, median, raw; `perfpass2_*`), 8.0 -> 9.0:
+
+| pass                          | 8.0   | 9.0   |
+|-------------------------------|-------|-------|
+| Spatial Reuse                 | 64.1  | 63.7  |
+| Generate Samples              | 30.1  | 27.1  |
+| Temporal Reuse                | 16.7  | 15.8  |
+| Final Shading                 | 8.4   | 12.7  |
+| EmissivePowerSampler::update  | 4.8   | --    |
+| whole estimator               | 126.9 | 121.0 |
+
+9.0 no longer rebuilds the emissive power table every frame, which saves 4.3-5.0 ms. That saving is
+what cancels the one pass that is still slower:
+
+**OPEN: Final Shading is +50% on 9.0 (8.4 -> 12.7 ms, in every configuration).** Net-neutral for the
+frame, but unexplained. What is established (short raw config; each edit applied to BOTH engines'
+shaders and run interleaved, one rep each):
+
+| Final Shading, ms               | 8.0  | 9.0   |
+|---------------------------------|------|-------|
+| as shipped                      | 8.45 | 13.3  |
+| without `evaluate_F`            | 0.27 | 0.30  |
+| without volume transmittance    | 1.56 | 1.60  |
+| no surface occlusion test       | 7.68 | 11.81 |
+| its rays forced opaque          | 8.45 | 13.27 |
+| non-opaque geometry culled      | 9.86 | 9.79  |
+
+("Forced opaque" adds `RAY_FLAG_FORCE_OPAQUE` to every ray that does not already cull non-opaque
+geometry, which is final shading's. "Culled" makes every occlusion ray cull non-opaque geometry.)
+
+* **It is the ratio-tracked volume transmittance of final shading's rays.** Take that out and the
+  pass is level. Surface ray queries are not it: with no occlusion test the gap stays.
+* **Not the floating-point mode.** 9.0's Final Shading is 12.5 ms under fast math and 13.3 under
+  precise; neither reaches 8.4. Slang 2024's default was not uniform either: 8.0's Final Shading
+  kernel is 72% `fast` ops (3,590 of 4,975), while its large kernels are effectively all precise.
+* **Hardly a codegen difference either, at the DXIL level:** +2.5% instructions, +149 phi, +49
+  branches, the same 84 texture samples and 7 ray queries.
+* The one edit that closed the gap, culling non-opaque geometry, is not understood. Letting
+  foliage stop occluding should ADD transmittance work, and on 8.0 it did: Final Shading went up, and
+  so did every other estimator pass (+6-11%; some of their rays use the non-culling default too). On
+  9.0 the same edit left the other passes within 2% and brought Final Shading DOWN. One rep, so repeat it before reading
+  anything into it. If it holds, the two engines disagree about which geometry is non-opaque, or
+  about what a non-opaque candidate costs, even though forcing everything opaque changes nothing.
+
+The remaining suspect is what the driver makes of the DXIL (register allocation, and so occupancy),
+which the DXIL cannot show. Nsight GPU Trace would, but on this machine it still fails with "GPU
+Performance Counters unavailable", even with `RmProfilingAdminOnly = 0` and after a reboot.
+`outputs/gputrace_v8_v9.ps1 v8|v9 <dir>` is the one-frame trace to run once counters work.
 
 ## SOLVED: REBLUR's medium was transparent under motion
 
@@ -1825,6 +1879,10 @@ get a second medium; re-run the halo sweep at 4K to confirm the resolution scali
   volumetric demodulation (-10.7% detail), selection-rate normalisation (turned a 17% shortfall into
   a 58% excess), and "AA is the RR gap" (TAA closed the flicker but at 11x the blur). The mechanism
   being sound says nothing about the effect.
+* **A compiler change does not have to slow every path.** The 9.0 slowdown was blamed on materials
+  because the volume-only path got faster. It was Slang 2025's fast-math default, which slowed only the
+  surface path; swapping `slang.dll` alone proved it. After a Slang bump, count the `fast` and
+  `dx.precise` flags in the cached DXIL before bisecting source. See "Performance" under the 9.0 port.
 
 ## Switches added, all default off
 
