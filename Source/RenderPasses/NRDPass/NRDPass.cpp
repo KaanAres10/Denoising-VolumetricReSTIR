@@ -1857,12 +1857,21 @@ void NRDPass::createPipelines()
             // silently compile with no signal selected.
             defines.add("NRD_INTERNAL");
 
-            // Matrix layout. On Falcor 8.0 (Slang 2024.1.34) NRD's float4x4 constants reached the
-            // shaders TRANSPOSED, so build_scripts/patch_nrd_matrix_layout.py rewrote the headers to
-            // read transpose(<name>_raw), with NRD_RAW_MATRICES selecting the untransposed read.
+            // Matrix layout. On Falcor 8.0 NRD's float4x4 constants reached the shaders TRANSPOSED, so
+            // build_scripts/patch_nrd_matrix_layout.py rewrote the headers to read
+            // transpose(<name>_raw), with NRD_RAW_MATRICES selecting the untransposed read.
             //
-            // [9.0] Slang 2025.13.2 delivers them CORRECTLY, so that transpose now applies a second
-            // time and reintroduces the very bug it was written to fix. Measured on the bistro orbit,
+            // Why they were transposed, now known: this pass has always compiled NRD with
+            // SlangCompilerFlags::MatrixLayoutColumnMajor (below) -- the layout NRD documents -- but
+            // Falcor 8.0's ProgramManager passed the layout as a CompilerOptionEntry, which Slang
+            // ignores. That is why the flag measured INERT below: it never reached the compiler, so
+            // NRD's column-major data was read in the default layout. Falcor 9.0 sets it through
+            // sessionDesc.defaultMatrixLayoutMode instead (its ProgramManager.cpp even carries the TODO
+            // "Controlling matrix layout using options doesn't work. Slang seems to ignore them"), so on
+            // 9.0 the flag takes effect for the first time and the matrices arrive CORRECTLY.
+            //
+            // [9.0] The transpose therefore applies a second time and reintroduces the very bug it was
+            // written to fix. Measured on the bistro orbit,
             // RELAX-SH, 300 frames (plume / surfaces / detail):
             //     8.0 transpose on   13.59  27.15  0.0640     8.0 untransposed   14.56  26.12  0.0629
             //     9.0 transpose on   14.58  26.33  0.0629     9.0 untransposed   13.61  27.40  0.0640
@@ -1873,8 +1882,9 @@ void NRDPass::createPipelines()
             // So the default is now the untransposed read. NRD4_TRANSPOSE_MATRICES=1 re-applies the
             // 8.0-era transpose, which on this engine is the fault, so the A/B can still be shown side
             // by side instead of taken on trust. NRD4_RAW_MATRICES is now the default and is ignored.
-            // If a later Slang flips the packing back, this is the one line to revisit -- and the swap
-            // above is the test that tells you.
+            // If the layout plumbing changes again (or MatrixLayoutColumnMajor is dropped below, which
+            // NRD4_ROWMAJOR=1 does), this is the one line to revisit -- and the swap above is the test
+            // that tells you.
             static const bool transposeMatrices = []
             { const char* v = std::getenv("NRD4_TRANSPOSE_MATRICES"); return v && std::strtol(v, nullptr, 10) != 0; }();
             if (!transposeMatrices)
@@ -1947,6 +1957,12 @@ void NRDPass::createPipelines()
             // how these programs read their matrices at all, which makes the packing question
             // UNTESTED rather than answered -- do not record it as ruled out. Kept, switched off, so
             // the next attempt does not rebuild it and reach the same dead end.
+            //
+            // [9.0] NO LONGER INERT. Falcor 8.0 dropped the layout on the floor (see the matrix-layout
+            // note above, where NRD_RAW_MATRICES is chosen); Falcor 9.0 applies it, so this
+            // column-major flag is what now makes NRD read its matrices correctly. The packing
+            // question is answered: column-major, as NRD documents. NRD4_ROWMAJOR=1 on 9.0 therefore
+            // reproduces the transposed-matrix fault.
             static const bool rowMajor = []
             { const char* v = std::getenv("NRD4_ROWMAJOR"); return v && std::strtol(v, nullptr, 10) != 0; }();
             if (!rowMajor)

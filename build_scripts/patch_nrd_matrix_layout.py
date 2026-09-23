@@ -29,10 +29,12 @@ interpretation changes, and no call site needs touching.
 
 Defining NRD_RAW_MATRICES at compile time selects the untransposed read instead.
 
-[Falcor 9.0] Which branch is CORRECT depends on the Slang version, not on this script. Slang
-2024.1.34 (Falcor 8.0) transposed the matrices, so the transpose branch was the fix. Slang 2025.13.2
-(Falcor 9.0) delivers them correctly, so NRDPass now defines NRD_RAW_MATRICES by default and the
-transpose branch is the FAULT; NRD4_TRANSPOSE_MATRICES=1 selects it for an A/B. The generated header
+[Falcor 9.0] Which branch is CORRECT depends on whether NRDPass's MatrixLayoutColumnMajor flag
+reaches the compiler, not on this script. Falcor 8.0 passed the matrix layout as a compiler option
+that Slang ignores, so NRD's column-major data was read transposed and the transpose branch was the
+fix. Falcor 9.0 sets the layout through the Slang session, where it takes effect, so the matrices
+arrive correctly: NRDPass now defines NRD_RAW_MATRICES by default and the transpose branch is the
+FAULT; NRD4_TRANSPOSE_MATRICES=1 selects it for an A/B. The generated header
 comment below still calls the untransposed read "the old, broken behaviour" -- it is stamped once and
 never rewritten (see the marker check), so trust NRDPass.cpp over it. The patch is still worth
 applying: it keeps both reads available behind one define, which is what makes the A/B possible.
