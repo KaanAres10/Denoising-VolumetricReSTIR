@@ -355,6 +355,13 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
         "coverageKnee": env_float("VR_NRD_COVKNEE", 0.2),
         "mParams": dict(scene.get("params", {})),
     }
+    # Switch whole light/geometry paths off without editing a loader, for attributing COST: e.g.
+    # VR_USE_SURFACE=0 gives a volume-only frame (the "nosurface" runs used to need a hand edit).
+    # Only applied when set, so every existing script and measurement is unchanged.
+    for _key, _var in (("mUseSurfaceScene", "VR_USE_SURFACE"), ("mUseEmissiveLights", "VR_USE_EMISSIVE"),
+                       ("mUseEnvironmentLights", "VR_USE_ENVLIGHT")):
+        if os.environ.get(_var) is not None:
+            props["mParams"][_key] = env_bool(_var, True)
     # The reference is brute-force path tracing: no reuse, accumulated over thousands of frames.
     props["mParams"].update({
         "mUseReference": bool(reference),

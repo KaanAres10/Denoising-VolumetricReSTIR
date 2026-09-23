@@ -81,13 +81,20 @@ difference is the engine. That is also what made the two faults below findable.
 
 **Two false regressions came first, and both would have gone into this file on metrics alone:**
 
-* **RELAX -7% in the plume was the matrix fix, applied twice.** Slang 2025.13.2 delivers NRD's
-  matrices correctly, so `patch_nrd_matrix_layout.py`'s transpose -- the fix on 8.0 -- is the bug on
-  9.0. The A/B rows swap across the diagonal (8.0 fixed ≈ 9.0 untransposed, 8.0 untransposed ≈ 9.0
-  fixed), and on the pixels 9.0-untransposed is closer to 8.0-fixed than 9.0-as-shipped is. NRDPass
-  now reads the matrices untransposed by default; `NRD4_TRANSPOSE_MATRICES=1` is the fault for an A/B,
-  and `NRD4_RAW_MATRICES` has no effect any more. **The correct read depends on the Slang version**,
-  so re-run this A/B after any Slang bump.
+* **RELAX -7% in the plume was the matrix fix, applied twice.** On 9.0 NRD's matrices arrive
+  correctly, so `patch_nrd_matrix_layout.py`'s transpose -- the fix on 8.0 -- is the bug on 9.0. The
+  A/B rows swap across the diagonal (8.0 fixed ≈ 9.0 untransposed, 8.0 untransposed ≈ 9.0 fixed), and
+  on the pixels 9.0-untransposed is closer to 8.0-fixed than 9.0-as-shipped is. NRDPass now reads the
+  matrices untransposed by default; `NRD4_TRANSPOSE_MATRICES=1` is the fault for an A/B, and
+  `NRD4_RAW_MATRICES` has no effect any more.
+  **Root cause, which also answers "the packing question is UNTESTED" further down:** NRDPass has always
+  compiled NRD with `MatrixLayoutColumnMajor`, the layout NRD documents. Falcor 8.0's `ProgramManager`
+  passed the layout as a `CompilerOptionEntry`, which Slang ignores -- hence that flag measured INERT
+  (byte-identical output) on 8.0, and NRD's column-major data was read transposed. Falcor 9.0 sets it
+  through `sessionDesc.defaultMatrixLayoutMode` (its source carries the TODO "Controlling matrix layout
+  using options doesn't work. Slang seems to ignore them"), so on 9.0 the flag takes effect for the
+  first time. The packing answer is column-major. Re-run this A/B if the layout plumbing changes again;
+  `NRD4_ROWMAJOR=1` on 9.0 now reproduces the fault.
 * **RR +10% on s=32 was one run whose capture clock stalled.** 96% of the excess sat in 8 frames; the
   frames showed the camera jumping to the final pose at file 299 and parking. A re-run was
   byte-identical through 298 and clean after, scoring within 0.6% of 8.0. `capture_orbit.py` now writes
@@ -95,6 +102,79 @@ difference is the engine. That is also what made the two faults below findable.
 
 Also from the port: `libprotoc.dll` / `z.dll` vanished from `bin/Release` twice more, once while no
 build touched them. The harness traps below still apply; check for them before a batch.
+
+### Is a sub-1% difference real? Noise spread over 4 seeds (2026-09-23)
+
+The table above is one random-number stream per engine. Each configuration was re-rendered with 3
+more seeds on each engine -- the seed is the warm-up length (`VR_WARM` 30..33): the generator is
+seeded by the frame counter, which keeps counting through the warm-up, while capture_orbit places the
+camera by loop index, so poses are identical. Bistro's volume is one static frame and the camera is
+detached, so nothing else moves. `outputs/m_noise_spread.py`, 95% CI from Welch's t, n = 4 each.
+
+**One run's seed-to-seed spread is 0.1-0.6% on these metrics.** Against that, every raw, RELAX,
+REBLUR and RR change is noise (REBLUR's single-seed +0.9% plume: +0.80%, CI -0.02..+1.62), except
+RELAX's plume +0.76% (CI +0.05..+1.47) -- borderline, and about one false positive is expected in
+20 tests. **OptiX's gain is real on all four metrics** (s=32 -2.94%, plume -2.91%, surfaces -0.56%,
+detail +5.44%). One pattern worth knowing: the plume column moved UP for raw, RELAX, REBLUR and RR
+alike (+0.4..+0.8%); each is within noise, together they hint at a ~0.5% shared plume effect that 4
+seeds cannot resolve.
+
+### Every scene, switch and VS Code task (2026-09-23)
+
+* **Fork audit (static):** of 162 files the 8.0 fork changed vs stock 8.0, 149 carry every added line
+  into 9.0 and the other 13 differ only by the port's deliberate changes. Deployed files: nothing in the
+  8.0 `bin/Release` is missing from 9.0's except regenerated shader-cache entries. 39/39 plugins. GVDB
+  hooks still in `Scene::update` and the Python loaders.
+* **Feature matrix** (`outputs/m_feature_matrix.py`, 16 cases, both engines): plume static and
+  animated, explosion, OIDN-CPU, DLSS SR (incl. `LegacyCNN`), RR `Previous310_7`, preset F, two-layer
+  RR -- zero errors, mean level within +-0.32%, **no warning new in 9.0**, contact sheet identical.
+* **All 90 Mogwai tasks in `.vscode/tasks.json`**, 75 s each on 9.0 (output forced to scratch, writes
+  to `shots/`/`outputs/` checked -- none): 85 clean. The 5 that throw fail **identically on 8.0**, so
+  they predate the port: the three "DLSS: bistro upscale" profiles and "DLSS: bistro G-buffer guides"
+  (`DLSSPass: Input 'depth' has mismatching size`), and "Bistro RR: Ultra Quality"
+  (NGX `NVSDK_NGX_Result_FAIL_UnsupportedParameter`).
+
+### Performance: 9.0 is ~25% slower, all of it in surface material shading (2026-09-23)
+
+Wall clock, bistro orbit 1080p, 300 frames, 2 interleaved reps (`outputs/m_perf_v8_v9.py`):
+
+|                   | 8.0 ms | 9.0 ms | change |
+|-------------------|--------|--------|--------|
+| raw ReSTIR (+TAA) | 131.4  | 164.6  | +25%   |
+| OptiX (+guides)   | 163.3  | 198.3  | +21%   |
+| RELAX-SH          | 140.5  | 170.1  | +21%   |
+| REBLUR-SH         | 137.3  | 170.8  | +24%   |
+| DLSS RR           | 141.6  | 172.4  | +22%   |
+
+Rep-to-rep spread is ~1-3 ms (OptiX 9.0: 193.5/203.1), so the ~30 ms is not noise. Per-pass GPU time
+puts ALL of it inside VolumetricReSTIR: every denoiser, the G-buffer and the guide passes are within
+a few percent on both engines. 9.0 also drops the 4-5 ms/frame `EmissivePowerSampler::update` (it no
+longer rebuilds the power table every frame), so the estimator's own shaders are slower by more than
+the total shows.
+
+Attributed by switching paths off (`VR_USE_SURFACE` / `VR_USE_EMISSIVE`, new in vr_graph.py;
+`outputs/m_perf_attrib.py`), estimator GPU ms 8.0 -> 9.0:
+
+|                  | full bistro  | volume only   | no emissive   | plume scene  |
+|------------------|--------------|---------------|---------------|--------------|
+| whole estimator  | 127.9 -> 165.1 | 35.4 -> 32.1 | 15.2 -> 19.6 | 25.7 -> 24.7 |
+| Spatial Reuse    | +42%         | +4%           | +2%           | -3%          |
+| Generate Samples | +20%         | +3%           | +42%          | -4%          |
+| Final Shading    | +49%         | -1%           | +22%          | -6%          |
+
+* **Not the compiler, and not this project's volume code**: volume-only is FASTER on 9.0, every
+  volume stage within +-4%. The 4.x -> 8.0 slowdown above WAS uniform codegen; this one is not.
+* **It needs surfaces**: surfaces with no emissive lights already cost +4 ms in Generate Samples; with
+  emissive lights, Spatial Reuse (light evaluation at surface points) grows by 28 ms. Emissive light
+  evaluated at VOLUME points does not slow down.
+* Ruled out by reading the code: compile settings (identical except matrix layout), Falcor's ray
+  queries and the new `rtAccelPrev` branch (this pass runs its own `RayQuery` on `gScene.rtAccel`),
+  alpha testing (not called in these loops), `ExplicitLodTextureSampler` (unchanged).
+* **What is left is 9.0's standard-material shading** -- StandardMaterial / StandardBSDF /
+  shading-frame / material data, reworked across ~60 files for ReSTIR PT (component-indexed BSDFs,
+  extended `IMaterialInstance`). Naming the line needs a file-by-file bisection through changed
+  interfaces. **For this project's question -- denoising vs sampling under a FIXED compute budget --
+  it matters: on 9.0 the same sample count costs ~25% more on a surface-heavy scene.**
 
 ## SOLVED: REBLUR's medium was transparent under motion
 
