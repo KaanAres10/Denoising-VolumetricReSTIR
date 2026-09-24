@@ -345,11 +345,29 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
 
 * **Full scene, 9.0 now beats the fork** (-4% wall clock), because the new engines' surface work was
   already cheaper (Spatial Reuse 65% of the fork's estimator, 52% of 9.0's).
-* **Volume only, it is still 1.27x the fork's** (22.0 vs 17.3 ms, the fork's number inflated by its
-  profiler). The rest is Generate Samples: 128 registers against the fork's 80, i.e. 2 groups per SM
-  where the fork fits 3. Not yet chased. Starting points are the other runtime-gated paths
-  (`noReuse`'s super-voxel sampler, the reference path's non-tracker code) and the per-sample
-  `SurfaceShadingData`.
+* **Volume only, it is still ~1.15-1.3x the fork's** (22-23 ms GPU vs 17.3 profiled, ~20 wall). Chased
+  on 2026-09-24; what is known:
+  * **66b47be** compiles out disabled light kinds and the no-reuse path (`VR_USE_*_LIGHTS`,
+    `VR_REUSE_ON`) in Generate Features / Generate Samples / Final Shading. Byte-identical (raw, RELAX,
+    RR, plume). Median of 3 interleaved full-scene runs: Generate Samples 22.1 -> 17.2 ms, estimator
+    98.0 -> 94.1 (-4%). Volume-only unchanged. Gating Spatial/Temporal Reuse too made Spatial Reuse
+    13% SLOWER.
+  * **Spatial Reuse has a register cliff:** whenever its code shrinks (light gates, the per-axis
+    ray/box test below), the full-scene pass jumps from ~52 to ~58.7 ms. Time any change to code it
+    includes interleaved, full scene, against the previous build.
+  * **Where the rest lives:** the ray-marching shadow loop in p-hat. Nsight shows 53-99x the fork's
+    instruction-cache requests in Generate Samples / Spatial Reuse, and ~1.35x instructions at equal
+    texture work. Removing the shadow transmittance from p-hat cuts that traffic 90%. Its DXIL is
+    NOT bigger: Spatial Reuse volume-only is 7,885 DXIL instructions against the fork's 17,007.
+  * **Ruled out, measured:** shader model 6_5 (29 ms, much worse), Slang `-O0..-O3` and DXC flags,
+    root-signature descriptor flags (gfx's source leaves them NONE, like the fork), non-uniform
+    resource indices (none in either build), debug info (none), `[unroll]` on the ray/box axis loop
+    (ignored because of its early return), and writing that loop out per axis. The last one removes
+    every runtime-indexed float3 array from the DXIL, which the fork's DXIL lacks and 9.0's had,
+    but it is volume-only neutral and trips the Spatial Reuse cliff.
+  * **The one lever left that works changes pixels:** Slang's default FP mode on the volume-only
+    programs is -7% (20.4 vs 21.8 ms). The fork itself is all fast-math, but it would end the
+    byte-identity with the locked captures, so it is a decision, not a fix.
 * 8.0 gets none of this; the fix is in this repository's shaders and pass, not in the engine.
 * **Nsight notes:** on a full-scene frame the pass ranges are misattributed unless GPU Trace runs
   with `--hes-enabled 0`, and a legacy full-scene trace collects no counters at all. Volume-only
