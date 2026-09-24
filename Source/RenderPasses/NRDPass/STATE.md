@@ -389,6 +389,31 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
     stalls (long scoreboard on the fdiv, wait on the cbuffer loads). The visible differences are
     precise FP (no `fast` flags, `dx.precise` on the floor) and the SM 6.6 handles. GPU Trace offers
     DXIL only in the Languages list for these D3D12 shaders; SASS is not reachable from it.
+  * **Hoisting the per-mip atlas constants out of the brick march: small, byte-identical, kept**
+    (`VR_HOIST_ATLAS`, `AtlasMip` in VolumeBase.slang). Every step of the four DDA/march trackers
+    re-read `gvdb.res`, `volInDimensions`, `invVolInDimensions(_part2)` and
+    `densityCompressScaleFactor` at the runtime index `mipLevel`, which DXC leaves inside the loop. It
+    also converted `res` from int to float each step. In the profiler's per-line samples, about 27% of
+    Spatial Reuse's samples sit on those loads and conversions, in both builds. Now they are read once
+    per brick. Paired interleaved runs, 3 rounds each (`outputs/pending_9p/hoist/ab_env.sh`):
+
+    | | volume-only | full scene (final policy) |
+    |---|---|---|
+    | estimator | -1.3 / -2.3 / -4.9% | -1.4 / -0.3 / -1.1% |
+    | Temporal Reuse | -7..-10% every round | -1.4% |
+    | Final Shading | -0..-3% | -10.6% every round (8.15 -> 7.29 ms) |
+
+    * Full scene, Spatial Reuse fell onto its register cliff with the hoist (55.9 -> 62.3 ms), so it
+      keeps the per-step loads when surfaces are on. So does Generate Samples, which read
+      +0.7..+3.5%, about as large as the ~1.5% run-to-run noise on identical code.
+    * Byte-identical: plume 60/60 and bistro volume-only 60/60 (HEAD's shaders vs the new ones);
+      bistro raw 300/300 against `rb_v9p_raw`, with Generate Samples hoisted as well.
+    * Carrying the atlas texture handles in the struct too (the "uniform pipe" lead) measured the
+      same as without them. The 2.7-5.4x uniform-pipe work is most likely the per-use descriptor
+      derivation for the runtime-indexed atlas, which stays as long as the index is a runtime value.
+      The fork's DXIL indexes the same arrays in the same loop, but through SM 6.5's `createHandle`
+      where 9.0 uses SM 6.6's `createHandleFromBinding` + `annotateHandle`. Whether the driver lowers
+      those differently is untested. SM 6.5 on 9.0 was much slower overall, see "Ruled out".
   * **Thread-group layout is not a volume-only lever** (median of 3 interleaved runs, `VR_GROUP`,
     `outputs/legacy_cmp/volgroups/`): 8x8 23.84 ms, 8x16 23.35, 16x8 24.77, 16x16 24.76. At 16x16,
     Generate Samples and Spatial Reuse gain 3-4% but Temporal Reuse loses 28% and Final Shading 11%.

@@ -819,6 +819,22 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             pass->getProgram()->addDefine("VR_REUSE_ON", reuseOn ? "1" : "0");
         }
 
+        // Per-mip atlas constants read once per brick in the GVDB march instead of once per step
+        // (VR_HOIST_ATLAS, see AtlasMip in VolumeBase.slang). Paired interleaved runs, 3 rounds:
+        // volume-only estimator -1.3..-4.9% (Temporal Reuse -7..-10% every round); full scene, Final
+        // Shading -10% every round. On surface scenes two passes keep the per-step loads: Spatial
+        // Reuse drops onto its register cliff with them hoisted (55.9 -> 62.3 ms) and Generate Samples
+        // reads +0.7..+3.5%. Output is byte-identical either way. VR_HOIST_ATLAS=0|1 in the
+        // environment forces every pass, for A/B.
+        static const char* kHoistOverride = std::getenv("VR_HOIST_ATLAS");
+        for (const auto& pass : {mGenerateFeaturePass, mpTraceRaysPass, mTemporalReusePass, mSpatialReusePass, mFinalShadingPass})
+        {
+            if (!pass) continue;
+            bool hoist = !(mParams.mUseSurfaceScene && (pass == mSpatialReusePass || pass == mpTraceRaysPass));
+            if (kHoistOverride && *kHoistOverride) hoist = kHoistOverride[0] != '0';
+            pass->getProgram()->addDefine("VR_HOIST_ATLAS", hoist ? "1" : "0");
+        }
+
         // Thread-group size of the four big kernels: 8x8 by default (see the comment at their
         // [numthreads]); VR_GROUP=WxH overrides it for an A/B, e.g. VR_GROUP=16x16 for the old layout.
         static const char* kGroupOverride = std::getenv("VR_GROUP");

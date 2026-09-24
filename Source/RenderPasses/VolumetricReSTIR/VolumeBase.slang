@@ -352,3 +352,86 @@ float DensityInAtlas(float3 p_atlas, int mipLevel, bool useLinearSampler) {
         return getValueAtlasCoord(gvdb, p_atlas, mipLevel, gPointSampler) * gvdb.densityCompressScaleFactor[mipLevel] * (gScene.volumeDesc.densityScaleFactorByScaling);
     }
 }
+
+/** The per-mip atlas constants DensityInAtlas reads, loaded once per brick instead of once per step.
+    `mipLevel` is a runtime index, so every one of these is a dynamically indexed constant-buffer load
+    (plus an int->float conversion) that DXC leaves inside the march loop. Same values and the same
+    operation order as DensityInAtlas, so the result is bit-identical.
+
+    Per program: VR_HOIST_ATLAS=1 holds them in registers across the march; 0 (the default) keeps the
+    per-step loads, reproducing the old code. The host turns it on for every estimator pass except
+    Spatial Reuse on surface scenes, where the smaller kernel lands on the pass's register cliff
+    (full scene 55.9 -> 62.3 ms; see VolumetricReSTIR.cpp).
+*/
+#ifndef VR_HOIST_ATLAS
+#define VR_HOIST_ATLAS 0
+#endif
+
+struct AtlasMip
+{
+#if VR_HOIST_ATLAS
+    int res;            ///< gvdb.res[mipLevel * 3]: brick resolution in voxels (bound of the per-brick march).
+    float dimZ;         ///< gvdb.volInDimensions[mipLevel].z: depth of the first atlas texture.
+    float3 invDim;      ///< gvdb.invVolInDimensions[mipLevel].
+    float3 invDim2;     ///< gvdb.invVolInDimensions_part2[mipLevel].
+    float compress;     ///< gvdb.densityCompressScaleFactor[mipLevel].
+    float scaling;      ///< gScene.volumeDesc.densityScaleFactorByScaling.
+
+    int resolution() { return res; }
+#else
+    int mipLevel;
+
+    int resolution() { return gvdb.res[mipLevel * 3]; }
+#endif
+};
+
+AtlasMip loadAtlasMip(int mipLevel)
+{
+    AtlasMip m;
+#if VR_HOIST_ATLAS
+    m.res = gvdb.res[mipLevel * 3];
+    m.dimZ = gvdb.volInDimensions[mipLevel].z;
+    m.invDim = gvdb.invVolInDimensions[mipLevel];
+    m.invDim2 = gvdb.invVolInDimensions_part2[mipLevel];
+    m.compress = gvdb.densityCompressScaleFactor[mipLevel];
+    m.scaling = gScene.volumeDesc.densityScaleFactorByScaling;
+#else
+    m.mipLevel = mipLevel;
+#endif
+    return m;
+}
+
+float DensityInAtlas(float3 p_atlas, int mipLevel, bool useLinearSampler, AtlasMip m)
+{
+#if !VR_HOIST_ATLAS
+    return DensityInAtlas(p_atlas, mipLevel, useLinearSampler);
+#else
+    float v;
+    if (p_atlas.z > m.dimZ)
+    {
+        p_atlas.z -= m.dimZ;
+        if (useLinearSampler) v = gvdb.volIn_part2[mipLevel].SampleLevel(gLinearSampler, p_atlas * m.invDim2, 0);
+        else v = gvdb.volIn_part2[mipLevel].SampleLevel(gPointSampler, p_atlas * m.invDim2, 0);
+    }
+    else
+    {
+        if (useLinearSampler) v = gvdb.volIn[mipLevel].SampleLevel(gLinearSampler, p_atlas * m.invDim, 0);
+        else v = gvdb.volIn[mipLevel].SampleLevel(gPointSampler, p_atlas * m.invDim, 0);
+    }
+    return v * m.compress * m.scaling;
+#endif
+}
+
+void FetchEightVoxelsInAtlas(float3 p_atlas, int mipLevel, inout float4 densities[2], AtlasMip m)
+{
+#if !VR_HOIST_ATLAS
+    FetchEightVoxelsInAtlas(p_atlas, mipLevel, densities);
+#else
+    float3 anchor = floor(p_atlas - 0.5) + 0.5f;
+    [unroll]
+    for (int i = 0; i < 8; i++)
+    {
+        densities[i/4][i%4] = DensityInAtlas(anchor + float3(i % 2, (i % 4) / 2, i / 4), mipLevel, false, m);
+    }
+#endif
+}

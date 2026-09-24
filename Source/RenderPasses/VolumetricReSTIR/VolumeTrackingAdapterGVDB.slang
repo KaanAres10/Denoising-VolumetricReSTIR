@@ -53,8 +53,9 @@ struct MediumTrAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
         HDDAState dda_leaf = dda;
 
         dda_leaf.PrepareLeaf(vmin_leaf);
+        const AtlasMip atlasMip = loadAtlasMip(mipLevel); // loop-invariant, see AtlasMip
 
-        for (int iter = 0; iter < MAX_BRICK_STEPS && all(dda_leaf.p >= 0 && dda_leaf.p < gvdb.res[mipLevel * 3]); iter++)
+        for (int iter = 0; iter < MAX_BRICK_STEPS && all(dda_leaf.p >= 0 && dda_leaf.p < atlasMip.resolution()); iter++)
         {
             // compute the next step location, but don't step yet
             dda_leaf.Next();
@@ -66,7 +67,7 @@ struct MediumTrAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
                 // trilinear regular tracking
                 float4 densities[2];
 
-                FetchEightVoxelsInAtlas(dda_leaf.p + o + 0.5f, mipLevel, densities);
+                FetchEightVoxelsInAtlas(dda_leaf.p + o + 0.5f, mipLevel, densities, atlasMip);
 
                 densities[0] *= gScene.volumeDesc.sigma_t;
                 densities[1] *= gScene.volumeDesc.sigma_t;
@@ -107,7 +108,7 @@ struct MediumTrAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
             else
             {
                 // find density
-                float density = DensityInAtlas(dda_leaf.p + o + 0.5f, mipLevel, false);
+                float density = DensityInAtlas(dda_leaf.p + o + 0.5f, mipLevel, false, atlasMip);
 
                 float sigma_t = density * gScene.volumeDesc.sigma_t;
 
@@ -180,8 +181,9 @@ struct MediumTrRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
             float3 wp = ray.origin + t * ray.dir;				// Sample position in index space
             float3 p = wp - vmin_leaf;					// Sample point in sub-volume (in units of voxels)
             const float3 wpt = tStepMultipler * tStep * ray.dir;
+            const AtlasMip atlasMip = loadAtlasMip(mipLevel); // loop-invariant, see AtlasMip
 
-            for (int iter = 0; iter < MAX_BRICK_STEPS && all(p >= 0 && p < gvdb.res[mipLevel * 3]); iter++)
+            for (int iter = 0; iter < MAX_BRICK_STEPS && all(p >= 0 && p < atlasMip.resolution()); iter++)
             {
                 if (t >= tFar)
                 {
@@ -189,7 +191,7 @@ struct MediumTrRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
                     return true;
                 }
                 // find density
-                float density = DensityInAtlas(p + o, mipLevel, useLinearSampler);
+                float density = DensityInAtlas(p + o, mipLevel, useLinearSampler, atlasMip);
                 float sigma_t = density * gScene.volumeDesc.sigma_t;
                 Tr += -sigma_t * (iter == 0 ? 1.f : tStepMultipler) * tStep;
                 p += wpt;
@@ -270,8 +272,9 @@ struct SampleMediumAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
     {
         HDDAState dda_leaf = dda;
         dda_leaf.PrepareLeaf(vmin_leaf);
+        const AtlasMip atlasMip = loadAtlasMip(mipLevel); // loop-invariant, see AtlasMip
 
-        for (int iter = 0; iter < MAX_BRICK_STEPS && all(dda_leaf.p >= 0 && dda_leaf.p < gvdb.res[mipLevel * 3]); iter++)
+        for (int iter = 0; iter < MAX_BRICK_STEPS && all(dda_leaf.p >= 0 && dda_leaf.p < atlasMip.resolution()); iter++)
         {
             // compute the next step location, but don't step yet
             dda_leaf.Next();
@@ -288,7 +291,7 @@ struct SampleMediumAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
             {
                 // trilinear regular tracking
                 float4 densities[2];
-                FetchEightVoxelsInAtlas(dda_leaf.p + o + 0.5f, mipLevel, densities);
+                FetchEightVoxelsInAtlas(dda_leaf.p + o + 0.5f, mipLevel, densities, atlasMip);
 
                 densities[0] *= gScene.volumeDesc.sigma_t;
                 densities[1] *= gScene.volumeDesc.sigma_t;
@@ -363,7 +366,7 @@ struct SampleMediumAnalyticAdapterGVDB : IVolumeTrackingAdapterGVDB
             else
             {
                 // find density
-                float density = DensityInAtlas(dda_leaf.p + o + 0.5f, mipLevel, false);
+                float density = DensityInAtlas(dda_leaf.p + o + 0.5f, mipLevel, false, atlasMip);
 
                 float sigma_t = density * gScene.volumeDesc.sigma_t;
 
@@ -471,11 +474,12 @@ struct SampleVolumeCellByDensityAdapterGVDB : IVolumeTrackingAdapterGVDB
     {
         HDDAState dda_leaf = dda;
         dda_leaf.PrepareLeaf(vmin_leaf);
+        const AtlasMip atlasMip = loadAtlasMip(mipLevel); // loop-invariant, see AtlasMip
 
-        for (int iter = 0; iter < MAX_BRICK_STEPS && all(dda_leaf.p >= 0 && dda_leaf.p < gvdb.res[mipLevel * 3]); iter++)
+        for (int iter = 0; iter < MAX_BRICK_STEPS && all(dda_leaf.p >= 0 && dda_leaf.p < atlasMip.resolution()); iter++)
         {
             // find density
-            float density = DensityInAtlas(dda_leaf.p + o + 0.5f, mipLevel, false);
+            float density = DensityInAtlas(dda_leaf.p + o + 0.5f, mipLevel, false, atlasMip);
 
             // compute the next step location, but don't step yet
             dda_leaf.Next();
@@ -570,8 +574,9 @@ struct ReservoirFeatureRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
         float3 wp = ray.origin + t * ray.dir;				// Sample position in index space
         float3 p = wp - vmin_leaf;					// Sample point in sub-volume (in units of voxels)
         const float3 wpt = tStep * ray.dir;
+        const AtlasMip atlasMip = loadAtlasMip(mipLevel); // loop-invariant, see AtlasMip
 
-        for (int iter = 0; iter < MAX_BRICK_STEPS && all(p >= 0 && p < gvdb.res[mipLevel * 3]); iter++)
+        for (int iter = 0; iter < MAX_BRICK_STEPS && all(p >= 0 && p < atlasMip.resolution()); iter++)
         {
             float curTransmittance = exp(Tr);
             if (curTransmittance < 0.01f)
@@ -582,7 +587,7 @@ struct ReservoirFeatureRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
             }
 
             // find density
-            float density = DensityInAtlas(p + o, mipLevel, useLinearSampler);
+            float density = DensityInAtlas(p + o, mipLevel, useLinearSampler, atlasMip);
             float sigma_t = density * gScene.volumeDesc.sigma_t;
 
             float negOpticalLength = -sigma_t * tStep;
