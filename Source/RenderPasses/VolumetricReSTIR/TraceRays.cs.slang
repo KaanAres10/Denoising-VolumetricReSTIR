@@ -59,6 +59,11 @@ StructuredBuffer<ReservoirFeatures> gReservoirFeatureBuffer;
 StructuredBuffer<VBufferItem> gVBuffer;
 #endif
 
+// Compile-time mirrors of runtime options (see VolumeUtils.slang); unset = compile everything.
+#ifndef VR_REUSE_ON
+#define VR_REUSE_ON 0
+#endif
+
 // Thread-group size. 8x8, not 16x16: these kernels need 128-224 registers per thread, and with
 // 256-thread groups the SM's 64K registers hold whole groups only -- at 192 registers that is one group,
 // 8 warps. 64-thread groups pack to the register limit instead (10 warps at 192). Measured on the
@@ -132,7 +137,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
         ray.tMax = hitInfo.rayT;
         #endif
 
-        bool noReuse = gNoReuse;
+        bool noReuse = VR_REUSE_ON ? false : gNoReuse; // gNoReuse is exactly !(spatial || temporal)
 
         // we generate at most 4 initial samples (in one tracking) per round
         for (int roundId = 0; roundId < intialSampleRounds; roundId++)

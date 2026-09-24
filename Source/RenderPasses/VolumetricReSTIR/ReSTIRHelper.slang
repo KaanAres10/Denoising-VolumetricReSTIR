@@ -121,6 +121,23 @@ int encodePathTag(int storage, int pathTag)
     return (pathTag << 16) | (storage & 0xFFF0FFFF);
 }
 
+// Compile-time mirrors of runtime options, set per pass by VolumetricReSTIR.cpp from the same
+// parameters that set the runtime flags, so they always agree; unset = compile everything (the old
+// behaviour). Code for a disabled light kind, or for the no-reuse path while reuse is on, never
+// runs, but compiled in it still costs registers and instruction cache in every kernel.
+#ifndef VR_USE_ENV_LIGHTS
+#define VR_USE_ENV_LIGHTS 1
+#endif
+#ifndef VR_USE_ANALYTIC_LIGHTS
+#define VR_USE_ANALYTIC_LIGHTS 1
+#endif
+#ifndef VR_USE_EMISSIVE_LIGHTS
+#define VR_USE_EMISSIVE_LIGHTS 1
+#endif
+#ifndef VR_REUSE_ON
+#define VR_REUSE_ON 0
+#endif
+
 float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvider : IExternalVisibilityProvider>(
     REUSETYPE Reservoir tap, VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
     VolRay ray, inout SampleGenerator sg, SamplingOptions options, inout ExternalVisibilityProvider externalVis, bool isLastFrame, bool noReuse, bool spatialReuse, bool isFinalShading)
@@ -487,20 +504,29 @@ float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, i
     // voxel light
     if (lightID < 0)
     {
+#if VR_USE_ENV_LIGHTS
         float3 wiWorld = gScene.envMap.uvToWorld(lightUV, isLastFrame); // [8.0 port] was envMapSampler.decodeLightUV (prev-frame env transform preserved)
         shadowRay = { mi.p, wiWorld, 0, kRayTMax };
         Ld = gScene.envMap.eval(wiWorld, 0.f, isLastFrame) * mi.phaseFunction(mi.wo, wiWorld); // [8.0 port] was envMapSampler.eval
+#else
+        isValidSample = false;
+#endif
     }
     // analytical light (currently only supporting directional and point lights
     else if (lightID < (int)gScene.getLightCount())
     {
+#if VR_USE_ANALYTIC_LIGHTS
         SceneLightSample ls = getAnalyticalLightSample(lightID, mi.p, sg); // TODO: remove sg
         shadowRay = { mi.p, ls.rayDir, 0, ls.rayDistance };
         Ld = ls.Li * mi.phaseFunction(mi.wo, ls.rayDir);
+#else
+        isValidSample = false;
+#endif
     }
     // emissive light (TODO: consider invalid case for unbiased reuse)
     else
     {
+#if VR_USE_EMISSIVE_LIGHTS
         TriangleLightSample ls;
         // [8.0 port] getEmissiveLightSample -> sampleTriangle. The reservoir stores the uniform u
         // (TriangleLightSample.uv), and sampleTriangle is deterministic in u, so this reconstructs
@@ -512,6 +538,9 @@ float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, i
             float lsCosTheta = dot(ls.normalW, -ls.dir);
             Ld = ls.Le * gScene.emissiveIntensityMultiplier * mi.phaseFunction(mi.wo, ls.dir) * lsCosTheta / (ls.distance * ls.distance);
         }
+#else
+        isValidSample = false;
+#endif
     }
 
     float Tr = 1.f;
@@ -547,20 +576,29 @@ float3 evaluate_L_on_surface(SurfaceShadingData shadingInfo, int lightID, float2
     // voxel light
     if (lightID < 0)
     {
+#if VR_USE_ENV_LIGHTS
         float3 wiWorld = gScene.envMap.uvToWorld(lightUV, isLastFrame); // [8.0 port] was envMapSampler.decodeLightUV (prev-frame env transform preserved)
         shadowRay = { shadingInfo.posW, wiWorld, 0, kRayTMax };
         Ld = gScene.envMap.eval(wiWorld, 0.f, isLastFrame) * evalBSDFCosine(shadingInfo, wiWorld, sg);
+#else
+        isValidSample = false;
+#endif
     }
     // analytical light (currently only supporting directional and point lights
     else if (lightID < (int)gScene.getLightCount())
     {
+#if VR_USE_ANALYTIC_LIGHTS
         SceneLightSample ls = getAnalyticalLightSample(lightID, shadingInfo.posW, sg); // TODO: remove sg
         shadowRay = { shadingInfo.posW, ls.rayDir, 0, ls.rayDistance };
         Ld = ls.Li * evalBSDFCosine(shadingInfo, ls.rayDir, sg);
+#else
+        isValidSample = false;
+#endif
     }
     // emissive light (TODO: consider invalid case for unbiased reuse)
     else
     {
+#if VR_USE_EMISSIVE_LIGHTS
         TriangleLightSample ls;
         // [8.0 port] getEmissiveLightSample -> sampleTriangle (deterministic in the stored u).
         isValidSample = sampleTriangleOffset(shadingInfo.posW, (uint)(lightID - (int)gScene.getLightCount()), lightUV, ls);
@@ -570,6 +608,9 @@ float3 evaluate_L_on_surface(SurfaceShadingData shadingInfo, int lightID, float2
             float lsCosTheta = dot(ls.normalW, -ls.dir);
             Ld = ls.Le * gScene.emissiveIntensityMultiplier * evalBSDFCosine(shadingInfo, ls.dir, sg) * lsCosTheta / (ls.distance * ls.distance);
         }
+#else
+        isValidSample = false;
+#endif
     }
 
     float Tr = 1.f;

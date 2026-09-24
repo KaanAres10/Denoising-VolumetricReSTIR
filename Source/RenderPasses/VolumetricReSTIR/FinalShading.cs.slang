@@ -107,6 +107,20 @@ StructuredBuffer<VBufferItem> gVBuffer;
 
 import ComputeInitialSample;
 
+// Compile-time mirrors of runtime options (see VolumeUtils.slang); unset = compile everything.
+#ifndef VR_USE_ENV_LIGHTS
+#define VR_USE_ENV_LIGHTS 1
+#endif
+#ifndef VR_USE_ANALYTIC_LIGHTS
+#define VR_USE_ANALYTIC_LIGHTS 1
+#endif
+#ifndef VR_USE_EMISSIVE_LIGHTS
+#define VR_USE_EMISSIVE_LIGHTS 1
+#endif
+#ifndef VR_REUSE_ON
+#define VR_REUSE_ON 0
+#endif
+
 // Thread-group size. 8x8, not 16x16: these kernels need 128-224 registers per thread, and with
 // 256-thread groups the SM's 64K registers hold whole groups only -- at 192 registers that is one group,
 // 8 warps. 64-thread groups pack to the register limit instead (10 warps at 192). Measured on the
@@ -166,7 +180,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             VBufferItem vItem = gVBuffer[pixelId];
             #endif
 
-            curOutputColor = evaluate_F(curReservoir, VBUFFERITEM dataProvider, envMapSampler, emissiveSampler, ray, sg, gSamplingOptions, gNoReuse);
+            curOutputColor = evaluate_F(curReservoir, VBUFFERITEM dataProvider, envMapSampler, emissiveSampler, ray, sg, gSamplingOptions, VR_REUSE_ON ? false : gNoReuse);
 
             float W = curReservoir.p_y == 0.0 ? 1.f : curReservoir.runningSum / (curReservoir.p_y * curReservoir.M);
 
@@ -256,18 +270,23 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             if (res.lightID < 0)
             {
+#if VR_USE_ENV_LIGHTS
                 wi = gScene.envMap.uvToWorld(res.lightUV, false);
                 valid = 1.f;
+#endif
             }
             else if (res.lightID < lightCount)
             {
+#if VR_USE_ANALYTIC_LIGHTS
                 SampleGenerator sgDir = SampleGenerator(pixelPos, gFrameCount);
                 SceneLightSample ls = getAnalyticalLightSample(res.lightID, p, sgDir);
                 wi = ls.rayDir;
                 valid = 1.f;
+#endif
             }
             else
             {
+#if VR_USE_EMISSIVE_LIGHTS
                 // Emissive triangle. This branch previously took the DEVICE DOWN
                 // (DXGI_ERROR_DEVICE_REMOVED) on plume, and the reason matters: the triangle buffer
                 // behind sampleTriangleOffset is [root]-tagged, so it bypasses descriptor bounds
@@ -289,6 +308,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                         valid = 1.f;
                     }
                 }
+#endif
             }
 
             const float lenSq = dot(wi, wi);

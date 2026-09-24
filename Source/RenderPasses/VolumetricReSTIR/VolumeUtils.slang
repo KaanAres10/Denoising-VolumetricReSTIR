@@ -9,6 +9,23 @@ import Rendering.Lights.LightHelpers;
 __exported import InlineRayTracingHelpers;
 // [8.0 port] MaterialShading (4.x surface-material API) removed; surface-scene path TBD
 
+// Compile-time mirrors of runtime options, set per pass by VolumetricReSTIR.cpp from the same
+// parameters that set the runtime flags, so they always agree; unset = compile everything (the old
+// behaviour). Code for a disabled light kind, or for the no-reuse path while reuse is on, never
+// runs, but compiled in it still costs registers and instruction cache in every kernel.
+#ifndef VR_USE_ENV_LIGHTS
+#define VR_USE_ENV_LIGHTS 1
+#endif
+#ifndef VR_USE_ANALYTIC_LIGHTS
+#define VR_USE_ANALYTIC_LIGHTS 1
+#endif
+#ifndef VR_USE_EMISSIVE_LIGHTS
+#define VR_USE_EMISSIVE_LIGHTS 1
+#endif
+#ifndef VR_REUSE_ON
+#define VR_REUSE_ON 0
+#endif
+
 bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSampler emissiveSampler, const float3 rayOrigin, bool kUseEnvironmentLights, bool kUseAnalyticLights, bool kUseEmissiveLights,
     inout SampleGenerator sg, out SceneLightSample ls, out int outLightIndex, out float2 outLightUV, float3 surfaceNormal = float3(0.f))
 {
@@ -36,7 +53,7 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
 
     // We use explicit checks for which light types are enabled so that the compiler
     // can remove the unused code. It won't otherwise since u is unknown at compile time.
-    if (kUseEnvironmentLights)
+    if ((VR_USE_ENV_LIGHTS != 0) && kUseEnvironmentLights)
     {
         if (u < p[0])
         {
@@ -65,7 +82,7 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
         u -= p[0];
     }
 
-    if (kUseAnalyticLights)
+    if ((VR_USE_ANALYTIC_LIGHTS != 0) && kUseAnalyticLights)
     {
         if (u < p[1])
         {
@@ -103,7 +120,7 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
     }
 
 
-    if (kUseEmissiveLights)
+    if ((VR_USE_EMISSIVE_LIGHTS != 0) && kUseEmissiveLights)
     {
         if (u < p[2]) // Always true
         {

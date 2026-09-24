@@ -799,6 +799,26 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         setMask(mSpatialReusePass, spatialMask);
         setMask(mFinalShadingPass, finalMask);
 
+        // Compile-time mirrors of the light-kind switches and of reuse (see VolumeUtils.slang). They
+        // come from the same parameters as the runtime flags in SamplingOptions / gNoReuse, so a light
+        // kind that is off never produces a light ID for the compiled-out branch to miss, and noReuse
+        // is false whenever reuse is on.
+        //
+        // Applied to Generate Features, Generate Samples and Final Shading only. Bistro raw estimator,
+        // median of 3 interleaved runs: Generate Samples 22.1 -> 17.2 ms, Final Shading 8.5 -> 8.0,
+        // estimator 98.0 -> 94.1. Gating Spatial and Temporal Reuse as well made Spatial Reuse 13% SLOWER
+        // (51.8 -> 58.7): less code moved the driver's register target onto a worse point. Output is
+        // byte-identical either way.
+        const bool reuseOn = mParams.mEnableSpatialReuse || mParams.mEnableTemporalReuse;
+        for (const auto& pass : {mGenerateFeaturePass, mpTraceRaysPass, mFinalShadingPass})
+        {
+            if (!pass) continue;
+            pass->getProgram()->addDefine("VR_USE_ENV_LIGHTS", mParams.mUseEnvironmentLights ? "1" : "0");
+            pass->getProgram()->addDefine("VR_USE_ANALYTIC_LIGHTS", mParams.mUseAnalyticLights ? "1" : "0");
+            pass->getProgram()->addDefine("VR_USE_EMISSIVE_LIGHTS", mParams.mUseEmissiveLights ? "1" : "0");
+            pass->getProgram()->addDefine("VR_REUSE_ON", reuseOn ? "1" : "0");
+        }
+
         // Thread-group size of the four big kernels: 8x8 by default (see the comment at their
         // [numthreads]); VR_GROUP=WxH overrides it for an A/B, e.g. VR_GROUP=16x16 for the old layout.
         static const char* kGroupOverride = std::getenv("VR_GROUP");
