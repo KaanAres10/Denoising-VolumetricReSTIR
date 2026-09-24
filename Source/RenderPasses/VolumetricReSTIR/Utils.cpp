@@ -84,7 +84,7 @@ ref<Texture> createNeighborOffsetTexture(ref<Device> pDevice, int numSamples)
     return pDevice->createTexture1D(numSamples, ResourceFormat::RG8Int, 1, 1, offsets.get());
 }
 
-void applyEstimatorCompilerFlags(ProgramDesc& desc)
+void applyEstimatorCompilerFlags(ProgramDesc& desc, bool volumeOnlyScene)
 {
     // PRECISE floating point for every Volumetric ReSTIR program. Falcor 9.0 ships Slang 2025.13.2,
     // whose DEFAULT floating-point mode emits fast-math DXIL: every float op in the largest kernel is
@@ -101,7 +101,16 @@ void applyEstimatorCompilerFlags(ProgramDesc& desc)
     // it look like a material problem rather than a compiler one.
     //
     // VR_FP_MODE=fast|default restores the other modes for an A/B.
-    static const std::string mode = [] { const char* v = std::getenv("VR_FP_MODE"); return std::string(v ? v : "precise"); }();
+    //
+    // VR_FP_MODE_VOLUME=default|fast applies to VOLUME-ONLY scenes only (the programs built by
+    // createSimpleComputePass; surface scenes rebuild every pass with createSceneComputePass and stay
+    // precise). OPT-IN, off by default: it changes pixel values at the rounding level, so captures
+    // are no longer byte-identical to the locked ones. Measured on bistro volume-only: default
+    // 20.4 ms against precise 21.8 (-7%). The 4.x fork compiled everything fast-math. VR_FP_MODE,
+    // when set, wins over it.
+    static const std::string allMode = [] { const char* v = std::getenv("VR_FP_MODE"); return std::string(v ? v : ""); }();
+    static const std::string volumeMode = [] { const char* v = std::getenv("VR_FP_MODE_VOLUME"); return std::string(v ? v : ""); }();
+    const std::string mode = !allMode.empty() ? allMode : (volumeOnlyScene && !volumeMode.empty()) ? volumeMode : "precise";
     if (mode == "fast")
         desc.setCompilerFlags(SlangCompilerFlags::FloatingPointModeFast);
     else if (mode != "default")
@@ -122,7 +131,7 @@ ref<ComputePass> createSimpleComputePass(ref<Device> pDevice, const std::string&
     // (Scene.slang requires SCENE_GEOMETRY_TYPES etc. which are only known once a scene is loaded).
     ProgramDesc desc;
     desc.addShaderLibrary(file).csEntry(mainEntry);
-    applyEstimatorCompilerFlags(desc);
+    applyEstimatorCompilerFlags(desc, /*volumeOnlyScene*/ true);
     return ComputePass::create(pDevice, desc, matlDefs, /*createVars*/ false);
 }
 

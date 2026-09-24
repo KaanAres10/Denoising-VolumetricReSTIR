@@ -365,9 +365,13 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
     (ignored because of its early return), and writing that loop out per axis. The last one removes
     every runtime-indexed float3 array from the DXIL, which the fork's DXIL lacks and 9.0's had,
     but it is volume-only neutral and trips the Spatial Reuse cliff.
-  * **The one lever left that works changes pixels:** Slang's default FP mode on the volume-only
-    programs is -7% (20.4 vs 21.8 ms). The fork itself is all fast-math, but it would end the
-    byte-identity with the locked captures, so it is a decision, not a fix.
+  * **The one lever left that works changes pixels, so it is OPT-IN:** `VR_FP_MODE_VOLUME=default`
+    (or `fast`) compiles the volume-only scenes' estimator programs with Slang's default FP mode,
+    fast-math like the fork. Volume-only estimator, median of 3 interleaved runs: 23.37 -> 21.51 ms
+    (-8%), every pass faster. Surface scenes rebuild every pass through createSceneComputePass and stay
+    precise: bistro raw captured with the switch on is byte-identical to `rb_v9p_raw` (300/300). Off
+    by default because volume-only captures then differ from the locked ones at the rounding level;
+    turn it on for performance runs, and re-measure quality if it is ever made the default.
 * 8.0 gets none of this; the fix is in this repository's shaders and pass, not in the engine.
 * **Nsight notes:** on a full-scene frame the pass ranges are misattributed unless GPU Trace runs
   with `--hes-enabled 0`, and a legacy full-scene trace collects no counters at all. Volume-only
