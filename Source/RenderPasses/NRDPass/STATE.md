@@ -286,22 +286,28 @@ down, so the new engines do somewhat more lighting work per frame.
 105.1 and 115.7 there.) 9.0's first run of a batch tends to read high: 133.3 then, 103.5 now.
 
 **The cause was register pressure, and it came with the 8.0 port.** Nsight GPU Trace, one
-volume-only frame per build (per-pass ranges are reliable there), registers per thread = registers
-allocated / active warps / 32:
+volume-only frame per build. The 4.x column is the fork's STEADY state (see the kernel-swap trap
+below), read from Nsight's Shader Pipelines table (registers per thread / theoretical warps per SM,
+per compiled shader); the 8.0/9.0 column is registers allocated / active warps / 32 from the pass
+ranges:
 
 | volume only, before the fix | 4.x: regs / warps per SM | 8.0 and 9.0: regs / warps | GPU cycles |
 |-----------------------------|--------------------------|---------------------------|------------|
-| Generate Samples            | 80 / 21.5                | 200-208 / 7.5             | 3.0x       |
-| Spatial Reuse               | 128 / 14.3               | 232 / 7.3                 | 2.2x       |
-| Temporal Reuse              | 250 / 7.4                | 250 / 7.4                 | 1.0x       |
-| Final Shading               | 128 / 13.7               | 128 / 13.6                | ~1.1x      |
+| Generate Samples            | 80 / 24                  | 200-208 / 7.5             | ~2.6-3.0x  |
+| Spatial Reuse               | 128 / 16                 | 232 / 7.3                 | ~1.9-2.2x  |
+| Temporal Reuse              | 185 / 8                  | 250 / 7.4                 | ~1.2-1.3x  |
+| Final Shading               | 80 / 24                  | 128 / 13.6                | ~1.5x      |
 
-Same threads and warps launched. The ported kernels even did LESS texture traffic (0.64x). Their DXIL
-was the same size as the fork's (Generate Samples: 22,890 vs 22,438 instructions, 137 texture samples
-each, same shader flags), and the estimator shader source is the fork's apart from API renames. What
-differs is how much state is live at once, so the driver allocates ~2.5x the registers, one 256-thread
-group fits per SM instead of three, and texture latency stops being hidden. Temporal Reuse is the
-control: the same registers on both, the same speed.
+(Corrected 2026-09-24. The first version of this table read the fork from one trace at frame 61,
+which caught Temporal Reuse still on its slow 250-register compile and Final Shading from a range
+average; it listed TR 250 / 7.4 and FS 128 / 13.7 and called Temporal Reuse "the control". Cycle
+ratios are against the fork's steady frames at the same pose, 39.5-45.8 Mcyc per estimator.)
+
+Same threads and warps launched. The ported kernels' DXIL was the same size as the fork's (Generate
+Samples: 22,890 vs 22,438 instructions, 137 texture samples each, same shader flags), and the
+estimator shader source is the fork's apart from API renames. What differs is how much state is live
+at once, so the driver allocates ~2.5x the registers, one 256-thread group fits per SM instead of
+three, and texture latency stops being hidden.
 
 Ruled out on the way: floating-point mode (the fork is all fast-math; 9.0 fast and precise both give
 200 registers), Slang `-O0..-O3` and DXC `-Gfp` (per-program `compilerArguments`; none below 30 ms
@@ -345,8 +351,8 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
 
 * **Full scene, 9.0 now beats the fork** (-4% wall clock), because the new engines' surface work was
   already cheaper (Spatial Reuse 65% of the fork's estimator, 52% of 9.0's).
-* **Volume only, it is still ~1.15-1.3x the fork's** (22-23 ms GPU vs 17.3 profiled, ~20 wall). Chased
-  on 2026-09-24; what is known:
+* **Volume only, it is still ~1.15-1.4x the fork's, growing along the orbit** (22-23 ms GPU vs 17.3
+  profiled, ~20 wall; 1.36x in cycles at the late pose). Chased on 2026-09-24; what is known:
   * **66b47be** compiles out disabled light kinds and the no-reuse path (`VR_USE_*_LIGHTS`,
     `VR_REUSE_ON`) in Generate Features / Generate Samples / Final Shading. Byte-identical (raw, RELAX,
     RR, plume). Median of 3 interleaved full-scene runs: Generate Samples 22.1 -> 17.2 ms, estimator
@@ -359,6 +365,36 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
     instruction-cache requests in Generate Samples / Spatial Reuse, and ~1.35x instructions at equal
     texture work. Removing the shadow transmittance from p-hat cuts that traffic 90%. Its DXIL is
     NOT bigger: Spatial Reuse volume-only is 7,885 DXIL instructions against the fork's 17,007.
+  * **Re-measured in the fork's steady state (2026-09-24),** one frame at orbit pose ~168 deg
+    (`outputs/legacy_cmp/pose_trace.sh late 310`), both builds on their optimized compiles, the same
+    texture work (222 M 3D-sample quads each):
+
+    | volume only, late pose | 4.x Mcyc | 9.0 Mcyc | ratio | warp instructions | GCC instruction requests | 4.x regs / warps | 9.0 regs / warps |
+    |------------------------|----------|----------|-------|-------------------|--------------------------|------------------|------------------|
+    | Generate Samples       | 7.86     | 14.95    | 1.90x | 1.37x             | 55x                      | 80 / 19.1        | 128 / 12.1       |
+    | Temporal Reuse         | 11.61    | 11.21    | 0.97x | 1.29x             | 6.8x                     | 187 / 6.5        | 165 / 9.8        |
+    | Spatial Reuse          | 21.15    | 29.82    | 1.41x | 1.31x             | 45x                      | 128 / 11.9       | 128 / 11.3       |
+    | Final Shading          | 8.96     | 12.32    | 1.38x | 1.35x             | 18x                      | 80 / 17.7        | 96 / 14.6        |
+    | estimator              | 51.52    | 70.23    | 1.36x |                   |                          |                  |                  |
+
+    So the instruction-count and i-cache findings above hold in steady state. Spatial Reuse runs at
+    the SAME registers and occupancy as the fork and is still 1.41x, so what is left is instructions
+    executed, not occupancy. 9.0's GCC instruction requests hit 96-99.7%, so the i-cache misses are
+    cheap; `no_instruction` stalls are not what dominates. The uniform pipe (descriptor math) executes
+    2.7-5.4x the fork's (Spatial Reuse 5.4x): 9.0's DXIL creates the brick-atlas handle inside the march loop with
+    `createHandleFromBinding` + `annotateHandle` (SM 6.6), where the fork's used `createHandle`.
+  * **The shader profiler's per-line view** (GPU Trace `--real-time-shader-profiler`, Shader Source,
+    Export to CSV; `outputs/gputrace_sp/*_src.csv`): the hottest block in both builds' Spatial Reuse
+    is the same 128-step brick march: the same cbuffer loads (`gvdb` offsets 90 / 721 / 811), the same
+    stalls (long scoreboard on the fdiv, wait on the cbuffer loads). The visible differences are
+    precise FP (no `fast` flags, `dx.precise` on the floor) and the SM 6.6 handles. GPU Trace offers
+    DXIL only in the Languages list for these D3D12 shaders; SASS is not reachable from it.
+  * **Thread-group layout is not a volume-only lever** (median of 3 interleaved runs, `VR_GROUP`,
+    `outputs/legacy_cmp/volgroups/`): 8x8 23.84 ms, 8x16 23.35, 16x8 24.77, 16x16 24.76. At 16x16,
+    Generate Samples and Spatial Reuse gain 3-4% but Temporal Reuse loses 28% and Final Shading 11%.
+  * **The gap grows along the orbit.** Per-frame times of the profiled 300-frame runs: 9.0
+    19.4 -> 25.0 ms from the first to the last 20 frames, the fork 16.3-17.8 flat after its kernel swap.
+    9.0's estimator is 63.3 Mcyc at pose ~50 deg and 70.2 at ~168 deg with texture work up 8%.
   * **Ruled out, measured:** shader model 6_5 (29 ms, much worse), Slang `-O0..-O3` and DXC flags,
     root-signature descriptor flags (gfx's source leaves them NONE, like the fork), non-uniform
     resource indices (none in either build), debug info (none), `[unroll]` on the ray/box axis loop
@@ -376,6 +412,29 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
 * **Nsight notes:** on a full-scene frame the pass ranges are misattributed unless GPU Trace runs
   with `--hes-enabled 0`, and a legacy full-scene trace collects no counters at all. Volume-only
   traces work for both.
+* **TRAP: the fork runs two different compiles of the same shaders, and a trace can catch either.**
+  Its estimator kernels start on a slow driver compile and later switch to an optimized one of the
+  SAME DXIL. The hashes are identical (Generate Samples differs only in Slang's metadata names,
+  `%this_46` vs `%this_47`), but the registers are not:
+
+  | 4.x kernel       | slow compile                  | optimized compile            |
+  |------------------|-------------------------------|------------------------------|
+  | Generate Samples | 227-232 regs / 8 warps        | 80 / 24                      |
+  | Spatial Reuse    | 255 / 8                       | 128 / 16                     |
+  | Temporal Reuse   | 255 / 8 + 48 KB shared memory | 185 / 8, none                |
+  | volume-only frame | 64-97 Mcyc                   | 40-52 Mcyc                   |
+
+  The fork's own per-frame pass times show the switch. Volume-only: Generate Samples 6.3 -> 2.6 ms,
+  Spatial Reuse 11.5 -> 6 ms. Full scene: estimator 140 -> ~110 ms, about 20-40 timing frames in.
+  When it happens varies run to run. Volume-only traces at frames 61 / 100 / 310 landed on either
+  compile, and one run was still slow at frame 310 (`outputs/legacy_cmp/legacy_regs_check.sh`,
+  `pose_trace.sh`). 9.0 never shows it: its first frames are already at full speed.
+  * For traces, check the fork's Generate Samples reads 80 registers before using a legacy trace,
+    and retry if not.
+  * The 300-frame wall-clock medians are unaffected; the slow stretch is the first ~10% of frames.
+  * `outputs/gputrace_sp/legacy_4x_volume_only.ngfx-gputrace` is a slow-compile trace. Its Shader
+    Pipelines table (255 / 227 / 255 / 80 registers) is not the fork's steady state;
+    `legacy_fast_shaders.csv` is.
 * **This does not reproduce "The residual is uniform" in the August section below.** Note for any
   re-run: Falcor 4's `tc.capturePassTime` looks events up by their full `#`-joined path
   (`#onFrameRender#RenderGraphExe::execute()#VolumetricReSTIR#Spatial Reuse`), and a bare pass name,
