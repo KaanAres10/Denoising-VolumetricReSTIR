@@ -723,6 +723,10 @@ if(FALCOR_HAS_D3D12 AND (CMAKE_SYSTEM_NAME STREQUAL "Windows"))
     FetchPackage(dxc URL ${DXC_URL})
     copy_file(${dxc_SOURCE_DIR}/bin/x64/dxcompiler.dll .)
     copy_file(${dxc_SOURCE_DIR}/bin/x64/dxil.dll .)
+    # The copy_file() calls above never run on the VS generator (see the Agility SDK note above), so
+    # deploycommon.bat is what puts DXC beside the executable. It deploys this fetched DXC only when
+    # FALCOR_USE_FETCHED_DXC is ON (root CMakeLists.txt); otherwise the packman one, 1.7.2207.
+    set(FALCOR_DXC_DIR ${dxc_SOURCE_DIR} PARENT_SCOPE)
 
     add_library(dxcompiler SHARED IMPORTED GLOBAL)
     set_target_properties(dxcompiler PROPERTIES

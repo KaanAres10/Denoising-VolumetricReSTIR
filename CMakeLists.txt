@@ -365,9 +365,25 @@ if(FALCOR_NRD_DIR)
     set_target_properties(patch_nrd_shaders PROPERTIES FOLDER "Misc")
 endif()
 
+# Which DXC compiles every shader. Falcor 9 fetches DXC 1.8.2505 (external/CMakeLists.txt), but the build
+# has always deployed the packman package, 1.7.2207, left over from the 8.0 build -- and the locked
+# captures were rendered with it. ON deploys the fetched 1.8. Bistro, interleaved, 3 rounds: volume-only
+# estimator -4% (Spatial Reuse -10%), but full scene +10% (Spatial Reuse +16%, its register cliff), and
+# up to 0.06% of pixels change by up to 4/255. So it is not the default.
+# See Source/RenderPasses/NRDPass/STATE.md, "What makes the fork faster volume-only".
+option(FALCOR_USE_FETCHED_DXC "Deploy the fetched DXC 1.8.2505 instead of the packman DXC 1.7.2207" OFF)
+if(FALCOR_USE_FETCHED_DXC)
+    set(FALCOR_DEPLOY_DXC_DIR ${FALCOR_DXC_DIR})
+else()
+    set(FALCOR_DEPLOY_DXC_DIR "")
+endif()
+
 if(FALCOR_WINDOWS)
+    # FALCOR_DXC_DIR goes through the environment, not as %8: the positional arguments shift whenever
+    # one of the directories before it is empty.
     add_custom_target(deploy_dependencies ALL
-        COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.bat ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR} ${FALCOR_NRD_DIR} ${FALCOR_AGILITY_SDK_DIR}
+        COMMAND ${CMAKE_COMMAND} -E env "FALCOR_DXC_DIR=${FALCOR_DEPLOY_DXC_DIR}"
+                ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.bat ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR} ${FALCOR_NRD_DIR} ${FALCOR_AGILITY_SDK_DIR}
     )
     if(TARGET patch_nrd_shaders)
         add_dependencies(deploy_dependencies patch_nrd_shaders)

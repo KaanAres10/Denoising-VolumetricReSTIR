@@ -30,8 +30,20 @@ robocopy %ExtDir%\python\ %OutDir% python*.dll /r:0 >nul
 robocopy %ExtDir%\python %OutDir%\pythondist /E /r:0 >nul
 robocopy %SlangDir%\bin %OutDir% *.dll /r:0 >nul
 robocopy %ExtDir%\pix\bin\x64 %OutDir% WinPixEventRuntime.dll /r:0 >nul
-robocopy %ExtDir%\dxcompiler\bin\x64 %OutDir% dxil.dll /r:0 >nul
-robocopy %ExtDir%\dxcompiler\bin\x64 %OutDir% dxcompiler.dll /r:0 >nul
+rem DXC. FALCOR_DXC_DIR (environment, set by CMake when FALCOR_USE_FETCHED_DXC=ON) is the DXC 1.8.2505
+rem that Falcor 9 fetches; otherwise the packman package, 1.7.2207. No need to clear gfx's .shadercache
+rem on a switch: its keys cover the compiler (a run with the other DXC and the cache kept compiles the
+rem same code as one with the cache emptied).
+set DxcSrc=%ExtDir%\dxcompiler\bin\x64
+if not "%FALCOR_DXC_DIR%" == "" (
+    if exist "%FALCOR_DXC_DIR%\bin\x64\dxcompiler.dll" (
+        set DxcSrc=%FALCOR_DXC_DIR%\bin\x64
+    ) else (
+        echo [deploycommon] WARNING: no DXC at "%FALCOR_DXC_DIR%"; deploying the packman one.
+    )
+)
+robocopy %DxcSrc% %OutDir% dxil.dll /r:0 >nul
+robocopy %DxcSrc% %OutDir% dxcompiler.dll /r:0 >nul
 robocopy %ExtDir%\nvtt\ %OutDir% cudart64_110.dll /r:0 >nul
 robocopy %ExtDir%\nvtt\ %OutDir% nvtt30106.dll /r:0 >nul
 robocopy %ExtDir%\cuda\bin\ %OutDir% cudart*.dll /r:0 >nul
