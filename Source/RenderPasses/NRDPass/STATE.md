@@ -444,8 +444,12 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
     60 frames; per-frame PSNR 53.1 / 36.7 dB). It is noise, not bias: averaged over the 60 frames the
     PSNR rises by 17-18 dB, what independent noise gives (10 log10 60 = 17.8), and mean brightness
     matches within 0.2% (`outputs/pending_9p/fastmath/diff.sh`). The locked `rb_v9p_*` captures all
-    have surfaces and are untouched. Turn it on for performance runs; making it the default means
-    volume-only renders are no longer bit-comparable with earlier ones.
+    have surfaces and are untouched. Making it the default means volume-only renders are no longer
+    bit-comparable with earlier ones. **2026-09-26: not re-verified -- keep precise.** The accuracy
+    checks below are 60-200 frames, too short for the rare events behind the giant fireflies (see
+    "FIXED: the giant smoke fireflies"): with fast math forced on the full scene and without that fix, one
+    pixel reached 2e16 in 13 of 32 256-frame windows, and a fast run with the fix stopped silently after
+    1280 frames (not followed up). The check it needs: bistro volume-only, fast math, 8192 frames.
     Accuracy is unchanged: against the brute-force path-traced ground truth (`bias_test_plume.py`,
     `outputs/pending_9p/fastmath/bias.sh`, ImageCompare MSE as in the VolumetricReSTIR README), converged
     at 4096 frames precise 9.975e-5 / fast 9.976e-5, at 64 frames 2.628e-4 / 2.614e-4, MAPE equal to three
@@ -806,9 +810,47 @@ overflow its half-float files masked):
   a sample kept alive by reuse. The fork over the same 8192 frames has none: its largest is 21, at the
   lamp-glass edge (1385, 828) -- the same pixel as one of 9.0's -- so the lamp-edge ones are shared and the
   giant ones in open smoke are a 9.0 regression, older than the fork-parity fixes. Pixel-windows above
-  1 / 10 over 8192 frames: 9.0 76 / 6, fork 111 / 3 (`forkref/fireflies.py`). **Open: where 9.0's
-  come from.** The runs are deterministic, so the frame can be pinned down, and reuse switched off
-  stage by stage.
+  1 / 10 over 8192 frames: 9.0 76 / 6, fork 111 / 3 (`forkref/fireflies.py`). Found and fixed: next
+  section.
+
+### FIXED: the giant smoke fireflies were a NaN in the GVDB traversal (2026-09-26)
+
+**Cause.** A shadow ray exactly parallel to a voxel axis. The traversal (`Scene/GVDB/gvdbDda.slang`, the
+HDDA every density tracker walks) gets `tDel = |1/dir| = inf` on that axis, and `Step()` advances the
+crossing times with `tSide += float3(mask) * tDel`: on every step along another axis that is `0 * inf =
+NaN`. A NaN `tSide` fails every comparison in `Next()`, no axis is selected, and the step runs to the z
+crossing however far it is. The analytic tracker then integrates one voxel's trilinear density across
+~10 voxels, the fit extrapolates negative, and the "transmittance" comes out at `exp(+17)`. Parallel
+means EXACT: in both pinned cases the scatter point and the sampled light point have the same y to the
+last bit (6.68720341 / 6.68720341; 6.50124454 / 6.50124454), i.e. one light sample in ~10^6 -- a few per
+frame, a firefly when that sample is the one kept and its ray crosses the smoke. The lines are NVIDIA's
+(`cuda_gvdb_dda.cuh` has them as-is), so the fork has them too; why the fork shows none is not known. Not
+its fast math: 9.0 with fast math and no fix is far WORSE (above).
+
+**How it was found** (`outputs/pending_9p/forkref/`: `pin.py`, `ffread.py`, the instrumentation kept
+as `firefly_debug.patch`). The runs are deterministic, so a firefly pins to its frame
+(`reference_pose.py VR_CAPTURE_AT`): (1130, 568) is frame 607 alone, 24,011; (1043, 523) frame 2103,
+13,767. There, Final Shading's `F(y)` was 57,133 / 120,524 against a stored `p_hat` of 0.0005 / 0.0027,
+`W` ordinary (0.42 / 0.11): a mismatch, not a weight blow-up. Spatial reuse's options reproduce `p_hat`
+exactly; mip level and step size barely move it; the tracker does -- ray marching gives ~0.001, the
+analytic tracker Final Shading uses gives 57,133. Split: camera side agrees (0.65 vs 0.67), light side
+does not (analytic 4.3e7, ray-marched 0.63). A copy of the analytic adapter recording each segment: 2
+steps for an 8 m ray, one with optical depth -17, entering at x = 1 and ending at x = -11.5 in voxel
+units; `tSide.y` NaN, `mask` 0, `dir.y` exactly 0.
+
+**Fix:** `tDel` capped at 1e30 in `Prepare` / `PrepareLeaf`, so a parallel axis is never crossed and
+`0 * tDel = 0`; every finite `tDel` is unchanged. The traced sample now gets light transmittance 0.470
+(ray-marched 0.504). Over 8192 frames the open-smoke fireflies go from 3 (up to ~51,000 in one frame) to
+0; the lamp-edge ones the fork shares stay. Against the path tracer (second half, own reference): plume
+core +2.59% ± 0.05 (fork +2.60 ± 0.07), whole -0.01 ± 0.01, one frame 0.00228 (fork 0.00431). 9.0's
+street is -0.17% ± 0.02 against the fork's -0.06 ± 0.02: small, real, not chased. Cost: none measurable
+(interleaved, full scene 74.0 vs 74.5 ms, volume only 18.6-21.6 both).
+
+**Pixels.** Every GVDB scene changes, a little: the noise diverges from the first affected ray. Plume
+0.001% of pixels at frame 1 -> 0.22% by frame 60, mean 87.127 unchanged, 60-frame averages within 0.9/255;
+bistro volume-only 0.26-0.52%, mean 19.461 -> 19.462. `VR_PRE_DDA_CLAMP=1` compiles the original back;
+`mask_check.sh` now sets it with `VR_PRE_FORK_PARITY=1`, and rb_v9p_raw comes back 300/300
+(`forkref/dda_verify.sh`).
 
 ## SOLVED: REBLUR's medium was transparent under motion
 

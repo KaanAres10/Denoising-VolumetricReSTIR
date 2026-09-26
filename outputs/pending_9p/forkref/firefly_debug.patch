@@ -1,0 +1,202 @@
+diff --git a/Source/RenderPasses/VolumetricReSTIR/FinalShading.cs.slang b/Source/RenderPasses/VolumetricReSTIR/FinalShading.cs.slang
+index 1d4690e..6a6447a 100644
+--- a/Source/RenderPasses/VolumetricReSTIR/FinalShading.cs.slang
++++ b/Source/RenderPasses/VolumetricReSTIR/FinalShading.cs.slang
+@@ -157,6 +157,76 @@ import ComputeInitialSample;
+ #ifndef VR_GROUP_Y
+ #define VR_GROUP_Y 8
+ #endif
++
++#if VR_FF_DEBUG >= 7
++import VolumeTrackingAdapterGVDB;
++#ifndef MAX_BRICK_STEPS
++#define MAX_BRICK_STEPS 128
++#endif
++// TEMPORARY firefly hunt: MediumTrAnalyticAdapterGVDB's trilinear branch, recording every segment that ADDS to the
++// transmittance exponent (negative optical depth) and why.
++struct FFAnalyticDebugAdapter : IVolumeTrackingAdapterGVDB
++{
++    float Tr; float tNear; float tFar; VolRay ray;
++    int nSteps; int nNegT; int nNegInt; float antiDepth; float minT; float worstInt; float3 worstP0; float worstTd; float3 worstP1; float3 wSide; float3 wDir; float3 wT; float3 wMisc;
++    [mutating] void InitializeValues() { Tr = 0.f; nSteps = 0; nNegT = 0; nNegInt = 0; antiDepth = 0.f; minT = 1e30f; worstInt = 0.f; worstP0 = 0; worstTd = 0; worstP1 = 0; wSide = 0; wDir = 0; wT = 0; wMisc = 0; }
++    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_) { tNear = tNear_; tFar = tFar_; ray = ray_; }
++    [mutating] void ExecuteStartStep() {}
++    [mutating] bool ExecuteMainStep(in HDDAState dda, float3 vmin_leaf, float3 o, float4 brickDensityBounds, int mipLevel, inout float t, inout SampleGenerator sg)
++    {
++        HDDAState dda_leaf = dda;
++        dda_leaf.PrepareLeaf(vmin_leaf);
++        const AtlasMip atlasMip = loadAtlasMip(mipLevel);
++        for (int iter = 0; iter < MAX_BRICK_STEPS && all(dda_leaf.p >= 0 && dda_leaf.p < atlasMip.resolution()); iter++)
++        {
++            dda_leaf.Next();
++            float maxDeltaT = dda_leaf.t.y - t;
++            float4 densities[2];
++            FetchEightVoxelsInAtlas(dda_leaf.p + o + 0.5f, mipLevel, densities, atlasMip);
++            densities[0] *= gScene.volumeDesc.sigma_t; densities[1] *= gScene.volumeDesc.sigma_t;
++            float v_000 = densities[0][0]; float v_100 = densities[0][1]; float v_010 = densities[0][2]; float v_110 = densities[0][3];
++            float v_001 = densities[1][0]; float v_101 = densities[1][1]; float v_011 = densities[1][2]; float v_111 = densities[1][3];
++            float mxyz = v_111 - v_011 - v_101 - v_110 + v_100 + v_010 + v_001 - v_000;
++            float mxy = v_000 - v_100 - v_010 + v_110; float mxz = v_000 - v_100 - v_001 + v_101; float myz = v_000 - v_010 - v_001 + v_011;
++            float mx = v_100 - v_000; float my = v_010 - v_000; float mz = v_001 - v_000;
++            float3 d = ray.dir;
++            float3 p0 = dda_leaf.pos + dda_leaf.t.x * dda_leaf.dir - (dda_leaf.p + vmin_leaf);
++            float c3 = mxyz * d.x * d.y * d.z;
++            float c2 = (p0.z * d.x * d.y + p0.y * d.x * d.z + p0.x * d.y * d.z) * mxyz + mxy * d.x * d.y + mxz * d.x * d.z + myz * d.y * d.z;
++            float c1 = (p0.y * p0.z * d.x + p0.x * p0.z * d.y + p0.x * p0.y * d.z) * mxyz +
++                mx * d.x + my * d.y + mz * d.z + (p0.y * d.x + p0.x * d.y) * mxy + (p0.z * d.x + p0.x * d.z) * mxz + (p0.z * d.y + p0.y * d.z) * myz;
++            float c0 = p0.x * p0.y * p0.z * mxyz + p0.x * p0.y * mxy + p0.x * p0.z * mxz + p0.y * p0.z * myz + p0.x * mx + p0.y * my + p0.z * mz + v_000;
++            float t_dist = min(tFar - t, maxDeltaT);
++            float t2 = t_dist * t_dist; float t3 = t2 * t_dist; float t4 = t2 * t2;
++            float seg = c3 * t4 / 4 + c2 * t3 / 3 + c1 * t2 / 2 + c0 * t_dist; // this segment's optical depth
++            Tr += -seg;
++            nSteps++; minT = min(minT, t_dist);
++            if (t_dist < 0.f) nNegT++;
++            if (seg < 0.f) { nNegInt++; antiDepth += -seg; if (seg < worstInt) { worstInt = seg; worstP0 = p0; worstTd = t_dist; worstP1 = p0 + t_dist * d; wSide = dda_leaf.tSide; wDir = dda_leaf.dir; wT = float3(t, dda_leaf.t.x, dda_leaf.t.y); wMisc = float3(dda_leaf.mask.x + 2 * dda_leaf.mask.y + 4 * dda_leaf.mask.z, tFar, maxDeltaT); } }
++            if (t + maxDeltaT >= tFar) { Tr = exp(Tr); return true; }
++            t += maxDeltaT;
++            dda_leaf.Step();
++        }
++        return false;
++    }
++    [mutating] void ExecuteEndStep() { Tr = exp(Tr); }
++}
++#endif
++#ifndef VR_FF_DEBUG
++#define VR_FF_DEBUG 0
++#endif
++#ifndef VR_FF_FRAME
++#define VR_FF_FRAME -1
++#endif
++#ifndef VR_FF_X1
++#define VR_FF_X1 0
++#define VR_FF_Y1 0
++#define VR_FF_X2 0
++#define VR_FF_Y2 0
++#endif
++#ifndef VR_FF_FRAME2
++#define VR_FF_FRAME2 -1
++#endif
+ [numthreads(VR_GROUP_X, VR_GROUP_Y, 1)]
+ void main(uint3 DTid : SV_DispatchThreadID)
+ {
+@@ -171,6 +241,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
+     uint pixelId = pixelPos.y * gResolution.x + pixelPos.x;
+ 
+     float3 outputColor = 0;
++#if VR_FF_DEBUG // TEMPORARY firefly hunt: the pieces of F * W at frame VR_FF_FRAME, written instead of the colour
++    float ffF = 0, ffPy = 0, ffW = 0, ffSum = 0, ffM = 0, ffDepth = 0, ffLight = 0, ffFp = 0;
++#endif
+ 
+     SampleGenerator sg = SampleGenerator(pixelPos, gNumTotalRounds * gFrameCount + gNumTotalRounds - 1);
+ 
+@@ -214,6 +287,82 @@ void main(uint3 DTid : SV_DispatchThreadID)
+             //print(curReservoir.M);
+             //print(W);
+ 
++#if VR_FF_DEBUG
++            ffF = luminance(curOutputColor); ffW = W; ffPy = curReservoir.p_y; ffSum = curReservoir.runningSum;
++            ffM = curReservoir.M; ffDepth = curReservoir.depth; ffLight = curReservoir.lightID;
++            if ((gFrameCount == VR_FF_FRAME || gFrameCount == VR_FF_FRAME2))
++            {
++                // F as p_hat evaluates it (isFinalShading = false: coarse lighting mip, non-opaque culled).
++                Reservoir tapCopy = curReservoir;
++                SampleGenerator sg2 = sg;
++                SingleExternalVisibilityProvider ev;
++                ev.Initialize();
++                ffFp = luminance(evaluate_F_(tapCopy, VBUFFERITEM dataProvider, envMapSampler, emissiveSampler, ray, sg2, SAMPLING_OPTIONS, ev, false, false, false, false));
++#if VR_FF_DEBUG == 5 || VR_FF_DEBUG == 6
++                // The two transmittances of a direct light sample, straight from the trackers: camera -> scatter
++                // point (Tv) and scatter point -> light (Tl). 5: analytic (final shading's), 6: ray marching.
++                if (all(pixelPos == uint2(VR_FF_X1, VR_FF_Y1)) || all(pixelPos == uint2(VR_FF_X2, VR_FF_Y2)))
++                {
++                    const uint method = VR_FF_DEBUG == 5 ? kAnalyticTracking : kRayMarching;
++                    const float step = VR_FF_DEBUG == 5 ? 1.f : 0.2f;
++                    SampleGenerator g = sg;
++                    VolRay prim = ray; prim.tMax = curReservoir.depth;
++                    const float3 pW = prim.at(prim.tMax);
++                    TriangleLightSample ls;
++                    const bool ok = curReservoir.lightID >= (int)gScene.getLightCount()
++                        && sampleTriangleOffset(pW, (uint)(curReservoir.lightID - (int)gScene.getLightCount()), curReservoir.lightUV, ls);
++                    VolRay sh = { pW, ok ? ls.dir : float3(0, 1, 0), 0.f, ok ? ls.distance : 0.f };
++                    ffSum = computeVisibility(prim, g, 1, 0, true, method, step);
++                    ffM = ok && ls.distance > 0.f ? computeVisibility(sh, g, 1, 0, true, method, step) : -1.f;
++                    ffDepth = VR_FF_DEBUG == 5 ? (ok ? ls.distance : -1.f)
++                        : (ok ? luminance(ls.Le) * dot(ls.normalW, -ls.dir) / (ls.distance * ls.distance) : -1.f);
++                }
++#endif
++#if VR_FF_DEBUG >= 7
++                if (all(pixelPos == uint2(VR_FF_X1, VR_FF_Y1)) || all(pixelPos == uint2(VR_FF_X2, VR_FF_Y2)))
++                {
++                    SampleGenerator g = sg;
++                    VolRay prim = ray; prim.tMax = curReservoir.depth;
++                    const float3 pW = prim.at(prim.tMax);
++                    TriangleLightSample ls;
++                    if (sampleTriangleOffset(pW, (uint)(curReservoir.lightID - (int)gScene.getLightCount()), curReservoir.lightUV, ls))
++                    {
++                        VolRay sh = { pW, ls.dir, 0.f, ls.distance };
++                        if (VR_FF_DEBUG == 15) { ffSum = ls.dir.x; ffM = ls.dir.y; ffDepth = ls.dir.z; }
++                        if (VR_FF_DEBUG == 16) { ffSum = pW.y; ffM = ls.posW.y; ffDepth = WorldToMedium(sh, 0).dir.y; }
++                        FFAnalyticDebugAdapter a;
++                        a.InitializeValues();
++                        VolumeTrackingGVDB(sh, 0, g, a, true); // computeVisibility -> MediumTrAnalyticGeneric: mip 0, vertexCenter = useLinearSampler = true
++                        if (VR_FF_DEBUG == 7) { ffSum = a.Tr; ffM = a.nSteps + 1000.f * a.nNegInt + 1000000.f * a.nNegT; ffDepth = a.antiDepth; }
++                        else if (VR_FF_DEBUG == 8) { ffSum = a.worstInt; ffM = a.worstTd; ffDepth = a.minT; }
++                        else if (VR_FF_DEBUG == 9) { ffSum = a.worstP0.x; ffM = a.worstP0.y; ffDepth = a.worstP0.z; }
++                        else if (VR_FF_DEBUG == 10) { ffSum = a.worstP1.x; ffM = a.worstP1.y; ffDepth = a.worstP1.z; }
++                        else if (VR_FF_DEBUG == 11) { ffSum = a.wSide.x; ffM = a.wSide.y; ffDepth = a.wSide.z; }
++                        else if (VR_FF_DEBUG == 12) { ffSum = a.wDir.x; ffM = a.wDir.y; ffDepth = a.wDir.z; }
++                        else if (VR_FF_DEBUG == 13) { ffSum = a.wT.x; ffM = a.wT.y; ffDepth = a.wT.z; }
++                        else if (VR_FF_DEBUG == 14) { ffSum = a.wMisc.x; ffM = a.wMisc.y; ffDepth = a.wMisc.z; }
++                    }
++                }
++#endif
++#if VR_FF_DEBUG == 4
++                // The same sample under spatial reuse's options (VolumetricReSTIR.h defaults: ray marching,
++                // linear sampler, mip 1, t-step 1), and with one knob at a time moved to final shading's.
++                SamplingOptions sp = SAMPLING_OPTIONS;
++                sp.visibilityTrackingMethod = kRayMarching; sp.lightingTrackingMethod = kRayMarching;
++                sp.visibilitySamples = 1; sp.lightSamples = 1;
++                sp.visibilityUseLinearSampler = true; sp.lightingUseLinearSampler = true;
++                sp.visibilityMipLevel = 1; sp.lightingMipLevel = 1; sp.visibilityTStepScale = 1.f; sp.lightingTStepScale = 1.f;
++                SamplingOptions sp0 = sp; sp0.visibilityMipLevel = 0; sp0.lightingMipLevel = 0;
++                SamplingOptions spS = sp; spS.visibilityTStepScale = 0.2f; spS.lightingTStepScale = 0.2f;
++                { Reservoir t = curReservoir; SampleGenerator g = sg; SingleExternalVisibilityProvider e; e.Initialize();
++                  ffSum = luminance(evaluate_F_(t, VBUFFERITEM dataProvider, envMapSampler, emissiveSampler, ray, g, sp, e, false, false, false, false)); }
++                { Reservoir t = curReservoir; SampleGenerator g = sg; SingleExternalVisibilityProvider e; e.Initialize();
++                  ffM = luminance(evaluate_F_(t, VBUFFERITEM dataProvider, envMapSampler, emissiveSampler, ray, g, sp0, e, false, false, false, false)); }
++                { Reservoir t = curReservoir; SampleGenerator g = sg; SingleExternalVisibilityProvider e; e.Initialize();
++                  ffDepth = luminance(evaluate_F_(t, VBUFFERITEM dataProvider, envMapSampler, emissiveSampler, ray, g, spS, e, false, false, false, false)); }
++#endif
++            }
++#endif
+             curOutputColor *= W;
+ 
+             outputColor += curOutputColor;
+@@ -226,6 +375,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
+ 
+     if (any(isnan(curColor) || isinf(curColor))) curColor = 0.f;
+ 
++#if VR_FF_DEBUG
++    if ((gFrameCount == VR_FF_FRAME || gFrameCount == VR_FF_FRAME2))
++    {
++        if (VR_FF_DEBUG == 1) curColor = float4(ffF, ffPy, ffW, 1);
++        else if (VR_FF_DEBUG == 2 || VR_FF_DEBUG >= 4) curColor = float4(ffSum, ffM, ffDepth, 1);
++        else curColor = float4(ffLight, ffFp, luminance(outputColor), 1);
++    }
++#endif
+     gOutputFrame[pixelPos] = curColor;
+ 
+     // Computed first so the volume/surface split can exclude it: when emission is routed around the
+diff --git a/Source/RenderPasses/VolumetricReSTIR/VolumetricReSTIR.cpp b/Source/RenderPasses/VolumetricReSTIR/VolumetricReSTIR.cpp
+index bbbb749..5b1f46d 100644
+--- a/Source/RenderPasses/VolumetricReSTIR/VolumetricReSTIR.cpp
++++ b/Source/RenderPasses/VolumetricReSTIR/VolumetricReSTIR.cpp
+@@ -814,7 +814,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData&
+         setMask(mpTraceRaysPass, bit(initialOptions.lightingTrackingMethod) | spatialMask | referenceMask);
+         setMask(mTemporalReusePass, spatialMask);
+         setMask(mSpatialReusePass, spatialMask);
+-        setMask(mFinalShadingPass, finalMask);
++        setMask(mFinalShadingPass, finalMask | (std::getenv("VR_FF_DEBUG_MASK") ? spatialMask : 0u)); // TEMPORARY firefly hunt
+ 
+         // Compile-time mirrors of the light-kind switches and of reuse (see VolumeUtils.slang). They
+         // come from the same parameters as the runtime flags in SamplingOptions / gNoReuse, so a light

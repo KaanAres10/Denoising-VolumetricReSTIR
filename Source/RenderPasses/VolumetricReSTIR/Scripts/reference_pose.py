@@ -75,6 +75,15 @@ print("[reference_pose] mode=%s frames=%d spp=%d captures=%d" % (MODE, FRAMES, S
 m.renderFrame()  # frame 0: camera settles, the accumulation starts here
 f0 = int(m.clock.frame)
 frames = [f0 + FRAMES * k // CAPTURES - 1 for k in range(1, CAPTURES + 1)]
+# VR_CAPTURE_AT=a,b,c-d: capture at these accumulated-frame counts instead (1 = the first frame; c-d is a
+# range), for pinning an event to its frame. FRAMES still sets how long it runs.
+_at = vr.env("VR_CAPTURE_AT", "")
+if _at:
+    counts = []
+    for part in _at.split(","):
+        lo, _, hi = part.partition("-")
+        counts += list(range(int(lo), int(hi or lo) + 1))
+    frames = [f0 + n - 1 for n in sorted(set(counts))]
 os.makedirs(OUT_DIR, exist_ok=True)
 m.frameCapture.outputDir = OUT_DIR
 m.frameCapture.baseFilename = TAG

@@ -5,6 +5,8 @@ R=/c/research/Denoising-VolumetricReSTIR; cd $R
 O=$R/outputs/pending_9p/forkref/cap
 eng=$1 mode=$2 frames=$3 spp=$4 tag=$5; shift 5
 tasklist 2>/dev/null | grep -qi mogwai && { echo "Mogwai running, abort"; exit 1; }
+# Building a pass target drops these two from bin/ (Mogwai then fails to load, naming python310.dll).
+ls build/windows-vs2022/bin/Release/libprotoc.dll build/windows-vs2022/bin/Release/z.dll >/dev/null 2>&1 || ./tools/.packman/cmake/bin/cmake.exe --build build/windows-vs2022 --config Release --target restore_runtime_dlls >/dev/null 2>&1
 mkdir -p $O/$tag; rm -f $O/$tag/*
 t0=$(date +%s)
 ( for v in $(env | grep -o "^\(VR_\|NRD4_\)[A-Z0-9_]*"); do unset $v; done
