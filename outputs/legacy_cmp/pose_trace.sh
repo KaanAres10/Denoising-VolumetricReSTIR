@@ -13,12 +13,12 @@ trace() { # $1 engine
   local d="$O/${tag}_$1"; rm -rf "$d"; mkdir -p "$d"
   local W="C:/research/Denoising-VolumetricReSTIR/outputs/legacy_cmp/pose_trace/${tag}_$1"
   if [ "$1" = legacy ]; then
-    (cd $R/legacy && VR_NO_SURFACE=1 VR_FRAMES=${PT_FRAMES:-300} timeout 900 "$NG" --activity "GPU Trace Profiler" \
+    (cd $R/legacy && VR_NO_SURFACE=1 VR_FRAMES=${PT_FRAMES:-300} timeout 900 "$NG" --activity "GPU Trace Profiler" --set-gpu-clocks ${NG_CLOCKS:-base} \
       --exe "C:\research\Denoising-VolumetricReSTIR\legacy\Bin\x64\Release\Mogwai.exe" --dir "C:\research\Denoising-VolumetricReSTIR\legacy" \
       --args "--script C:\research\Denoising-VolumetricReSTIR\legacy\Scripts\_time_raw_legacy.py" \
       --start-after-frames $start --limit-to-frames 1 --auto-export --output-dir "$W" > "$d/ngfx.log" 2>&1)
   else
-    (cd $R && VR_USE_SURFACE=0 VR_FRAMES=${PT_FRAMES:-300} VR_ENGINE=v9 timeout 900 "$NG" --activity "GPU Trace Profiler" \
+    (cd $R && VR_USE_SURFACE=0 VR_FRAMES=${PT_FRAMES:-300} VR_ENGINE=v9 timeout 900 "$NG" --activity "GPU Trace Profiler" --set-gpu-clocks ${NG_CLOCKS:-base} \
       --exe "C:\research\Denoising-VolumetricReSTIR\build\windows-vs2022\bin\Release\Mogwai.exe" --dir "C:\research\Denoising-VolumetricReSTIR" \
       --args "--script C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\time_raw.py" \
       --start-after-frames $start --limit-to-frames 1 --auto-export --output-dir "$W" > "$d/ngfx.log" 2>&1)

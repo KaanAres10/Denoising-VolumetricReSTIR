@@ -788,6 +788,8 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
     mParams.mFinalTStepScale,
     mParams.mUseEnvironmentLights, mParams.mUseAnalyticLights, mParams.mUseEmissiveLights, mParams.mVertexReuseStartBounce };
 
+    bool specializeFeatures = false; // Generate Features' switches, set in its own block below
+
     // Compile into each pass only the transmittance trackers its sampling options can select
     // (VR_TRACKING_MASK, see computeVisibility in VolumeUtils.slang). addDefine only recompiles when a
     // mask actually changes, i.e. when a tracking method is switched in the UI or reference mode toggles.
@@ -856,12 +858,12 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         // pass faster). Specializing Spatial Reuse on the full scene drops it onto its register cliff
         // (56.1 -> 59.9-62.2 ms), so on surface scenes it keeps reading CB; with that, full-scene
         // estimator 98.0 -> 95.7 ms (4 rounds; Generate Samples -10%). For A/B: VR_SPECIALIZE=0 keeps every pass on CB,
-        // VR_SPECIALIZE_PASSES=GS,TR,SR,FS names the passes (overriding that policy),
+        // VR_SPECIALIZE_PASSES=GF,GS,TR,SR,FS names the passes (overriding that policy),
         // VR_SPECIALIZE_FIELDS=<mask> picks the fields.
         static const char* kSpecializeOverride = std::getenv("VR_SPECIALIZE");
         static const char* kSpecializePassesEnv = std::getenv("VR_SPECIALIZE_PASSES");
         static const char* kSpecializeFields = std::getenv("VR_SPECIALIZE_FIELDS");
-        const std::string specializePasses = kSpecializePassesEnv ? kSpecializePassesEnv : mParams.mUseSurfaceScene ? "GS,TR,FS" : "GS,TR,SR,FS";
+        const std::string specializePasses = kSpecializePassesEnv ? kSpecializePassesEnv : mParams.mUseSurfaceScene ? "GF,GS,TR,FS" : "GF,GS,TR,SR,FS";
         const bool specializeAny = !(kSpecializeOverride && kSpecializeOverride[0] == '0');
         const auto specializePass = [&](const ref<ComputePass>& pass, const char* name) -> Program* {
             if (!pass) return nullptr;
@@ -885,6 +887,11 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(spatialOptions));
         if (Program* program = specializePass(mSpatialReusePass, "SR"))
             program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(spatialOptions));
+        if (Program* program = specializePass(mGenerateFeaturePass, "GF"))
+        {
+            program->addDefine("VR_INITIAL_OPTIONS", samplingOptionsLiteral(initialOptions));
+            specializeFeatures = true;
+        }
         if (Program* program = specializePass(mFinalShadingPass, "FS"))
         {
             program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(finalOptions));
@@ -1009,6 +1016,29 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         vars["CB"]["gOutputVolumeGuides"] =
             writeAlpha || writeNormal || writeTau || writeScatter || writeVelocity || writeDensity
             || pCoverage != nullptr || pTransmittance != nullptr;
+
+        // VR_SPECIALIZE: the same switch values compiled in (GenerateFeatures.cs.slang). Not
+        // gGuideLightStatsValid, which turns on after the first frame.
+        if (specializeFeatures)
+        {
+            auto& program = *mGenerateFeaturePass->getProgram();
+            const auto b = [](bool v) { return std::string(v ? "true" : "false"); };
+            program.addDefine("VR_GF_UseReference", b(mParams.mUseReference));
+            program.addDefine("VR_GF_OutputDepth", b(writeDepth));
+            program.addDefine("VR_GF_OutputDeterministicMV", b(writeDetMV));
+            program.addDefine("VR_GF_DepthAsNDC", b(mDepthAsNDC));
+            program.addDefine("VR_GF_OutputVolumeGuides", b(writeAlpha || writeNormal || writeTau || writeScatter || writeVelocity || writeDensity
+                                                              || pCoverage != nullptr || pTransmittance != nullptr));
+            program.addDefine("VR_GF_OutputMediumAlpha", b(writeAlpha));
+            program.addDefine("VR_GF_OutputMediumNormal", b(writeNormal));
+            program.addDefine("VR_GF_OutputOpticalThickness", b(writeTau));
+            program.addDefine("VR_GF_OutputVolumeVelocity", b(writeVelocity));
+            program.addDefine("VR_GF_OutputScatterDensity", b(writeDensity));
+            program.addDefine("VR_GF_OutputMediumCoverage", b(pCoverage != nullptr));
+            program.addDefine("VR_GF_OutputMediumTransmittance", b(pTransmittance != nullptr));
+            program.addDefine("VR_GF_VolumeNormalMode", std::to_string((uint32_t)mVolumeNormalMode) + "u");
+            program.addDefine("VR_GF_OutputScatterDistance", b(writeScatter));
+        }
 
         if (mParams.mUseSurfaceScene)
         {

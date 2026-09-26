@@ -17,7 +17,7 @@ ls $B/python310.dll $B/z.dll >/dev/null 2>&1 || (cd $R && ./tools/.packman/cmake
 (
   for e in $(env | grep -o "^\(VR_\|NRD4_\)[A-Z0-9_]*"); do unset $e; done
   for kv in "$@"; do export "$kv"; done
-  cd $R && VR_USE_SURFACE=0 VR_FRAMES=300 VR_ENGINE=v9 timeout 900 "$NG" --activity "GPU Trace Profiler" \
+  cd $R && VR_USE_SURFACE=0 VR_FRAMES=300 VR_ENGINE=v9 timeout 900 "$NG" --activity "GPU Trace Profiler" --set-gpu-clocks ${NG_CLOCKS:-base} \
     --exe "C:\research\Denoising-VolumetricReSTIR\build\windows-vs2022\bin\Release\Mogwai.exe" --dir "C:\research\Denoising-VolumetricReSTIR" \
     --args "--script C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\time_raw.py" \
     --start-after-frames 310 --limit-to-frames 1 --auto-export --output-dir "$(cygpath -m $O)" > "$O/ngfx.log" 2>&1

@@ -18,7 +18,7 @@
 
 #if VR_SPECIALIZE
 #ifndef VR_SPECIALIZE_FIELDS
-#define VR_SPECIALIZE_FIELDS 0x1fffffb
+#define VR_SPECIALIZE_FIELDS 0x3fffffb
 #endif
 
 SamplingOptions specializeOptions(SamplingOptions k, SamplingOptions o)
@@ -40,6 +40,7 @@ SamplingOptions specializeOptions(SamplingOptions k, SamplingOptions o)
     return o;
 }
 
-// Bits 14 and up: the passes' own scalar switches (TraceRays.cs.slang, FinalShading.cs.slang).
+// Bits 14 and up: the passes' own scalar switches (TraceRays.cs.slang, FinalShading.cs.slang,
+// GenerateFeatures.cs.slang).
 #define VR_SPECIALIZES(bit) ((VR_SPECIALIZE_FIELDS & (1 << (bit))) != 0)
 #endif

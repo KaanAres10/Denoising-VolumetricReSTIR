@@ -95,6 +95,44 @@ cbuffer CB
     bool    gOutputScatterDistance;
 }
 
+// VR_SPECIALIZE (SpecializeOptions.slangh): the sampling options and the pass's static switches (field
+// bit 25) compiled in as constants from the values the host also writes into CB.
+#include "SpecializeOptions.slangh"
+#if VR_SPECIALIZE
+static const SamplingOptions kInitialSamplingOptions = VR_INITIAL_OPTIONS;
+#define INITIAL_OPTIONS specializeOptions(kInitialSamplingOptions, gInitialSamplingOptions)
+#define GF_UseReference (VR_SPECIALIZES(25) ? VR_GF_UseReference : gUseReference)
+#define GF_OutputDepth (VR_SPECIALIZES(25) ? VR_GF_OutputDepth : gOutputDepth)
+#define GF_OutputDeterministicMV (VR_SPECIALIZES(25) ? VR_GF_OutputDeterministicMV : gOutputDeterministicMV)
+#define GF_DepthAsNDC (VR_SPECIALIZES(25) ? VR_GF_DepthAsNDC : gDepthAsNDC)
+#define GF_OutputVolumeGuides (VR_SPECIALIZES(25) ? VR_GF_OutputVolumeGuides : gOutputVolumeGuides)
+#define GF_OutputMediumAlpha (VR_SPECIALIZES(25) ? VR_GF_OutputMediumAlpha : gOutputMediumAlpha)
+#define GF_OutputMediumNormal (VR_SPECIALIZES(25) ? VR_GF_OutputMediumNormal : gOutputMediumNormal)
+#define GF_OutputOpticalThickness (VR_SPECIALIZES(25) ? VR_GF_OutputOpticalThickness : gOutputOpticalThickness)
+#define GF_OutputVolumeVelocity (VR_SPECIALIZES(25) ? VR_GF_OutputVolumeVelocity : gOutputVolumeVelocity)
+#define GF_OutputScatterDensity (VR_SPECIALIZES(25) ? VR_GF_OutputScatterDensity : gOutputScatterDensity)
+#define GF_OutputMediumCoverage (VR_SPECIALIZES(25) ? VR_GF_OutputMediumCoverage : gOutputMediumCoverage)
+#define GF_OutputMediumTransmittance (VR_SPECIALIZES(25) ? VR_GF_OutputMediumTransmittance : gOutputMediumTransmittance)
+#define GF_VolumeNormalMode (VR_SPECIALIZES(25) ? VR_GF_VolumeNormalMode : gVolumeNormalMode)
+#define GF_OutputScatterDistance (VR_SPECIALIZES(25) ? VR_GF_OutputScatterDistance : gOutputScatterDistance)
+#else
+#define INITIAL_OPTIONS gInitialSamplingOptions
+#define GF_UseReference gUseReference
+#define GF_OutputDepth gOutputDepth
+#define GF_OutputDeterministicMV gOutputDeterministicMV
+#define GF_DepthAsNDC gDepthAsNDC
+#define GF_OutputVolumeGuides gOutputVolumeGuides
+#define GF_OutputMediumAlpha gOutputMediumAlpha
+#define GF_OutputMediumNormal gOutputMediumNormal
+#define GF_OutputOpticalThickness gOutputOpticalThickness
+#define GF_OutputVolumeVelocity gOutputVolumeVelocity
+#define GF_OutputScatterDensity gOutputScatterDensity
+#define GF_OutputMediumCoverage gOutputMediumCoverage
+#define GF_OutputMediumTransmittance gOutputMediumTransmittance
+#define GF_VolumeNormalMode gVolumeNormalMode
+#define GF_OutputScatterDistance gOutputScatterDistance
+#endif
+
 // Input data to accumulate and accumulated output.
 RWStructuredBuffer<ReservoirFeatures> gReservoirFeatureBuffer;
 #ifdef SURFACE_SCENE
@@ -192,14 +230,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // Volume guides must be in this list: a DLSS-D graph takes depth and motion vectors from a
     // GBuffer, so gOutputDepth and gOutputDeterministicMV are both false there, and omitting the
     // volume flag silently skipped the whole block.
-    const bool needGuides = gOutputDepth || gOutputDeterministicMV || gOutputVolumeGuides;
-    if (!gUseReference || needGuides)
+    const bool needGuides = GF_OutputDepth || GF_OutputDeterministicMV || GF_OutputVolumeGuides;
+    if (!GF_UseReference || needGuides)
     {
         float accuTransmittance;
         float expectedT;
-        ReservoirFeatureRayMarchingGeneric(ray, sg, 0, true, gInitialSamplingOptions.visibilityTStepScale, accuTransmittance, expectedT);
+        ReservoirFeatureRayMarchingGeneric(ray, sg, 0, true, INITIAL_OPTIONS.visibilityTStepScale, accuTransmittance, expectedT);
 
-        if (!gUseReference)
+        if (!GF_UseReference)
         {
             ReservoirFeatures features = { int(all(surfaceNormal == 0.f)), accuTransmittance };
             gReservoirFeatureBuffer[pixelId] = features;
@@ -210,7 +248,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             // NRD's hit-distance guide. Written from the RAW expectedT, before the fallbacks below,
             // so the -1 "this ray never met the medium" sentinel survives -- NRD's consumer needs to
             // tell that apart from "medium at the far plane", which the linearZ fallback conflates.
-            if (gOutputScatterDistance)
+            if (GF_OutputScatterDistance)
             {
                 gScatterDistance[pixelPos] = expectedT;
             }
@@ -235,9 +273,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
             const float3 p = cameraRay.origin + cameraRay.dir * t;
 
-            if (gOutputDepth)
+            if (GF_OutputDepth)
             {
-                if (gDepthAsNDC)
+                if (GF_DepthAsNDC)
                 {
                     float4 clip = mul(gScene.camera.data.viewProjMatNoJitter, float4(p, 1.f));
                     gLinearZ[pixelPos] = float2(clip.z / clip.w, 0.f);
@@ -249,7 +287,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 }
             }
 
-            if (gOutputDeterministicMV)
+            if (GF_OutputDeterministicMV)
             {
                 // Advect the point backwards through the velocity grid so the plume's own motion is
                 // represented, not just the camera's (mirrors TemporalReuse.cs.slang).
@@ -269,7 +307,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             // Gated INDIVIDUALLY. These used to share one flag that the host only set when BOTH
             // textures were allocated, so asking for just one silently produced a zeroed buffer --
             // no warning, and it looks like the renderer computing zero rather than never writing.
-            if (gOutputMediumAlpha)
+            if (GF_OutputMediumAlpha)
             {
                 // Medium coverage. accuTransmittance is the total transmittance along the primary
                 // ray, so 1 - it is the fraction of this pixel the medium accounts for -- exactly
@@ -284,9 +322,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             // are only meaningful where there was something to scatter off.
             const bool hasMedium = expectedT >= 0.f;
 
-            if (gOutputMediumNormal)
+            if (GF_OutputMediumNormal)
             {
-                if (gVolumeNormalMode == 1 && hasMedium)
+                if (GF_VolumeNormalMode == 1 && hasMedium)
                 {
                     // Density gradient: the medium's own structure, pointing from dense to thin. This
                     // is the only candidate normal that carries volume information at all.
@@ -312,7 +350,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 }
             }
 
-            if (gOutputVolumeVelocity)
+            if (GF_OutputVolumeVelocity)
             {
                 // Direction and magnitude kept apart on purpose: they are two features in Zhang et
                 // al.'s pool, and magnitude alone is what predicts where reprojection should be
@@ -336,7 +374,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 gVolumeVelocity[pixelPos] = float4(v, length(v));
             }
 
-            if (gOutputMediumCoverage)
+            if (GF_OutputMediumCoverage)
             {
                 const float cov = saturate((1.f - accuTransmittance) / max(gCoverageKnee, 1e-4f));
                 gMediumCoverage[pixelPos] = float4(cov, cov, cov, 1.f);
@@ -358,13 +396,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
             // and where losing the accumulation costs least, since the term is multiplied by T
             // anyway. Written for EVERY pixel, medium or not: a confidence texture that is zero
             // outside the plume would reset history across the whole frame.
-            if (gOutputMediumTransmittance)
+            if (GF_OutputMediumTransmittance)
             {
                 const float tr = saturate(accuTransmittance);
                 gMediumTransmittance[pixelPos] = float4(tr, tr, tr, 1.f);
             }
 
-            if (gOutputScatterDensity)
+            if (GF_OutputScatterDensity)
             {
                 gScatterDensity[pixelPos] = hasMedium ? max(0.f, DensityWorldSpace(p, 0)) : 0.f;
             }
@@ -373,7 +411,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             // accuTransmittance is exp(-tau). Saturates near 4.6 because the march early-outs once
             // transmittance drops below 0.01, so treat it as "thickness up to opaque", not a
             // physical integral to infinity.
-            if (gOutputOpticalThickness)
+            if (GF_OutputOpticalThickness)
             {
                 gOpticalThickness[pixelPos] = -log(max(accuTransmittance, 1e-6f));
             }
