@@ -28,6 +28,10 @@
 
 import Scene.GVDB.gvdbNodes;
 
+#ifndef VR_PRE_DDA_CLAMP
+#define VR_PRE_DDA_CLAMP 0
+#endif
+
 // Transfer function
 // Evaluates the transfer function.
 // Values of `v` from SCN_THRESH to SCN_THRESH + (SCN_VMAX - SCN_VMIN) will be mapped to entries from 0 to 16,300
@@ -123,9 +127,25 @@ struct HDDAState {
 		t = startT;
 	}
 
+	// Largest per-cell step. A ray parallel to an axis (dir component exactly 0, or so small 1/dir overflows)
+	// gets tDel = inf on that axis, and Step()'s `float3(mask) * tDel` then computes 0 * inf = NaN on every step
+	// that moves along another axis. A NaN tSide fails every comparison in Next(), so no axis is selected and
+	// t.y becomes the z crossing, however far: the analytic tracker then integrated one voxel's trilinear
+	// density over ~10 voxels, extrapolated it negative, and returned transmittance up to 1e7 (bistro: shadow
+	// rays to an emitter point at exactly the scatter point's height, single-pixel fireflies worth 10^4-10^5).
+	// Capped, the axis is simply never crossed; every finite tDel is unchanged.
+	//
+	// VR_PRE_DDA_CLAMP=1 compiles the unclamped original back in: the code the locked rb_v9p captures were made
+	// with, for byte-identity checks against them (VR_SLANG_ARGS="-DVR_PRE_DDA_CLAMP=1"; mask_check.sh sets it).
+	static const float kMaxTDel = 1e30f;
+
 	// Set up variables for a node to prepare for stepping.
     [mutating] void Prepare(float3 vmin, float3 vdel) {
+#if VR_PRE_DDA_CLAMP
 		tDel = abs(vdel / dir);
+#else
+		tDel = min(abs(vdel / dir), kMaxTDel);
+#endif
 		float3 pFlt = (pos + t.x * dir - vmin) / vdel;
 		tSide = ((floor(pFlt) - pFlt + 0.5f) * float3(pStep) + 0.5) * tDel + t.x;
 		p = int3(floor(pFlt));
@@ -134,7 +154,11 @@ struct HDDAState {
 	// Prepare a DDA for stepping through a brick, which omits the addition by t.x from Prepare.
 	// For bricks, the size of a child node in voxels (vdel) is always 1.
     [mutating] void PrepareLeaf(float3 vmin){
+#if VR_PRE_DDA_CLAMP
 		tDel = abs(1.0f / dir);
+#else
+		tDel = min(abs(1.0f / dir), kMaxTDel);
+#endif
 		float3 pFlt = pos + t.x * dir - vmin;
 		tSide = ((floor(pFlt) - pFlt + 0.5f) * float3(pStep) + 0.5) * tDel + t.x;
 		p = int3(floor(pFlt));

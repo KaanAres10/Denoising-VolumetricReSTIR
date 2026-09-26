@@ -110,7 +110,9 @@ void applyEstimatorCompilerFlags(ProgramDesc& desc, bool volumeOnlyScene)
     // 111-194/255). Same expected image: the difference averages away like independent noise (60
     // frames: +17-18 dB PSNR), mean brightness within 0.2%. Measured on bistro volume-only: default
     // 20.4 ms against precise 21.8 (-7%). The 4.x fork compiled everything fast-math. VR_FP_MODE,
-    // when set, wins over it.
+    // when set, wins over it. Those checks were 60-200 frames; rare events are NOT verified: before the
+    // GVDB traversal fix (gvdbDda.slang, kMaxTDel) fast math turned axis-parallel rays into fireflies far
+    // larger and more frequent than precise did (STATE.md). Keep precise until an 8192-frame run says otherwise.
     static const std::string allMode = [] { const char* v = std::getenv("VR_FP_MODE"); return std::string(v ? v : ""); }();
     static const std::string volumeMode = [] { const char* v = std::getenv("VR_FP_MODE_VOLUME"); return std::string(v ? v : ""); }();
     const std::string mode = !allMode.empty() ? allMode : (volumeOnlyScene && !volumeMode.empty()) ? volumeMode : "precise";
