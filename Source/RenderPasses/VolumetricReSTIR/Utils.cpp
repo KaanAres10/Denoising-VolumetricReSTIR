@@ -104,8 +104,11 @@ void applyEstimatorCompilerFlags(ProgramDesc& desc, bool volumeOnlyScene)
     //
     // VR_FP_MODE_VOLUME=default|fast applies to VOLUME-ONLY scenes only (the programs built by
     // createSimpleComputePass; surface scenes rebuild every pass with createSceneComputePass and stay
-    // precise). OPT-IN, off by default: it changes pixel values at the rounding level, so captures
-    // are no longer byte-identical to the locked ones. Measured on bistro volume-only: default
+    // precise). OPT-IN, off by default: the arithmetic differs in the last bits, and ReSTIR's random
+    // choices amplify that -- a pixel whose candidate weights compare differently keeps a different
+    // sample, so ~20-24% of pixels get a different noise value (plume, bistro volume-only; up to
+    // 111-194/255). Same expected image: the difference averages away like independent noise (60
+    // frames: +17-18 dB PSNR), mean brightness within 0.2%. Measured on bistro volume-only: default
     // 20.4 ms against precise 21.8 (-7%). The 4.x fork compiled everything fast-math. VR_FP_MODE,
     // when set, wins over it.
     static const std::string allMode = [] { const char* v = std::getenv("VR_FP_MODE"); return std::string(v ? v : ""); }();

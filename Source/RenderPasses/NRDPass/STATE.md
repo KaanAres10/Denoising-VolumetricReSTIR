@@ -437,8 +437,14 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
     fast-math like the fork. Volume-only estimator, median of 3 interleaved runs: 23.37 -> 21.51 ms
     (-8%), every pass faster. Surface scenes rebuild every pass through createSceneComputePass and stay
     precise: bistro raw captured with the switch on is byte-identical to `rb_v9p_raw` (300/300). Off
-    by default because volume-only captures then differ from the locked ones at the rounding level;
-    turn it on for performance runs, and re-measure quality if it is ever made the default.
+    by default because volume-only renders then differ from precise ones. Not at the rounding level
+    (an earlier version of this note said so): the last-bit differences flip ReSTIR's random choices,
+    so ~20-24% of pixels get a different noise value, up to 111-194/255 (plume and bistro volume-only,
+    60 frames; per-frame PSNR 53.1 / 36.7 dB). It is noise, not bias: averaged over the 60 frames the
+    PSNR rises by 17-18 dB, what independent noise gives (10 log10 60 = 17.8), and mean brightness
+    matches within 0.2% (`outputs/pending_9p/fastmath/diff.sh`). The locked `rb_v9p_*` captures all
+    have surfaces and are untouched. Turn it on for performance runs; making it the default means
+    volume-only renders are no longer bit-comparable with earlier ones.
 * 8.0 gets none of this; the fix is in this repository's shaders and pass, not in the engine.
 * **Nsight notes:** on a full-scene frame the pass ranges are misattributed unless GPU Trace runs
   with `--hes-enabled 0`, and a legacy full-scene trace collects no counters at all. Volume-only
