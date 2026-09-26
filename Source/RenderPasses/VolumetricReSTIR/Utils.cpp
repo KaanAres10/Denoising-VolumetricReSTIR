@@ -111,10 +111,38 @@ void applyEstimatorCompilerFlags(ProgramDesc& desc, bool volumeOnlyScene)
     static const std::string allMode = [] { const char* v = std::getenv("VR_FP_MODE"); return std::string(v ? v : ""); }();
     static const std::string volumeMode = [] { const char* v = std::getenv("VR_FP_MODE_VOLUME"); return std::string(v ? v : ""); }();
     const std::string mode = !allMode.empty() ? allMode : (volumeOnlyScene && !volumeMode.empty()) ? volumeMode : "precise";
+    SlangCompilerFlags flags = SlangCompilerFlags::None;
     if (mode == "fast")
-        desc.setCompilerFlags(SlangCompilerFlags::FloatingPointModeFast);
+        flags = SlangCompilerFlags::FloatingPointModeFast;
     else if (mode != "default")
-        desc.setCompilerFlags(SlangCompilerFlags::FloatingPointModePrecise);
+        flags = SlangCompilerFlags::FloatingPointModePrecise;
+
+    // VR_DUMP_DXIL=1 writes each estimator program's intermediates (HLSL, DXIL, DXIL assembly) to the
+    // working directory, for inspecting what the compiler hands the driver. Programs found in gfx's
+    // .shadercache are not recompiled and dump nothing.
+    static const bool dumpDxil = std::getenv("VR_DUMP_DXIL") != nullptr;
+    if (dumpDxil)
+        flags |= SlangCompilerFlags::DumpIntermediates;
+    desc.setCompilerFlags(flags);
+
+    // VR_SLANG_ARGS: extra Slang command-line arguments, space-separated, for an A/B of compiler
+    // options. DXC options go through Slang's -Xdxc: "-Xdxc -disable-lifetime-markers" for one token,
+    // "-Xdxc... -opt-disable licm -X." for several.
+    static const std::vector<std::string> extraArgs = [] {
+        std::vector<std::string> out;
+        if (const char* v = std::getenv("VR_SLANG_ARGS"))
+        {
+            std::string s(v), tok;
+            for (char c : s + " ")
+            {
+                if (c == ' ') { if (!tok.empty()) out.push_back(tok); tok.clear(); }
+                else tok += c;
+            }
+        }
+        return out;
+    }();
+    if (!extraArgs.empty())
+        desc.addCompilerArguments(extraArgs);
 }
 
 ref<ComputePass> createSimpleComputePass(ref<Device> pDevice, const std::string& file, const std::string& mainEntry,

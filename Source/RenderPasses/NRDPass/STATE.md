@@ -352,7 +352,10 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
 * **Full scene, 9.0 now beats the fork** (-4% wall clock), because the new engines' surface work was
   already cheaper (Spatial Reuse 65% of the fork's estimator, 52% of 9.0's).
 * **Volume only, it is still ~1.15-1.4x the fork's, growing along the orbit** (22-23 ms GPU vs 17.3
-  profiled, ~20 wall; 1.36x in cycles at the late pose). Chased on 2026-09-24; what is known:
+  profiled, ~20 wall; 1.36x in cycles at the late pose). **Found on 2026-09-25/26: the fork's DXC 1.5
+  for Spatial and Temporal Reuse, and its driver-optimized compile for Generate Samples; the second
+  is now largely matched by compiling the options in (1.20x).** See "What makes the fork faster
+  volume-only" below. Chased on 2026-09-24; what is known:
   * **66b47be** compiles out disabled light kinds and the no-reuse path (`VR_USE_*_LIGHTS`,
     `VR_REUSE_ON`) in Generate Features / Generate Samples / Final Shading. Byte-identical (raw, RELAX,
     RR, plume). Median of 3 interleaved full-scene runs: Generate Samples 22.1 -> 17.2 ms, estimator
@@ -376,6 +379,9 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
     | Spatial Reuse          | 21.15    | 29.82    | 1.41x | 1.31x             | 45x                      | 128 / 11.9       | 128 / 11.3       |
     | Final Shading          | 8.96     | 12.32    | 1.38x | 1.35x             | 18x                      | 80 / 17.7        | 96 / 14.6        |
     | estimator              | 51.52    | 70.23    | 1.36x |                   |                          |                  |                  |
+
+    (Both traced in one of the machine's slow stretches. In a fast one, with the atlas hoist below,
+    the ratio at this pose is 1.28x: see the drift trap in the 2026-09-25 section.)
 
     So the instruction-count and i-cache findings above hold in steady state. Spatial Reuse runs at
     the SAME registers and occupancy as the fork and is still 1.41x, so what is left is instructions
@@ -467,6 +473,109 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
 
 Also found: legacy's `Bin/` had the Windows SDK's DXC 1.8 over the fork's own DXC 1.5, and every
 legacy shader failed to compile. See `legacy_build_notes.md`.
+
+### What makes the fork faster volume-only (2026-09-25/26)
+
+**Two things, and only one of them is a compiler.** Nsight at the late orbit pose (`knob_trace.sh`,
+`pose_trace.sh`), volume only, Mcycles; every trace with its compiler and session is in
+`outputs/legacy_cmp/knob_traces.txt`.
+
+*Spatial and Temporal Reuse: the fork's DXC.* The fork compiles with DXC 1.5.2010 (pinned in its
+`Source/Falcor/Data/FixedCompiler`); 9.0 runs DXC 1.7.2207. Copying 9.0's DXC 1.7 over the fork's
+and tracing again (one session, the machine's fast state):
+
+| volume only, late pose, one session    | GS    | TR    | SR    | FS    | estimator   |
+|----------------------------------------|-------|-------|-------|-------|-------------|
+| 4.x, its DXC 1.5 (3 traces)            | 6.97  | 10.13 | 17.56 | 7.84  | 43.94-44.06 |
+| 4.x with DXC 1.7 swapped in (2 traces) | 7.57  | 10.17 | 29.58 | 8.86  | 57.65-57.68 |
+| 9.0 then (DXC 1.7, precise)            | 12.14 | 9.00  | 22.82 | 10.34 | 56.25       |
+| 9.0 then, DXC 1.8, precise             | 11.55 | 8.51  | 19.66 | 10.07 | 51.74       |
+| 9.0 then, DXC 1.8, fast math           | 11.24 | 8.22  | 19.13 | 8.59  | 49.03       |
+
+On DXC 1.7 the fork's Spatial Reuse goes from 128 registers / 14.2 warps to 168 / 7.4, and its
+Temporal Reuse from 187 to 210 registers. 9.0's Spatial Reuse is 168 on DXC 1.7 and 128 on DXC 1.8.
+So with the same compiler the two estimators cost the same, pass for pass apart from Generate Samples.
+
+*Generate Samples: not the compiler.* The fork's is 80 registers / 21.5 warps on DXC 1.5 and on 1.7,
+with no local-memory traffic at all; 9.0's is 128 / 14.5 on every DXC. What sets 9.0's 128, by
+knocking parts out of the deployed shader (`regs_probe.sh`, registers per thread):
+
+| Generate Samples variant                                       | regs |
+|----------------------------------------------------------------|------|
+| as is                                                          | 128  |
+| primary-ray distance sampling (DDA) replaced by fixed distances | 128  |
+| final p-hat (evaluate_P_hat) removed                           | 128  |
+| ComputeInitialSample's light visibility off (no shadow march)  | 96   |
+| ComputeInitialSample's light sampling removed                  | 96   |
+| ComputeInitialSample removed                                   | 64   |
+| ComputeInitialSample and final p-hat removed                   | 56   |
+
+The shadow-ray transmittance march inside the per-candidate loop takes it from 96 to 128. The fork
+runs the same source there (the kernel and ComputeInitialSample differ only in API renames) within 80.
+The DXIL does not show why: at every matching loop the fork carries MORE live SSA values than 9.0
+(95 phis against 38 at the DDA loop), and its DXIL is twice as long. The difference is in what the
+driver makes of it -- see the next point.
+
+*The driver.* The fork's driver-optimized compile (the one it switches to mid-run, see the kernel-swap
+trap) emits 3,946 static SASS instructions for its Generate Samples against 8,303 for 9.0's, from
+twice the DXIL. That is consistent with the driver folding the fork's constant-buffer values
+(options, mip levels), which 9.0 never gets: salting 9.0's DXIL with a unique never-taken branch per
+run, so the driver has to compile it anew, gives the same 128 registers and cycles
+(`outputs/pending_9p/spec/salt_trace.sh`). 9.0 is simply not recompiled.
+
+**Fix, eb96f17: compile the options in ourselves (`VR_SPECIALIZE`).** Byte-identical everywhere
+(raw, RELAX-SH, DLSS RR 300/300 against `rb_v9p_*`). Volume-only estimator 23.00 -> 21.68 ms, every
+pass faster; full scene 98.0 -> 95.7 ms with Spatial Reuse left on CB (its register cliff). Generate
+Samples stays at 128 registers: the fold removes work (runtime-indexed GVDB loads 179 -> 24,
+DXIL 12.9k -> 7.7k lines), not the shadow march's pressure. Plus 784fd16, the analytic sampler's
+per-sample loops unrolled (Generate Samples 2-5%, byte-identical).
+
+Where that leaves it, one session (the machine's slow state), Mcycles:
+
+| volume only, late pose           | GS    | TR    | SR    | FS    | estimator | vs 4.x |
+|----------------------------------|-------|-------|-------|-------|-----------|--------|
+| 4.x (2 traces)                   | 7.90  | 11.27 | 21.13 | 8.89  | 50.9      | --     |
+| 9.0 before (VR_SPECIALIZE=0)     | 13.29 | 10.26 | 27.74 | 11.75 | 65.35     | 1.28x  |
+| **9.0 now**                      | 12.16 | 9.74  | 26.33 | 11.08 | **61.26** | 1.20x  |
+| 9.0 now, `VR_FP_MODE_VOLUME=fast` | 12.47 | 9.07  | 25.14 | 10.38 | 58.97     | 1.16x  |
+
+**Port bug: 9.0 has been deploying Falcor 8's DXC.** Falcor 9 fetches DXC 1.8.2505 but deploycommon.bat
+copied the packman package, 1.7.2207, left over from the 8.0 build; every 9.0 number in this file is
+on DXC 1.7. `FALCOR_USE_FETCHED_DXC` (24642b9, default OFF) deploys the fetched one. It is not a free
+win: interleaved, 3 rounds, volume-only estimator 23.46 -> 22.49 ms (Spatial Reuse -10%), full scene
+98.58 -> 108.28 ms (Spatial Reuse +16%, its register cliff), and up to 0.06% of pixels change by up to
+4/255 (1 of 300 raw frames identical). `outputs/pending_9p/dxc/ab_dxc2505.sh`, `verify_dxc2505.sh`.
+(DXC 1.8.2502, the Windows SDK's, measured volume-only the same and full scene neutral, before the
+unroll and specialization.)
+
+**TRAP: the machine drifts between a fast and a slow state, ~16-20%, at the same locked clocks**
+(GPC 907 MHz, DRAM 11990). The same 9.0 build traced 67.4 Mcyc on 2026-09-24 evening, 56.2 after
+midnight and 66.2 on 2026-09-25 evening, and single interleaved runs jump by 5-10% mid-batch. It is
+why the 1.36x in the steady-state table above is 1.28x in a fast session. Compare only within one
+session, interleave, and treat a run where every pass moved together as drift.
+
+Not a trap: gfx's `.shadercache` is keyed on the compiler. A DXC 1.8 run with the cache kept compiles
+exactly what one with the cache emptied does (`outputs/pending_9p/dxc/cachekey.sh`).
+
+**Ruled out, one session, DXC 1.8 precise at 51.75 Mcyc unless noted:**
+
+| knob | estimator Mcyc | note |
+|------|----------------|------|
+| Slang `-O1` / `-O3` / minimal optimization | 51.74 / 52.24 / 51.86 | |
+| DXC `-opt-disable` licm / sink / structurize-loop-exits-for-unroll | 51.69 / 51.96 / 51.79 | |
+| DXC `-opt-disable` gvn / aggressive-reassociation | 55.69 / 55.59 | worse: SR back to 168 registers |
+| DXC `-disable-lifetime-markers` (1.7 and 1.8) | 72.01 / 72.22 | much worse: SR 232, TR 250 registers |
+| DXC `-enable-16bit-types` | 64.51 vs 60.99-62.34 | worse: TR 203 registers (slow session) |
+| shader model 6_5 | 85.48 vs 67.38 | much worse (slow session) |
+| Scene buffers without `[root]`, DXC 1.7 | 56.12 vs 56.23 | nothing (on DXC 1.8 it costs SR its 128) |
+| trilinear density sampler compiled out | 56.21 vs 56.29 | nothing (DXC 1.7) |
+| reference path tracer compiled out | 61.48 vs 60.99-62.34 | nothing (slow session) |
+| emission: light-profile evaluation off | 56.35 vs 56.33 | nothing (DXC 1.7) |
+| emission stubbed out entirely | 53.66 vs 56.33 | SR 168 -> 128 registers, but changes pixels |
+| atlas hoist off / 16x16 groups, for Generate Samples | 128 registers either way | |
+
+`VR_SLANG_ARGS` (Utils.cpp) passes extra Slang arguments, DXC options through `-Xdxc`;
+`VR_DUMP_DXIL=1` writes the programs' HLSL and DXIL to the working directory.
 
 ## SOLVED: REBLUR's medium was transparent under motion
 
