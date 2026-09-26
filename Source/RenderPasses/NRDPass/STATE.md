@@ -759,8 +759,7 @@ in Falcor 4's convention (glm column-major uploaded raw into row-major layout, `
 transposes on upload). 9.0's `mTransposePrevMatrices` is the port's equivalent of that. Measured too, as a
 deliberately wrong reprojection (`mTransposePrevMatrices=False`): temporal only 23.7 -> 27.0% black (plume
 core 11.2 -> 24.7, surfaces unmoved), both stages 8.0 -> 8.0. Nowhere near the fork's 41.9 / 27.2, so the
-reprojection is not it. Still open: what makes the fork's temporal reuse throw away history that 9.0 keeps,
-and which of the two is right. The reference comparison would say.
+reprojection is not it. Still open: what makes the fork's temporal reuse throw away history that 9.0 keeps.
 
 Cost, interleaved, 3 rounds (`hoist/ab_env.sh`, the fixes compiled out with `VR_PRE_FORK_PARITY=1`):
 full scene 69.2 / 69.3 / 77.7 -> 71.1 / 71.4 / 82.0 ms (+3%: Spatial Reuse +0.7, Final Shading +0.6,
@@ -774,6 +773,42 @@ rb_v9p_raw byte for byte (300/300), and `outputs/mask_check.sh` now sets it so t
 keep working. The fixed raw orbit: 0/300 identical, tonemapped mean +1.6%. The switch itself compiles to
 what was measured: 300/300 against the orbit captured with the temporary per-fix guards
 (`forkmatch/guard_check.sh`). The locked table is not re-measured.
+
+**Which is right: both, and 9.0 is the better one** (2026-09-26). Each engine against brute-force path
+tracing of the same still frame. The reference is the same pass with `mUseReference`: no reservoirs, no
+reuse, 16 path-traced samples per pixel per frame, ratio-tracked transmittance, 8192 frames. ReSTIR:
+4096 still frames. `Scripts/reference_pose.py` and its fork twin `outputs/legacy_cmp/_reference_pose_legacy.py`,
+`outputs/pending_9p/forkref/run.sh`, scored by `score.py` (luminance, the fork's lamp-glass pixels that
+overflow its half-float files masked):
+
+* The two references agree per pixel within their noise but not at low frequency: the fork's café is 1.15%
+  brighter, other regions within 0.12%. The scenes differ slightly (Falcor 4 vs 9 material/emission), so
+  each engine is scored against its OWN reference.
+* Bias, second half of the run, mean over 256-frame windows ± their scatter / sqrt(n):
+
+  |            | plume core                | street        | facade        | café          | whole         |
+  |------------|---------------------------|---------------|---------------|---------------|---------------|
+  | 9.0        | +18.2% ± 15.6 (median window +2.7%) | -0.17 ± 0.02 | -0.05 ± 0.01 | -0.01 ± 0.01 | +0.06 ± 0.06 |
+  | fork       | +2.60% ± 0.08             | -0.06 ± 0.04  | +0.09 ± 0.06  | +0.23 ± 0.15  | -0.02 ± 0.02  |
+
+  Both converge to the path tracer, except the dense smoke, where BOTH sit ~2.6% high -- the estimator's
+  ray-marched transmittance, as the stop-and-go check below found (deep smoke ~2.7% above the path tracer
+  in every configuration). The fork's sparse output is not the more correct one.
+* One frame (the raw frames of the second half, MSE / mean^2 against the reference, its own noise removed):
+  worst 0.01% of pixels left out 9.0 **0.0024** vs fork 0.0043; blurred sigma 2 / 8 (frames clamped at
+  luminance 1) 0.0031 / 0.00046 vs 0.0033 / 0.00054. The untrimmed per-pixel MSE is 95-100% those 0.01%
+  of pixels in both, i.e. a firefly count. 9.0's denser image is lower error at every scale.
+* **Fireflies.** The fork throws moderate ones often (4 of 8 captured frames have a pixel 20-47 off). 9.0 throws fewer, but rare GIANT isolated ones in open smoke -- a single frame
+  worth ~24,000 / 14,000 / 51,000 at one pixel whose neighbours are 0.0005 (8192 frames:
+  windows 3, 9, 30) -- and they are what makes its plume-core mean +18% ± 16. Not today's fixes: with
+  `VR_PRE_FORK_PARITY=1` the same event lands on the same pixel in the same window (55.7 vs 53.8), plus
+  one worth ~460,000. Nothing spreads to neighbours or later windows, so it is a one-frame blow-up, not
+  a sample kept alive by reuse. The fork over the same 8192 frames has none: its largest is 21, at the
+  lamp-glass edge (1385, 828) -- the same pixel as one of 9.0's -- so the lamp-edge ones are shared and the
+  giant ones in open smoke are a 9.0 regression, older than the fork-parity fixes. Pixel-windows above
+  1 / 10 over 8192 frames: 9.0 76 / 6, fork 111 / 3 (`forkref/fireflies.py`). **Open: where 9.0's
+  come from.** The runs are deterministic, so the frame can be pinned down, and reuse switched off
+  stage by stage.
 
 ## SOLVED: REBLUR's medium was transparent under motion
 
