@@ -450,6 +450,19 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
     at 4096 frames precise 9.975e-5 / fast 9.976e-5, at 64 frames 2.628e-4 / 2.614e-4, MAPE equal to three
     digits, no NaN or Inf pixels in either (the risk with fast math, which may drop `isnan` guards).
     Both are 2.1% brighter than the reference, as the July captures already were -- not fast math.
+    Nor does it change what the denoisers make of it (`outputs/pending_9p/fastmath/denoisers.sh`,
+    `plume_redo.sh`). Against the plume ground truth, static camera, 200 frames, MSE precise / fast: raw
+    1.531e-3 / 1.514e-3, OIDN 3.610e-4 / 3.583e-4, OptiX 5.216e-4 / 4.977e-4, DLSS RR 1.551e-4 /
+    1.555e-4. Temporal stability over 120-frame orbits (m_denoisers' metric, s=32), precise / fast:
+    plume raw 15.80 / 15.79, OptiX 16.07 / 16.07, RELAX-SH 16.33 / 16.32, REBLUR-SH 15.67 / 15.67, RR
+    16.12 / 16.11; bistro volume-only 3.46 / 3.46, 4.62 / 4.62, 3.40 / 3.40, 3.29 / 3.29, 3.42 / 3.44.
+
+**TRAP (fixed 2026-09-26): the plume orbit circled Bistro's street point.** `capture_orbit.py` had one
+orbit centre, (-11, 6.03, 0), and used it for `VR_SCENE=plume` too, so the camera swung round a point 11
+units from the plume at radius 13.2 with the smoke small and off-centre. Plume now orbits (0, 1.83, 0),
+where the authored close-up looks, at radius ~3. Every plume orbit capture before this (including the
+"plume 60/60" byte-identity checks earlier this session) was of the far view; the toggles were re-checked
+on the fixed orbit -- VR_SPECIALIZE=0, VR_GROUP=8x8, VR_HOIST_ATLAS=0 each 60/60 byte-identical.
 * 8.0 gets none of this; the fix is in this repository's shaders and pass, not in the engine.
 * **Nsight notes:** on a full-scene frame the pass ranges are misattributed unless GPU Trace runs
   with `--hes-enabled 0`, and a legacy full-scene trace collects no counters at all. Volume-only

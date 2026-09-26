@@ -1,7 +1,8 @@
 # Capture the authored orbit as a frame sequence, for video.
 #
 # Same camera path as every measurement in Source/RenderPasses/NRDPass/STATE.md and as the published
-# page: a -180 degree sweep about (-11, 6.025879, 0) at constant height, always looking at that point.
+# page: a -180 degree sweep about (-11, 6.025879, 0) at constant height, always looking at that point
+# (Bistro; plume orbits its own centre, see ORBIT_CENTER).
 # The centre is NOT the camera's target -- Bistro's target sits 0.95 units from the camera, so orbiting
 # around it spins the camera on the spot, which disoccludes violently and scores every denoiser ~4x
 # worse. That was a property of the path, not of rotation.
@@ -41,10 +42,21 @@ FRAMES = vr.env_int("VR_FRAMES", 300)
 FPS = vr.env_int("VR_FRAMERATE", 30)
 WARM = vr.env_int("VR_WARM", 30)
 ORBIT_DEGREES = vr.env_float("VR_ORBIT_DEG", -180.0)
-ORBIT_CENTER = (-11.0, 6.025879, 0.0)
 OUT_DIR = os.environ["VR_OUT_DIR"]
 TAG = vr.env("VR_TAG", "orbit")
 SCENE = vr.env("VR_SCENE", "bistro").lower()
+# The orbit centre is per scene. Bistro's is the street point above. Plume's is where the authored close-up
+# (vr_graph.load_plume) looks at the plume: its view ray passes within 0.15 of the medium's vertical axis
+# at y = 1.83, so orbiting (0, 1.83, 0) keeps that framing at radius ~3. Until 2026-09-26 plume used
+# Bistro's centre too, which swung the camera round a point 11 units away (radius 13.2) with the plume
+# small and off-centre in frame; plume orbit captures from before then are of that view.
+# VR_ORBIT_CENTER=x,y,z overrides it.
+_ORBIT_CENTERS = {"bistro": (-11.0, 6.025879, 0.0), "plume": (0.0, 1.83, 0.0)}
+_center_env = vr.env("VR_ORBIT_CENTER", "")
+if _center_env:
+    ORBIT_CENTER = tuple(float(v) for v in _center_env.split(","))
+else:
+    ORBIT_CENTER = _ORBIT_CENTERS.get(SCENE, _ORBIT_CENTERS["bistro"])
 MODE = vr.env("VR_DENOISER", "nrd").lower()
 # Defaults are what every orbit before 310.9.1 was captured with: preset E on the DLL beside the
 # executable. That DLL is now 310.9.1, so VR_SDK=Previous310_7 is what reproduces those captures.
