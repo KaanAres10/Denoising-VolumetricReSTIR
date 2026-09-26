@@ -26,6 +26,11 @@ __exported import InlineRayTracingHelpers;
 #define VR_REUSE_ON 0
 #endif
 
+// VR_PRE_FORK_PARITY: see InlineRayTracingHelpers.slang.
+#ifndef VR_PRE_FORK_PARITY
+#define VR_PRE_FORK_PARITY 0
+#endif
+
 bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSampler emissiveSampler, const float3 rayOrigin, bool kUseEnvironmentLights, bool kUseAnalyticLights, bool kUseEmissiveLights,
     inout SampleGenerator sg, out SceneLightSample ls, out int outLightIndex, out float2 outLightUV, float3 surfaceNormal = float3(0.f))
 {
@@ -129,6 +134,37 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
             // Sample emissive lights.
             TriangleLightSample lightSample;
             bool valid = emissiveSampler.sampleLight(rayOrigin, surfaceNormal, false, sg, lightSample); // [8.0 port] added upperHemisphere=false
+
+            // The 4.x fork's sampleTriangle offset the sampled point off the light triangle
+            // (computeRayOrigin) BEFORE computing the light vector, distance and pdf; the shadow ray
+            // below then offsets it once more. Falcor 8/9's sampleTriangle has no offset, so the port
+            // took direction, distance and pdf from the triangle itself while the shadow ray went to the
+            // offset point -- and the reuse path (sampleTriangleOffset, ReSTIRHelper) re-evaluates the
+            // candidate at the offset point, so a sample was generated and re-evaluated at different
+            // places. Moved to the offset point here, as the fork did: same random numbers, same triangle.
+            if (valid && !VR_PRE_FORK_PARITY)
+            {
+                const float3 posOffset = computeRayOrigin(lightSample.posW, lightSample.normalW);
+                const float3 toOffset = posOffset - rayOrigin;
+                const float distSqr = max(1e-38f, dot(toOffset, toOffset));
+                const float distance = sqrt(distSqr);
+                const float3 dir = toOffset / distance;
+                const float cosTheta = dot(lightSample.normalW, -dir);
+                if (cosTheta <= 0.f)
+                {
+                    valid = false; // the fork's sampleTriangle rejected a back-facing sample at this point
+                }
+                else
+                {
+                    // Solid-angle pdf = selection pdf * distSqr / (cos * area); geometryTerm is cos / distSqr
+                    // at the original point, so this swaps the original geometry for the offset one.
+                    lightSample.pdf *= lightSample.geometryTerm * distSqr / cosTheta;
+                    lightSample.geometryTerm = cosTheta / distSqr;
+                    lightSample.posW = posOffset;
+                    lightSample.dir = dir;
+                    lightSample.distance = distance;
+                }
+            }
 
             // Reject sample if lower hemisphere.
             //if (!valid || dot(sd.N, lightSample.dir) < kMinCosTheta) return false;

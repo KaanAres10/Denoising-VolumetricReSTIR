@@ -67,6 +67,26 @@ uint getSurfaceMaterialInstanceHints()
     return 0u;
 }
 
+// Alpha test for a non-opaque candidate, as the 4.x fork did in both queries below: a masked material's
+// cut-out texels (foliage, fences) let the ray through. The port had dropped it (committing every
+// non-opaque candidate), so alpha-cut geometry occluded as solid cards in every shadow and visibility ray,
+// and the estimator's own primary hits disagreed with the G-buffer, which does alpha-test. The same test as
+// Falcor's RaytracingInline.slang. Costs ~3% of the bistro full-scene estimator (+2 ms at 1080p); volume-only
+// frames trace no surfaces.
+//
+// VR_PRE_FORK_PARITY=1 compiles this out again, and the light-sample offset in VolumeUtils.slang with it:
+// the code the locked rb_v9p captures were made with, for byte-identity checks against them
+// (VR_SLANG_ARGS="-DVR_PRE_FORK_PARITY=1"; mask_check.sh sets it).
+#ifndef VR_PRE_FORK_PARITY
+#define VR_PRE_FORK_PARITY 0
+#endif
+bool isCandidateAlphaDiscarded<let Flags : int>(RayQuery<Flags> q)
+{
+    const TriangleHit hit = getCandidateTriangleHit(q);
+    const VertexData v = gScene.getVertexData(hit);
+    return gScene.materials.alphaTest(v, gScene.getMaterialID(hit.instanceID), 0.f);
+}
+
 // Find the closest surface hit along a ray.
 SurfaceHitInfo FindSurfaceHit(float3 rayOrigin, float3 rayDir, float RayTMin, float RayTMax)
 {
@@ -81,11 +101,8 @@ SurfaceHitInfo FindSurfaceHit(float3 rayOrigin, float3 rayDir, float RayTMin, fl
 
     while (q.Proceed())
     {
-        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-        {
-            // TODO(surface-scene): alpha test via gScene.materials.
+        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE && (VR_PRE_FORK_PARITY || !isCandidateAlphaDiscarded(q)))
             q.CommitNonOpaqueTriangleHit();
-        }
     }
 
     SurfaceHitInfo h = SurfaceHitInfo.createInvalidHitInfo();
@@ -116,10 +133,8 @@ bool FindIfOccluded(float3 rayOrigin, float3 rayDir, float RayTMin, float RayTMa
 
     while (q.Proceed())
     {
-        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE)
-        {
+        if (q.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE && (VR_PRE_FORK_PARITY || !isCandidateAlphaDiscarded(q)))
             q.CommitNonOpaqueTriangleHit();
-        }
     }
 
     return q.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
