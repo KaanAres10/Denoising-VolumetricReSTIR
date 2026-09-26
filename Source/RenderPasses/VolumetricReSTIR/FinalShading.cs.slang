@@ -82,8 +82,23 @@ cbuffer CB
 #if VR_SPECIALIZE
 static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
 #define SAMPLING_OPTIONS specializeOptions(kSamplingOptions, gSamplingOptions)
+// The pass's own switches, set by the host from the parameters and from which outputs the graph bound.
+#define USE_REFERENCE (VR_SPECIALIZES(17) ? VR_USE_REFERENCE : gUseReference)
+#define VISUALIZE_TOTAL_TRANSMITTANCE (VR_SPECIALIZES(19) ? VR_VISUALIZE_TOTAL_TRANSMITTANCE : gVisualizeTotalTransmittance)
+#define OUTPUT_LIGHT_DIR (VR_SPECIALIZES(20) ? VR_OUTPUT_LIGHT_DIR : gOutputLightDir)
+#define OUTPUT_VOLUME_COLOR (VR_SPECIALIZES(21) ? VR_OUTPUT_VOLUME_COLOR : gOutputVolumeColor)
+#define OUTPUT_SURFACE_COLOR (VR_SPECIALIZES(22) ? VR_OUTPUT_SURFACE_COLOR : gOutputSurfaceColor)
+#define OUTPUT_EMISSIVE_COLOR (VR_SPECIALIZES(23) ? VR_OUTPUT_EMISSIVE_COLOR : gOutputEmissiveColor)
+#define OUTPUT_NON_EMISSIVE_COLOR (VR_SPECIALIZES(24) ? VR_OUTPUT_NON_EMISSIVE_COLOR : gOutputNonEmissiveColor)
 #else
 #define SAMPLING_OPTIONS gSamplingOptions
+#define USE_REFERENCE gUseReference
+#define VISUALIZE_TOTAL_TRANSMITTANCE gVisualizeTotalTransmittance
+#define OUTPUT_LIGHT_DIR gOutputLightDir
+#define OUTPUT_VOLUME_COLOR gOutputVolumeColor
+#define OUTPUT_SURFACE_COLOR gOutputSurfaceColor
+#define OUTPUT_EMISSIVE_COLOR gOutputEmissiveColor
+#define OUTPUT_NON_EMISSIVE_COLOR gOutputNonEmissiveColor
 #endif
 // Input data to accumulate and accumulated output.
 StructuredBuffer<Reservoir> gCurReservoirs;
@@ -159,11 +174,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     SampleGenerator sg = SampleGenerator(pixelPos, gNumTotalRounds * gFrameCount + gNumTotalRounds - 1);
 
-    if (gUseReference) // output raw
+    if (USE_REFERENCE) // output raw
     {
         outputColor = gCurrentColors[pixelPos].rgb;
     }
-    else if (gVisualizeTotalTransmittance)
+    else if (VISUALIZE_TOTAL_TRANSMITTANCE)
     {
         outputColor = pow(gReservoirFeatureBuffer[pixelId].transmittance, 2.2f);
     }
@@ -216,10 +231,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // Computed first so the volume/surface split can exclude it: when emission is routed around the
     // denoiser it must appear in exactly ONE of the three buffers, or compositing double-counts it.
     // With emission split off, volume + surface + emissive == gOutputFrame.
-    const bool isEmissiveSample = !gUseReference && gCurReservoirs[pixelId].lightID == kSelfEmissionLightID;
-    const bool splitDropsEmissive = gOutputEmissiveColor && isEmissiveSample;
+    const bool isEmissiveSample = !USE_REFERENCE && gCurReservoirs[pixelId].lightID == kSelfEmissionLightID;
+    const bool splitDropsEmissive = OUTPUT_EMISSIVE_COLOR && isEmissiveSample;
 
-    if (gOutputVolumeColor || gOutputSurfaceColor)
+    if (OUTPUT_VOLUME_COLOR || OUTPUT_SURFACE_COLOR)
     {
         // `depth == kRayTMax` is the same test evaluate_F itself uses to decide whether the sample
         // scattered in the medium, so this classification costs nothing and cannot drift from the
@@ -231,23 +246,23 @@ void main(uint3 DTid : SV_DispatchThreadID)
         // Zero in ALL four channels for the bucket that did not fire, alpha included, so that
         // volume + surface == output exactly rather than only in rgb. A round-trip check that has to
         // special-case a channel is a check that will eventually be relaxed and stop catching things.
-        const bool scatteredInMedium = !gUseReference && gCurReservoirs[pixelId].depth != kRayTMax;
+        const bool scatteredInMedium = !USE_REFERENCE && gCurReservoirs[pixelId].depth != kRayTMax;
         const float4 splitColor = splitDropsEmissive ? float4(0.f) : curColor;
-        if (gOutputVolumeColor) gVolumeColor[pixelPos] = scatteredInMedium ? splitColor : float4(0.f);
-        if (gOutputSurfaceColor) gSurfaceColor[pixelPos] = scatteredInMedium ? float4(0.f) : splitColor;
+        if (OUTPUT_VOLUME_COLOR) gVolumeColor[pixelPos] = scatteredInMedium ? splitColor : float4(0.f);
+        if (OUTPUT_SURFACE_COLOR) gSurfaceColor[pixelPos] = scatteredInMedium ? float4(0.f) : splitColor;
     }
 
-    if (gOutputEmissiveColor || gOutputNonEmissiveColor)
+    if (OUTPUT_EMISSIVE_COLOR || OUTPUT_NON_EMISSIVE_COLOR)
     {
         // Same test the lightDir path already uses to recognise a self-emission reservoir.
         // kSelfEmissionLightID is -3, i.e. NEGATIVE, so it must be compared explicitly rather than
         // folded into a "< 0" check meant for the env map.
         const bool isEmissive = isEmissiveSample;
-        if (gOutputEmissiveColor) gEmissiveColor[pixelPos] = isEmissive ? curColor : float4(0.f);
-        if (gOutputNonEmissiveColor) gNonEmissiveColor[pixelPos] = isEmissive ? float4(0.f) : curColor;
+        if (OUTPUT_EMISSIVE_COLOR) gEmissiveColor[pixelPos] = isEmissive ? curColor : float4(0.f);
+        if (OUTPUT_NON_EMISSIVE_COLOR) gNonEmissiveColor[pixelPos] = isEmissive ? float4(0.f) : curColor;
     }
 
-    if (gOutputLightDir)
+    if (OUTPUT_LIGHT_DIR)
     {
         // Reconstruct the direction the reservoir's light lies in, mirroring the branch in
         // evaluate_L_in_volume(). Written AFTER the shading loop and with its own SampleGenerator:
@@ -270,7 +285,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         // return a direction decoded from lightUV that means nothing.
         const bool selfEmission = res.lightID == kSelfEmissionLightID;
 
-        if (res.runningSum > 0.f && !gUseReference && !emissivePath && !selfEmission)
+        if (res.runningSum > 0.f && !USE_REFERENCE && !emissivePath && !selfEmission)
         {
             const float3 org = gScene.camera.getPosition();
             const float3 dir = normalize(computeNonNormalizedRayDirPinholeScaled(gScene.camera, DTid.xy, 1, 0.5f, gResolution));

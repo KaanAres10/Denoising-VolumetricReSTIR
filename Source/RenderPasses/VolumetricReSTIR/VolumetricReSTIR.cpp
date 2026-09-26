@@ -886,7 +886,19 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (Program* program = specializePass(mSpatialReusePass, "SR"))
             program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(spatialOptions));
         if (Program* program = specializePass(mFinalShadingPass, "FS"))
+        {
             program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(finalOptions));
+            // The same values Final Shading's CB gets below: the output switches follow which optional
+            // outputs the graph bound.
+            const auto b = [](bool v) { return std::string(v ? "true" : "false"); };
+            program->addDefine("VR_USE_REFERENCE", b(mParams.mUseReference));
+            program->addDefine("VR_VISUALIZE_TOTAL_TRANSMITTANCE", b(mParams.mVisualizeTotalTransmittance));
+            program->addDefine("VR_OUTPUT_LIGHT_DIR", b(renderData.getTexture(kLightDir) != nullptr));
+            program->addDefine("VR_OUTPUT_VOLUME_COLOR", b(renderData.getTexture(kVolumeColor) != nullptr));
+            program->addDefine("VR_OUTPUT_SURFACE_COLOR", b(renderData.getTexture(kSurfaceColor) != nullptr));
+            program->addDefine("VR_OUTPUT_EMISSIVE_COLOR", b(renderData.getTexture(kEmissiveColor) != nullptr));
+            program->addDefine("VR_OUTPUT_NON_EMISSIVE_COLOR", b(renderData.getTexture(kNonEmissiveColor) != nullptr));
+        }
 
         // Thread-group size of the four big kernels, which sets their register budget (defaults and
         // measurements at their [numthreads]). VR_GROUP=WxH overrides all four for an A/B, e.g.

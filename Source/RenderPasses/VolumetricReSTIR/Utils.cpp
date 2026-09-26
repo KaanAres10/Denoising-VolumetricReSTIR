@@ -143,6 +143,13 @@ void applyEstimatorCompilerFlags(ProgramDesc& desc, bool volumeOnlyScene)
     }();
     if (!extraArgs.empty())
         desc.addCompilerArguments(extraArgs);
+
+    // VR_SHADER_MODEL=6_5 (or 6_6, ...) compiles the estimator programs for that shader model.
+    static const std::string shaderModel = [] { const char* v = std::getenv("VR_SHADER_MODEL"); return std::string(v ? v : ""); }();
+    if (shaderModel == "6_5")
+        desc.setShaderModel(ShaderModel::SM6_5);
+    else if (shaderModel == "6_6")
+        desc.setShaderModel(ShaderModel::SM6_6);
 }
 
 ref<ComputePass> createSimpleComputePass(ref<Device> pDevice, const std::string& file, const std::string& mainEntry,

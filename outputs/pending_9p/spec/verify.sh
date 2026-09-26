@@ -32,5 +32,5 @@ for s in sys.argv[2:]:
         d = np.abs(x - y)[..., :3].max(-1); same += d.max() == 0; fr.append((d > 0).mean() * 100); mx = max(mx, d.max())
     print("%s: frames compared %d, byte-identical %d, differing pixels up to %.3f%%, max %d" % (s, len(n), same, max(fr) if fr else 0, mx))
 PY
-[ "$1" = quick ] || bash outputs/mask_check.sh raw none 2>&1 | tail -1
+[ "$1" = quick ] || { bash outputs/mask_check.sh raw none 2>&1 | tail -1; bash outputs/mask_check.sh relax nrd RelaxDiffuseSh 2>&1 | tail -1; bash outputs/mask_check.sh rr rr 2>&1 | tail -1; }
 echo VERIFY DONE
