@@ -445,6 +445,11 @@ profiled vs 100.1 unprofiled, while 8.0/9.0's costs ~1 ms -- read the 4.x column
     matches within 0.2% (`outputs/pending_9p/fastmath/diff.sh`). The locked `rb_v9p_*` captures all
     have surfaces and are untouched. Turn it on for performance runs; making it the default means
     volume-only renders are no longer bit-comparable with earlier ones.
+    Accuracy is unchanged: against the brute-force path-traced ground truth (`bias_test_plume.py`,
+    `outputs/pending_9p/fastmath/bias.sh`, ImageCompare MSE as in the VolumetricReSTIR README), converged
+    at 4096 frames precise 9.975e-5 / fast 9.976e-5, at 64 frames 2.628e-4 / 2.614e-4, MAPE equal to three
+    digits, no NaN or Inf pixels in either (the risk with fast math, which may drop `isnan` guards).
+    Both are 2.1% brighter than the reference, as the July captures already were -- not fast math.
 * 8.0 gets none of this; the fix is in this repository's shaders and pass, not in the engine.
 * **Nsight notes:** on a full-scene frame the pass ranges are misattributed unless GPU Trace runs
   with `--hes-enabled 0`, and a legacy full-scene trace collects no counters at all. Volume-only

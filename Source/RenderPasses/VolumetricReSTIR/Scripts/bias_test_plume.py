@@ -86,3 +86,6 @@ os.makedirs(OUT_DIR, exist_ok=True)
 m.frameCapture.outputDir = OUT_DIR
 m.frameCapture.baseFilename = "plume_" + MODE + os.environ.get("VR_TAG","")
 m.frameCapture.addFrames(m.activeGraph, [FRAMES])
+# VR_EXIT=1: quit once the capture has flushed (it writes asynchronously), for unattended runs.
+if os.environ.get("VR_EXIT", "0") not in ("0", ""):
+    m.clock.exitFrame = FRAMES + 60
