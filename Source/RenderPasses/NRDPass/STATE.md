@@ -574,6 +574,71 @@ fork's steady state:
   Both do the same +11% texture work late in the orbit; 9.0, at 12-13 warps against the fork's 19,
   is the more latency-bound and feels it more.
 
+### Matched: the fork's driver recompile, read out of the driver's cache, and reproduced (2026-09-26)
+
+**What the fork does.** The NVIDIA driver's shader caches hold the compiled machine code, and CUDA's
+`nvdisasm -b SM120` reads it (`outputs/legacy_cmp/driver_cache/`, README there; Nsight itself shows only
+DXIL/SPIR-V). The fork's D3D12 cache has its Generate Samples DXIL compiled more than once:
+
+| fork Generate Samples, same DXIL | registers | SASS instructions | TEX | constant loads |
+|----------------------------------|-----------|-------------------|-----|----------------|
+| first compile                    | 227       | 20,024            | 95  | 948            |
+| later compiles                   | 80        | 2,904 / 4,112     | 29 / 12 | 104 / 103  |
+
+That is the kernel swap in the trap below. 9.0's kernels are compiled exactly once: salted and
+recompiled mid-run, on the in-box D3D12 runtime, at SM 6.5 over 300 frames -- always one entry in the
+cache, never a second. (9.0's SM 6.6 kernels go to a cache file whose entries are not readable; at SM 6.5,
+`VR_SHADER_MODEL=6_5`, they land in the fork's format. On Vulkan, `-d vulkan`, the GLCache ELFs are
+readable too: Generate Samples 126 registers there.)
+
+**Fix, d996cb1: cap the registers through the thread-group size.** A group has to fit one SM's 64K
+registers, so W x H threads cap registers per thread at 65536 / (W x H), and the compiler then targets a
+fixed step (72, 80, 96, 128). Per-pass sizes from a sweep of 512-1024-thread shapes:
+
+| pass             | group | threads | registers | active warps (was) |
+|------------------|-------|---------|-----------|--------------------|
+| Generate Samples | 32x28 | 896     | 72        | ~20 (12.6)         |
+| Temporal Reuse   | 16x40 | 640     | 96        | ~16 (10)           |
+| Spatial Reuse    | 32x28 | 896     | 72        | ~19 (9)            |
+| Final Shading    | 8x8   | 64      | 96        | ~14; large groups slow it even at equal registers |
+
+Byte-identical (the group size never changes a pixel's work). Bistro, interleaved: **full-scene estimator
+95.1 -> 76.9 ms** (Spatial Reuse -22%, Temporal Reuse -30%, Generate Samples -15%), volume-only 21.5 ->
+20.4. Then 0f7c6ec and 5915801 extend `VR_SPECIALIZE` to Final Shading's and Generate Features' static
+switches (reference mode, the denoiser-guide outputs): Final Shading 128 -> 96 registers, Generate
+Features 80 -> 40; byte-identical. Re-tested under the caps and kept as they were: Spatial Reuse left
+unspecialized on surface scenes, and the atlas hoist's surface-scene exceptions.
+
+**Where it stands.** One session, late orbit pose, volume only (fork traces kept only on its fast
+compile, Generate Samples at 80 registers):
+
+| volume only, Mcyc (GPC locked at 907 MHz) | GS    | TR    | SR    | FS   | estimator | vs 4.x |
+|-------------------------------------------|-------|-------|-------|------|-----------|--------|
+| 4.x, fast compile (3 traces)              | 7.93  | 11.29 | 20.93 | 9.06 | 50.99     | --     |
+| 9.0 (3 traces)                            | 10.91 | 8.36  | 21.14 | 9.74 | 52.57     | 1.03x  |
+| 9.0, `VR_FP_MODE_VOLUME=fast` (2)         | 10.36 | 7.83  | 19.79 | 9.26 | 49.28     | 0.97x  |
+
+At unlocked clocks (`NG_CLOCKS=unaltered`, `tsum.py`) the cycles per estimator are 50.0 M (4.x), 49.9 M
+(9.0), 47.9 M (9.0 fast). The fork compiles fast-math throughout, so the last row is like for like.
+
+Wall clock, as shipped (`time_batch_vol.ps1`, 3 rotated runs, medians of 300 frames):
+
+| bistro 1080p | 4.x                   | 9.0                   | 9.0 fast-math         |
+|--------------|-----------------------|-----------------------|-----------------------|
+| volume only  | 18.77 / 18.70 / 23.77 | 20.77 / 20.79 / 21.54 | 19.65 / 19.72 / 19.79 |
+| full scene   | 106.3 / 117.8 / 112.1 | 86.0 / 77.3 / 77.1    | --                    |
+
+Full scene, 9.0 is 27-35% faster. Volume only, against the fork's fast-compile runs 9.0 is ~10% slower,
+fast-math ~3-5%, although it needs no more cycles: **this GPU (RTX 5070 Laptop) sits at its 75 W power
+limit** in both, and there the fork holds 2,587-2,662 MHz and 9.0 2,340-2,452 (`power/run.sh`, nvidia-smi
+every 200 ms). 9.0 spends ~7% more energy per frame (fast-math: 1.46 J against 1.36): ~16% more warp
+instructions, and the caps' spills -- 2-6 G local-memory sectors per pass where the fork has none (its
+driver spills into shared memory instead). Caps with fewer spills (96 registers) measured the same wall
+clock; specializing `lightSamples` on top of fast math made it much slower (23.4 ms).
+
+DXC 1.8.2505 under the caps: full scene -2% every round (74.9-75.0 against 76.3-76.7 ms; before the caps it
+was +10%), volume only bimodal, 19.4-19.5 or 21.3-22.2 ms against a steady 20.1-20.3. Stays opt-in.
+
 **Port bug: 9.0 has been deploying Falcor 8's DXC.** Falcor 9 fetches DXC 1.8.2505 but deploycommon.bat
 copied the packman package, 1.7.2207, left over from the 8.0 build; every 9.0 number in this file is
 on DXC 1.7. `FALCOR_USE_FETCHED_DXC` (24642b9, default OFF) deploys the fetched one. It is not a free
