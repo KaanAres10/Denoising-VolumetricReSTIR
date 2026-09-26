@@ -52,7 +52,10 @@ m.scene.camera.animated = False
 
 g = RenderGraph("time_raw")
 restir = vr.add_restir(g, scene, render=(W, H),
-                       mParams={"mInitialLightSamples": 1, "mFinalLightSamples": 1})
+                       mParams={"mInitialLightSamples": 1, "mFinalLightSamples": 1,
+                                # VR_NO_TEMPORAL / VR_NO_SPATIAL, as the legacy script reads them.
+                                "mEnableTemporalReuse": not vr.env_bool("VR_NO_TEMPORAL", False),
+                                "mEnableSpatialReuse": not vr.env_bool("VR_NO_SPATIAL", False)})
 out = vr.add_tonemapper(g, restir + ".accumulated_color", exposure=8.0)
 g.markOutput(out)
 m.addGraph(g)

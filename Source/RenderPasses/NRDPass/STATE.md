@@ -272,8 +272,9 @@ orbit and timing identical. 3 runs per engine, order rotated, each its own proce
 
 A verify frame from each engine at orbit pose 150 came first (`VR_VERIFY=1`): same shot, plume
 present and lit. 8.0 vs 9.0 correlate 0.9998 at the same mean. Legacy correlates 0.97 and is sparser
-(71% of pixels lit against 88%); that is the shadow-ray offset difference under "Still open" further
-down, so the new engines do somewhat more lighting work per frame.
+(71% of pixels lit against 88%). (This was put down to the shadow-ray offset difference under "Still
+open" further down. It is not that: with the offset and the alpha test fixed, 9.0 is 92% lit. See "Fork
+parity" below.)
 
 | wall clock / frame | runs                  | median | vs 4.x |
 |--------------------|-----------------------|--------|--------|
@@ -700,6 +701,79 @@ exactly what one with the cache emptied does (`outputs/pending_9p/dxc/cachekey.s
 
 `VR_SLANG_ARGS` (Utils.cpp) passes extra Slang arguments, DXC options through `-Xdxc`;
 `VR_DUMP_DXIL=1` writes the programs' HLSL and DXIL to the working directory.
+
+### Fork parity: shadow rays alpha-test, light samples at the offset point (2026-09-26)
+
+The two differences from the fork left open since the 8.0 port ("Still open" at the end of the ray-origin
+section below), fixed to do what the fork's code does:
+
+* **Alpha test in `FindSurfaceHit` / `FindIfOccluded`** (`InlineRayTracingHelpers.slang`). The port
+  committed every non-opaque candidate, so alpha-cut foliage blocked light as a solid card. Now tested
+  exactly as the fork did, and as Falcor 9's own `RaytracingInline.slang` does: vertex data, material
+  alpha, LOD 0. (The fork's `_MS_DISABLE_ALPHA_TEST` only removed the raster `discard`, never this.)
+* **The light sample at the offset point** (`VolumeUtils.slang`, `sampleSceneLights`). 4.x's
+  `sampleTriangle` offset the sampled point off the light (`computeRayOrigin`) before computing direction,
+  distance and pdf; Falcor 8/9's does not. The port took those from the triangle while its shadow ray went to
+  the offset point, and the reuse path (`sampleTriangleOffset`) re-evaluates at the offset point. Now moved
+  there, pdf rescaled by the geometry ratio, back-facing rejected at that point, as 4.x did.
+
+Bistro raw EXR orbit, 300 frames at 1080p, every 15th frame (`outputs/pending_9p/forkmatch/raw_dead.sh`,
+`dead.py`): share of pixels with no contribution, centre third ("plume") and the rest ("surfaces"):
+
+|                   | plume  | surfaces | frame mean          |
+|-------------------|--------|----------|---------------------|
+| 4.x fork          | 32.41% | 33.96%   | 0.004522            |
+| 9.0 before        | 8.09%  | 14.17%   | 0.004485 (-0.8%)    |
+| 9.0 + alpha test  | 7.49%  | 13.36%   | 0.004503 (-0.4%)    |
+| 9.0 + both        | 7.49%  | 13.37%   | 0.004503 (-0.4%)    |
+
+The alpha test is the one that moves light: the frame mean halves its gap to the fork, and the verify frame
+(pose 150) correlates better with the fork's (blurred, sigma 6: 0.9696 -> 0.9724). The offset changes noise,
+not light: 38% of the verify frame's pixels differ, mean 52.057 -> 52.079 of 255.
+
+**The "overshoot" is not these.** The fork's output stays far sparser than 9.0's at the same energy, and both
+fixes move 9.0 slightly further from it. The suspicion recorded under "Still open" (the other half of the
+offset pair) is refuted. Not a capture artifact either: both engines write half-float EXRs, with the same
+rounding floor (5.96e-8). Same explicit settings in both scripts, and the settings audit under "Ruled out"
+below found no difference.
+
+**It is temporal reuse.** The verify frame from both engines with the reuse stages switched off one at a time
+(`forkmatch/stages.sh`; `time_raw.py` now reads the legacy script's `VR_NO_TEMPORAL` / `VR_NO_SPATIAL`),
+black pixels:
+
+|                    | plume core | street | facade | cafe  | whole | mean (of 255) |
+|--------------------|------------|--------|--------|-------|-------|---------------|
+| fork, no reuse     | 81.9       | 78.2   | 84.9   | 88.1  | 82.5  | 16.46         |
+| 9.0, no reuse      | 82.0       | 77.7   | 85.8   | 87.2  | 82.2  | 17.02         |
+| fork, spatial only | 58.7       | 53.1   | 63.8   | 70.1  | 61.6  | 24.69         |
+| 9.0, spatial only  | 48.9       | 46.9   | 62.3   | 65.7  | 56.9  | 26.07         |
+| fork, temporal only| 44.3       | 34.1   | 46.0   | 45.1  | 41.9  | 32.86         |
+| 9.0, temporal only | 11.2       | 17.4   | 31.6   | 31.0  | 23.7  | 36.87         |
+| fork, both         | 37.4       | 24.8   | 31.0   | 15.3  | 27.2  | 46.58         |
+| 9.0, both          | 2.0        | 10.1   | 6.9    | 5.9   | 8.0   | 52.08         |
+
+Initial sampling matches. 9.0's temporal reuse gets far more out of 8 still frames of history than the
+fork's. Read against the code, the inputs look equivalent: the shader is the fork's (renames, bounds
+guards, the new options default off), same xoshiro seeding, and the fork's previous-frame matrices were right
+in Falcor 4's convention (glm column-major uploaded raw into row-major layout, `mul(v, M)`; Falcor 4 never
+transposes on upload). 9.0's `mTransposePrevMatrices` is the port's equivalent of that. Measured too, as a
+deliberately wrong reprojection (`mTransposePrevMatrices=False`): temporal only 23.7 -> 27.0% black (plume
+core 11.2 -> 24.7, surfaces unmoved), both stages 8.0 -> 8.0. Nowhere near the fork's 41.9 / 27.2, so the
+reprojection is not it. Still open: what makes the fork's temporal reuse throw away history that 9.0 keeps,
+and which of the two is right. The reference comparison would say.
+
+Cost, interleaved, 3 rounds (`hoist/ab_env.sh`, the fixes compiled out with `VR_PRE_FORK_PARITY=1`):
+full scene 69.2 / 69.3 / 77.7 -> 71.1 / 71.4 / 82.0 ms (+3%: Spatial Reuse +0.7, Final Shading +0.6,
+Generate Samples +0.4). Volume only unchanged, 18.9-19.0 ms (a 21.7 was drift, every pass up together).
+
+**Pixels.** Bistro with surfaces changes (both fixes). Bistro volume-only changes through the offset (its lights
+are emissive): up to 25% of pixels per frame, mean 19.470 -> 19.461, i.e. noise. Plume does not change
+(environment light, nothing to alpha-test): 60/60 frames identical (`forkmatch/pixels.sh`). The locked rb_v9p captures
+therefore predate the fixes: `VR_SLANG_ARGS="-DVR_PRE_FORK_PARITY=1"` compiles both out and reproduces
+rb_v9p_raw byte for byte (300/300), and `outputs/mask_check.sh` now sets it so the byte-identity checks
+keep working. The fixed raw orbit: 0/300 identical, tonemapped mean +1.6%. The switch itself compiles to
+what was measured: 300/300 against the orbit captured with the temporary per-fix guards
+(`forkmatch/guard_check.sh`). The locked table is not re-measured.
 
 ## SOLVED: REBLUR's medium was transparent under motion
 
@@ -2629,8 +2703,11 @@ feeding a denoiser guide.
   computing the light vector, 8.0 removed it, and the fork code re-applies it only to the shadow ray,
   leaving `ls.dir`/`ls.distance` inconsistent with `ls.rayDir`/`ls.rayDistance`. It measures better,
   so it is not urgent, but it is not parity.
+  **2026-09-26: offset fixed, suspicion refuted.** The overshoot remains (9.0: 13.37% against 34%). See
+  "Fork parity" in the 9.0 port section.
 * Shadow rays never alpha-test: `FindSurfaceHit`/`FindIfOccluded` commit every non-opaque candidate
   (`TODO(surface-scene): alpha test via gScene.materials`), so alpha-cut foliage occludes as solid.
+  **FIXED 2026-09-26**, see "Fork parity".
 
 ---
 
