@@ -521,7 +521,23 @@ trap) emits 3,946 static SASS instructions for its Generate Samples against 8,30
 twice the DXIL. That is consistent with the driver folding the fork's constant-buffer values
 (options, mip levels), which 9.0 never gets: salting 9.0's DXIL with a unique never-taken branch per
 run, so the driver has to compile it anew, gives the same 128 registers and cycles
-(`outputs/pending_9p/spec/salt_trace.sh`). 9.0 is simply not recompiled.
+(`outputs/pending_9p/spec/salt_trace.sh`). 9.0 is simply not recompiled. Nor does anything else about
+how 9.0 creates the pipeline change it, each tried and traced (still 128, same cycles):
+* a salted recompile forced mid-run, at frame 100 or 151, when the startup compile load is over;
+* the in-box D3D12 runtime instead of the Agility SDK (bin/Release/D3D12 moved aside; the fork has none);
+* NVAPI pipeline creation is not in play: no estimator kernel declares `g_NvidiaExt`, so Device.cpp's
+  dispatcher uses plain CreateComputePipelineState, like the fork;
+* both engines bind their constant buffers the same way (descriptor tables, no root CBVs; Nsight
+  object browser, `outputs/gcap/*_objects.csv`);
+* evaluating a single candidate instead of four.
+
+The fork's shadow ray-march loop and 9.0's are instruction for instruction the same DXIL (the same
+loads, samples and math; only the SM 6.6 handle annotations differ), yet Nsight's per-line live
+registers read 68-78 across the fork's and 122-126 across 9.0's. The driver also gives both kernels
+shared memory their source never declares, i.e. spill space: 12 KB per 256-thread group for the fork's
+Generate Samples (48 B per thread), 4.3 KB per 64-thread group for 9.0's (68 B). So 9.0's compiled
+kernel holds ~50 more values at its peak, in machine code this build of Nsight does not show for
+D3D12 (DXIL only). That is where the chase stops.
 
 **Fix, eb96f17: compile the options in ourselves (`VR_SPECIALIZE`).** Byte-identical everywhere
 (raw, RELAX-SH, DLSS RR 300/300 against `rb_v9p_*`). Volume-only estimator 23.00 -> 21.68 ms, every
@@ -538,6 +554,25 @@ Where that leaves it, one session (the machine's slow state), Mcycles:
 | 9.0 before (VR_SPECIALIZE=0)     | 13.29 | 10.26 | 27.74 | 11.75 | 65.35     | 1.28x  |
 | **9.0 now**                      | 12.16 | 9.74  | 26.33 | 11.08 | **61.26** | 1.20x  |
 | 9.0 now, `VR_FP_MODE_VOLUME=fast` | 12.47 | 9.07  | 25.14 | 10.38 | 58.97     | 1.16x  |
+
+Every pixel-changing opt-in together (DXC 1.8.2505, `VR_FP_MODE_VOLUME=fast`, Spatial Reuse left
+unspecialized, which on DXC 1.8 keeps its 128 registers) reaches 56.23 Mcyc in the same session: 1.10x.
+
+**Wall clock, as each engine ships (2026-09-26, `outputs/legacy_cmp/time_batch_vol.ps1`, 3 runs per
+engine and scene type, order rotated, medians of 300 frames):**
+
+| bistro, 1080p     | fork (4.x)             | 9.0                   |
+|-------------------|------------------------|-----------------------|
+| volume only       | 23.74 / 20.23 / 23.75  | 23.02 / 24.52 / 22.43 |
+| full scene        | 155.5 / 136.7 / 110.4  | 96.7 / 97.3 / 97.0    |
+
+The fork's spread is its kernel swap (trap below): two of its three volume-only runs never left the
+slow compile, and its full-scene runs left it at different points or never. Per 30-frame block, in the
+fork's steady state:
+* full scene, 9.0 is faster in every block (round 3: 88.5-104.4 ms against 102.6-132.3);
+* volume only, 9.0 is level early in the orbit (20.5 vs 20.2 ms) and 1.14x by the end (24.2 vs 20.6).
+  Both do the same +11% texture work late in the orbit; 9.0, at 12-13 warps against the fork's 19,
+  is the more latency-bound and feels it more.
 
 **Port bug: 9.0 has been deploying Falcor 8's DXC.** Falcor 9 fetches DXC 1.8.2505 but deploycommon.bat
 copied the packman package, 1.7.2207, left over from the 8.0 build; every 9.0 number in this file is
