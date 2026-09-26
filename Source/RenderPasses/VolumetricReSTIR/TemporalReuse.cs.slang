@@ -123,17 +123,22 @@ float reprojectSurfaceProbability(int2 pixelPos, float T)
     return T;
 }
 
-// Thread-group size. 8x8, not 16x16: these kernels need 128-224 registers per thread, and with
-// 256-thread groups the SM's 64K registers hold whole groups only -- at 192 registers that is one group,
-// 8 warps. 64-thread groups pack to the register limit instead (10 warps at 192). Measured on the
-// bistro raw estimator: 16x16 101.0 ms, 8x8 89.5, 8x4 92.4, 16x4 93.2, 32x2 108.0. Every thread's work
-// depends only on its pixel (no groupshared memory, group ids or wave ops), so this changes
-// occupancy, never results -- captures are byte-identical. VR_GROUP=WxH overrides it for an A/B.
+// Thread-group size, and through it the register budget. A group must fit one SM's 64K registers,
+// so its size caps registers per thread at 65536 / threads, in steps of 8: 16x40 = 640 threads ->
+// 96 registers here, ~16 active warps per SM against ~10 at 8x8. Left alone, the NVIDIA driver
+// compiles these kernels to 128-168 registers once and keeps that (9-12 warps per SM). The 4.x fork
+// gets the same kernels recompiled mid-run at 80 registers (its driver cache shows 227 -> 80 for
+// Generate Samples); the cap gives 9.0 a similar budget from the first frame. Bistro, interleaved,
+// per-pass group sizes from a sweep of 512-1024-thread shapes: full-scene estimator 95.1 -> 76.9 ms
+// (Spatial Reuse -22%, Temporal Reuse -30%, Generate Samples -15%), volume-only 21.5 -> 20.4. Every
+// thread's work depends only on its pixel (no groupshared memory, group ids or wave ops), so this
+// changes occupancy, never results -- captures are byte-identical.
+// VR_GROUP=WxH, or VR_GROUP_GS/_TR/_SR/_FS=WxH for one pass, overrides it for an A/B.
 #ifndef VR_GROUP_X
-#define VR_GROUP_X 8
+#define VR_GROUP_X 16
 #endif
 #ifndef VR_GROUP_Y
-#define VR_GROUP_Y 8
+#define VR_GROUP_Y 40
 #endif
 [numthreads(VR_GROUP_X, VR_GROUP_Y, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)

@@ -888,15 +888,20 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (Program* program = specializePass(mFinalShadingPass, "FS"))
             program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(finalOptions));
 
-        // Thread-group size of the four big kernels: 8x8 by default (see the comment at their
-        // [numthreads]); VR_GROUP=WxH overrides it for an A/B, e.g. VR_GROUP=16x16 for the old layout.
+        // Thread-group size of the four big kernels, which sets their register budget (defaults and
+        // measurements at their [numthreads]). VR_GROUP=WxH overrides all four for an A/B, e.g.
+        // VR_GROUP=8x8 for the previous layout; VR_GROUP_GS / _TR / _SR / _FS=WxH override one pass.
         static const char* kGroupOverride = std::getenv("VR_GROUP");
-        unsigned groupX = 0, groupY = 0;
-        if (kGroupOverride && std::sscanf(kGroupOverride, "%ux%u", &groupX, &groupY) == 2)
+        const std::pair<ref<ComputePass>, const char*> groupPasses[] = {
+            {mpTraceRaysPass, "VR_GROUP_GS"}, {mTemporalReusePass, "VR_GROUP_TR"}, {mSpatialReusePass, "VR_GROUP_SR"}, {mFinalShadingPass, "VR_GROUP_FS"}};
+        for (const auto& [pass, envName] : groupPasses)
         {
-            for (const auto& pass : {mpTraceRaysPass, mTemporalReusePass, mSpatialReusePass, mFinalShadingPass})
+            if (!pass) continue;
+            const char* spec = std::getenv(envName);
+            if (!spec) spec = kGroupOverride;
+            unsigned groupX = 0, groupY = 0;
+            if (spec && std::sscanf(spec, "%ux%u", &groupX, &groupY) == 2)
             {
-                if (!pass) continue;
                 pass->getProgram()->addDefine("VR_GROUP_X", std::to_string(groupX));
                 pass->getProgram()->addDefine("VR_GROUP_Y", std::to_string(groupY));
             }

@@ -131,12 +131,11 @@ import ComputeInitialSample;
 #define VR_REUSE_ON 0
 #endif
 
-// Thread-group size. 8x8, not 16x16: these kernels need 128-224 registers per thread, and with
-// 256-thread groups the SM's 64K registers hold whole groups only -- at 192 registers that is one group,
-// 8 warps. 64-thread groups pack to the register limit instead (10 warps at 192). Measured on the
-// bistro raw estimator: 16x16 101.0 ms, 8x8 89.5, 8x4 92.4, 16x4 93.2, 32x2 108.0. Every thread's work
-// depends only on its pixel (no groupshared memory, group ids or wave ops), so this changes
-// occupancy, never results -- captures are byte-identical. VR_GROUP=WxH overrides it for an A/B.
+// Thread-group size. 8x8: unlike the other estimator kernels (see TraceRays.cs.slang), Final Shading
+// gets slower in large groups even at the same registers (16x32, 128 registers: +49% at one pose;
+// 16x16 and 32x28 +30-50% in interleaved runs; 8x16 ties). Every thread's work depends only on its
+// pixel (no groupshared memory, group ids or wave ops), so this changes occupancy, never results.
+// VR_GROUP=WxH or VR_GROUP_FS=WxH overrides it for an A/B.
 #ifndef VR_GROUP_X
 #define VR_GROUP_X 8
 #endif
