@@ -75,6 +75,16 @@ cbuffer CB
     EnvMapSampler           envMapSampler; 
     EmissiveLightSampler    emissiveSampler; 
 }
+
+// VR_SPECIALIZE (SpecializeOptions.slangh): the sampling options compiled in as constants from the
+// values the host also writes into CB.
+#include "SpecializeOptions.slangh"
+#if VR_SPECIALIZE
+static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
+#define SAMPLING_OPTIONS specializeOptions(kSamplingOptions, gSamplingOptions)
+#else
+#define SAMPLING_OPTIONS gSamplingOptions
+#endif
 // Input data to accumulate and accumulated output.
 StructuredBuffer<Reservoir> gCurReservoirs;
 StructuredBuffer<ExtraBounceReservoir> gCurExtraBounceReservoirs;
@@ -180,7 +190,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             VBufferItem vItem = gVBuffer[pixelId];
             #endif
 
-            curOutputColor = evaluate_F(curReservoir, VBUFFERITEM dataProvider, envMapSampler, emissiveSampler, ray, sg, gSamplingOptions, VR_REUSE_ON ? false : gNoReuse);
+            curOutputColor = evaluate_F(curReservoir, VBUFFERITEM dataProvider, envMapSampler, emissiveSampler, ray, sg, SAMPLING_OPTIONS, VR_REUSE_ON ? false : gNoReuse);
 
             float W = curReservoir.p_y == 0.0 ? 1.f : curReservoir.runningSum / (curReservoir.p_y * curReservoir.M);
 
@@ -299,7 +309,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 // (VolumeUtils.slang: triangleIndex + getLightCount()), which getActiveTriangleCount()
                 // would not bound correctly.
                 const uint triIdx = (uint)(res.lightID - lightCount);
-                if (gSamplingOptions.useEmissiveLights && triIdx < gScene.lightCollection.getTriangleCount())
+                if (SAMPLING_OPTIONS.useEmissiveLights && triIdx < gScene.lightCollection.getTriangleCount())
                 {
                     TriangleLightSample ls;
                     if (sampleTriangleOffset(p, triIdx, res.lightUV, ls))

@@ -71,6 +71,16 @@ cbuffer CB
     EmissiveLightSampler           emissiveSampler;  
 }
 
+// VR_SPECIALIZE (SpecializeOptions.slangh): the sampling options compiled in as constants from the
+// values the host also writes into CB.
+#include "SpecializeOptions.slangh"
+#if VR_SPECIALIZE
+static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
+#define SAMPLING_OPTIONS specializeOptions(kSamplingOptions, gSamplingOptions)
+#else
+#define SAMPLING_OPTIONS gSamplingOptions
+#endif
+
 // Input data to accumulate and accumulated output.
 RWStructuredBuffer<Reservoir> gCurReservoirs;
 RWStructuredBuffer<Reservoir> gTemporalReservoirs;
@@ -345,7 +355,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                     #endif
                     // tap's runningSum and p_y are overwritten!
                     // for vertex reuse: p_partial is also overwritten!
-                    bool isValid = resampleNeighbor(taps[i], resampleRay, sg, envMapSampler, emissiveSampler, VBUFFERITEM tempDataProvider, gSamplingOptions);
+                    bool isValid = resampleNeighbor(taps[i], resampleRay, sg, envMapSampler, emissiveSampler, VBUFFERITEM tempDataProvider, SAMPLING_OPTIONS);
                     if (!isValid) continue;
                 }
             }
@@ -403,9 +413,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
                         float p_y;
 
                         if (i == 0) p_y = evaluatePHatReadOnly(taps[i], neighborRay, sg, envMapSampler, emissiveSampler,
-                            VBUFFERITEM curDataProvider, gSamplingOptions, j > 0, true, false);
+                            VBUFFERITEM curDataProvider, SAMPLING_OPTIONS, j > 0, true, false);
                         else p_y = evaluatePHatReadOnly(taps[i], neighborRay, sg, envMapSampler, emissiveSampler,
-                            VBUFFERITEM tempDataProvider, gSamplingOptions, j > 0, true, false);
+                            VBUFFERITEM tempDataProvider, SAMPLING_OPTIONS, j > 0, true, false);
 
                         taps[i].depth = backupDepth;
                         if (isinf(p_y) || isnan(p_y)) p_y = 0.f;

@@ -62,6 +62,16 @@ cbuffer CB
     EmissiveLightSampler           emissiveSampler;   
 }
 
+// VR_SPECIALIZE (SpecializeOptions.slangh): the sampling options compiled in as constants from the
+// values the host also writes into CB.
+#include "SpecializeOptions.slangh"
+#if VR_SPECIALIZE
+static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
+#define SAMPLING_OPTIONS specializeOptions(kSamplingOptions, gSamplingOptions)
+#else
+#define SAMPLING_OPTIONS gSamplingOptions
+#endif
+
 int2 generateNeighborOffset(int sampleId, int sampleCount, float sampleRadius, int pixelId, int frameId)
 {
     int2 offset;
@@ -196,7 +206,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 #endif
 
                 // tap's runningSum and p_y are overwritten!
-                resampleNeighborSpatialReuse(tap, resampleRay, sg, envMapSampler, emissiveSampler, VBUFFERITEM dataProvider, gSamplingOptions);
+                resampleNeighborSpatialReuse(tap, resampleRay, sg, envMapSampler, emissiveSampler, VBUFFERITEM dataProvider, SAMPLING_OPTIONS);
             }
 
             if (gMISMethod == kMISTalbot && tap.runningSum > 0.f)
@@ -240,7 +250,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                         VBufferItem vItem = gVBuffer[getPixelID(neighborRayPixelPos, gResolution)];
                         #endif
 
-                        float p_y = evaluatePHatReadOnly(tap, neighborRay, sg, envMapSampler, emissiveSampler, VBUFFERITEM dataProvider, gSamplingOptions, false, true, true);
+                        float p_y = evaluatePHatReadOnly(tap, neighborRay, sg, envMapSampler, emissiveSampler, VBUFFERITEM dataProvider, SAMPLING_OPTIONS, false, true, true);
                         if (isinf(p_y) || isnan(p_y)) p_y = 0.f;
 
                         p_sum += p_y * tap2.M;

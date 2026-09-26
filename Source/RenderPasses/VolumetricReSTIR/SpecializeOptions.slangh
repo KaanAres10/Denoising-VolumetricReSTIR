@@ -1,0 +1,45 @@
+/** VR_SPECIALIZE: a pass's SamplingOptions compiled in as constants instead of read from CB.
+
+    VolumetricReSTIR.cpp defines VR_SPECIALIZE and the options literal for each estimator pass from the
+    same values it writes into that pass's CB, and addDefine recompiles the pass only when one of them
+    changes (a UI edit). The values are therefore identical to CB's; what changes is that mip levels,
+    tracker choices, sampler switches and step scales fold into the march loops instead of being
+    carried through them as runtime values, the way the driver's optimized compile folds them for the
+    4.x fork. See STATE.md, "What makes the fork faster volume-only".
+
+    Bit i of VR_SPECIALIZE_FIELDS takes field i (declaration order) from the constant, else from CB.
+    The default leaves out bit 2, lightSamples: it is the sample count of computeVisibility, and with
+    it constant the `visibility /= visibilitySamples` divide by 1 folds away. The runtime divide
+    flushes a denormal transmittance to zero; without it the denormal survives into p-hat, and a
+    candidate that had p-hat 0 no longer does. That changes RIS selection in a few pixels per frame
+    (bistro volume-only: 34 of 60 frames, max 2/255). Every other field is byte-identical.
+*/
+#pragma once
+
+#if VR_SPECIALIZE
+#ifndef VR_SPECIALIZE_FIELDS
+#define VR_SPECIALIZE_FIELDS 0x7fffb
+#endif
+
+SamplingOptions specializeOptions(SamplingOptions k, SamplingOptions o)
+{
+    if (VR_SPECIALIZE_FIELDS & (1 << 0)) o.visibilityTrackingMethod = k.visibilityTrackingMethod;
+    if (VR_SPECIALIZE_FIELDS & (1 << 1)) o.lightingTrackingMethod = k.lightingTrackingMethod;
+    if (VR_SPECIALIZE_FIELDS & (1 << 2)) o.lightSamples = k.lightSamples;
+    if (VR_SPECIALIZE_FIELDS & (1 << 3)) o.lightingMipLevel = k.lightingMipLevel;
+    if (VR_SPECIALIZE_FIELDS & (1 << 4)) o.visibilitySamples = k.visibilitySamples;
+    if (VR_SPECIALIZE_FIELDS & (1 << 5)) o.visibilityMipLevel = k.visibilityMipLevel;
+    if (VR_SPECIALIZE_FIELDS & (1 << 6)) o.visibilityUseLinearSampler = k.visibilityUseLinearSampler;
+    if (VR_SPECIALIZE_FIELDS & (1 << 7)) o.lightingUseLinearSampler = k.lightingUseLinearSampler;
+    if (VR_SPECIALIZE_FIELDS & (1 << 8)) o.visibilityTStepScale = k.visibilityTStepScale;
+    if (VR_SPECIALIZE_FIELDS & (1 << 9)) o.lightingTStepScale = k.lightingTStepScale;
+    if (VR_SPECIALIZE_FIELDS & (1 << 10)) o.useEnvironmentLights = k.useEnvironmentLights;
+    if (VR_SPECIALIZE_FIELDS & (1 << 11)) o.useAnalyticLights = k.useAnalyticLights;
+    if (VR_SPECIALIZE_FIELDS & (1 << 12)) o.useEmissiveLights = k.useEmissiveLights;
+    if (VR_SPECIALIZE_FIELDS & (1 << 13)) o.vertexReuseStartBounce = k.vertexReuseStartBounce;
+    return o;
+}
+
+// Bits 14 and up: the pass's own scalar switches (TraceRays.cs.slang).
+#define VR_SPECIALIZES(bit) ((VR_SPECIALIZE_FIELDS & (1 << (bit))) != 0)
+#endif

@@ -64,6 +64,29 @@ StructuredBuffer<VBufferItem> gVBuffer;
 #define VR_REUSE_ON 0
 #endif
 
+// VR_SPECIALIZE (SpecializeOptions.slangh): both option sets and the scalar switches below compiled in
+// as constants from the values the host also writes into CB.
+#include "SpecializeOptions.slangh"
+#if VR_SPECIALIZE
+static const SamplingOptions kInitialSamplingOptions = VR_INITIAL_OPTIONS;
+static const SamplingOptions kSpatialSamplingOptions = VR_SPATIAL_OPTIONS;
+#define INITIAL_OPTIONS specializeOptions(kInitialSamplingOptions, gInitialSamplingOptions)
+#define SPATIAL_OPTIONS specializeOptions(kSpatialSamplingOptions, gSpatialSamplingOptions)
+#define NUM_INITIAL_SAMPLES (VR_SPECIALIZES(14) ? VR_NUM_INITIAL_SAMPLES : gNumInitialSamples)
+#define USE_RUSSIAN_ROULETTE (VR_SPECIALIZES(15) ? VR_USE_RUSSIAN_ROULETTE : gUseRussianRoulette)
+#define USE_COARSER_GRID (VR_SPECIALIZES(16) ? VR_USE_COARSER_GRID : gUseCoarserGridForIndirectBounce)
+#define USE_REFERENCE (VR_SPECIALIZES(17) ? VR_USE_REFERENCE : gUseReference)
+#define MAX_BOUNCES_RT (VR_SPECIALIZES(18) ? VR_MAX_BOUNCES_RT : gMaxBounces)
+#else
+#define INITIAL_OPTIONS gInitialSamplingOptions
+#define SPATIAL_OPTIONS gSpatialSamplingOptions
+#define NUM_INITIAL_SAMPLES gNumInitialSamples
+#define USE_RUSSIAN_ROULETTE gUseRussianRoulette
+#define USE_COARSER_GRID gUseCoarserGridForIndirectBounce
+#define USE_REFERENCE gUseReference
+#define MAX_BOUNCES_RT gMaxBounces
+#endif
+
 // Thread-group size. 8x8, not 16x16: these kernels need 128-224 registers per thread, and with
 // 256-thread groups the SM's 64K registers hold whole groups only -- at 192 registers that is one group,
 // 8 warps. 64-thread groups pack to the register limit instead (10 warps at 192). Measured on the
@@ -98,7 +121,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
 
     VolRay ray = { rayOrigin, rayDir, 0.f, kRayTMax };
 
-    if (gUseReference)
+    if (USE_REFERENCE)
     {
         #ifdef SURFACE_SCENE
         VBufferItem vItem = gVBuffer[reservoirId];
@@ -107,12 +130,12 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
 
         for (int rId = 0; rId < gBaselineSamplePerPixel; rId++)
         {
-            L = IntegrateByVolumePathTracing(ray, sg, gInitialSamplingOptions.visibilityUseLinearSampler, max(1, gInitialSamplingOptions.lightSamples), gInitialSamplingOptions.useEnvironmentLights, gInitialSamplingOptions.useAnalyticLights, gInitialSamplingOptions.useEmissiveLights,
+            L = IntegrateByVolumePathTracing(ray, sg, INITIAL_OPTIONS.visibilityUseLinearSampler, max(1, INITIAL_OPTIONS.lightSamples), INITIAL_OPTIONS.useEnvironmentLights, INITIAL_OPTIONS.useAnalyticLights, INITIAL_OPTIONS.useEmissiveLights,
                 envMapSampler, emissiveSampler,
                 #ifdef SURFACE_SCENE
                 hitInfo, 
                 #endif
-                0, gMaxBounces, true, gUseRussianRoulette);
+                0, MAX_BOUNCES_RT, true, USE_RUSSIAN_ROULETTE);
             avgL += L;
         }
         gOutputColor[launchIndex] = float4(avgL / gBaselineSamplePerPixel, 1);
@@ -124,7 +147,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
         #endif
         Reservoir finalReservoir = createNewReservoir();
 
-        int intialSampleRounds = (gNumInitialSamples + 3) / 4;
+        int intialSampleRounds = (NUM_INITIAL_SAMPLES + 3) / 4;
 
         #ifdef SURFACE_SCENE
         // use vbuffer
@@ -146,18 +169,18 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
             float pdfDists[MaxInitialSampleCount];
             float outTrs[MaxInitialSampleCount];
 
-            int roundSamples = roundId == intialSampleRounds - 1 ? (gNumInitialSamples - 4 * (intialSampleRounds - 1)) : 4;
+            int roundSamples = roundId == intialSampleRounds - 1 ? (NUM_INITIAL_SAMPLES - 4 * (intialSampleRounds - 1)) : 4;
 
             if (!noReuse)
-                SampleMediumAnalyticGeneric(ray, sg, gInitialSamplingOptions.visibilityUseLinearSampler, hitDistances, gInitialSamplingOptions.visibilityMipLevel, pdfDists, outTrs, roundSamples);
+                SampleMediumAnalyticGeneric(ray, sg, INITIAL_OPTIONS.visibilityUseLinearSampler, hitDistances, INITIAL_OPTIONS.visibilityMipLevel, pdfDists, outTrs, roundSamples);
 
             for (int sampleId = 0; sampleId < roundSamples; sampleId++)
             {
                 #if MAX_BOUNCES > 1
                 ExtraBounceReservoir extrabounceReservoir[MAX_BOUNCES - 1];
                 #endif
-                Reservoir outReservoir = ComputeInitialSample(ray, hitDistances[sampleId], pdfDists[sampleId], outTrs[sampleId], gMaxBounces, gNumInitialSamples,
-                    sg, gInitialSamplingOptions, envMapSampler, emissiveSampler, gUseCoarserGridForIndirectBounce, gUseRussianRoulette, noReuse
+                Reservoir outReservoir = ComputeInitialSample(ray, hitDistances[sampleId], pdfDists[sampleId], outTrs[sampleId], MAX_BOUNCES_RT, NUM_INITIAL_SAMPLES,
+                    sg, INITIAL_OPTIONS, envMapSampler, emissiveSampler, USE_COARSER_GRID, USE_RUSSIAN_ROULETTE, noReuse
                     #ifdef SURFACE_SCENE
                     , hitInfo
                     #endif
@@ -190,7 +213,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTId : SV_GroupThreadID, uint 
         externalVis.Initialize();
 
         float p_hat = evaluate_P_hat(ray, sg, envMapSampler, emissiveSampler, VBUFFERITEM curDataProvider,
-            gSpatialSamplingOptions, finalReservoir, externalVis, false, true, false);
+            SPATIAL_OPTIONS, finalReservoir, externalVis, false, true, false);
 
         if (finalReservoir.runningSum > 0.f)
         {

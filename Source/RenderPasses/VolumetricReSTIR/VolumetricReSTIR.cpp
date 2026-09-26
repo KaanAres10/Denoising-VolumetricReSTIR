@@ -132,6 +132,21 @@ namespace
         const float mip = std::round(std::log2(std::max(1.f, float(height) / 32.f)));
         return std::min(mip, float(pStats->getMipCount() - 1));
     }
+
+    /// A SamplingOptions as a Slang initializer list, fields in declaration order, for VR_SPECIALIZE.
+    /// Floats are printed with 9 significant digits, which reads back as exactly the same float.
+    std::string samplingOptionsLiteral(const SamplingOptions& o)
+    {
+        const auto f = [](float v) { char s[32]; std::snprintf(s, sizeof(s), "%.8ef", v); return std::string(s); };
+        const auto b = [](bool v) { return std::string(v ? "true" : "false"); };
+        return "{ " + std::to_string(o.visibilityTrackingMethod) + ", " + std::to_string(o.lightingTrackingMethod) + ", " +
+               std::to_string(o.lightSamples) + ", " + std::to_string(o.lightingMipLevel) + ", " +
+               std::to_string(o.visibilitySamples) + ", " + std::to_string(o.visibilityMipLevel) + ", " +
+               b(o.visibilityUseLinearSampler) + ", " + b(o.lightingUseLinearSampler) + ", " +
+               f(o.visibilityTStepScale) + ", " + f(o.lightingTStepScale) + ", " +
+               b(o.useEnvironmentLights) + ", " + b(o.useAnalyticLights) + ", " + b(o.useEmissiveLights) + ", " +
+               std::to_string(o.vertexReuseStartBounce) + " }";
+    }
 };
 
 
@@ -834,6 +849,44 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             if (kHoistOverride && *kHoistOverride) hoist = kHoistOverride[0] != '0';
             pass->getProgram()->addDefine("VR_HOIST_ATLAS", hoist ? "1" : "0");
         }
+
+        // Sampling options compiled in as constants (VR_SPECIALIZE, see SpecializeOptions.slangh), from
+        // the same values written into each pass's CB below; a UI change recompiles the pass. Output is
+        // byte-identical. Interleaved runs, bistro: volume-only estimator 23.00 -> 21.68 ms (-6%, every
+        // pass faster). Specializing Spatial Reuse on the full scene drops it onto its register cliff
+        // (56.1 -> 59.9-62.2 ms), so on surface scenes it keeps reading CB; with that, full-scene
+        // estimator 98.0 -> 95.7 ms (4 rounds; Generate Samples -10%). For A/B: VR_SPECIALIZE=0 keeps every pass on CB,
+        // VR_SPECIALIZE_PASSES=GS,TR,SR,FS names the passes (overriding that policy),
+        // VR_SPECIALIZE_FIELDS=<mask> picks the fields.
+        static const char* kSpecializeOverride = std::getenv("VR_SPECIALIZE");
+        static const char* kSpecializePassesEnv = std::getenv("VR_SPECIALIZE_PASSES");
+        static const char* kSpecializeFields = std::getenv("VR_SPECIALIZE_FIELDS");
+        const std::string specializePasses = kSpecializePassesEnv ? kSpecializePassesEnv : mParams.mUseSurfaceScene ? "GS,TR,FS" : "GS,TR,SR,FS";
+        const bool specializeAny = !(kSpecializeOverride && kSpecializeOverride[0] == '0');
+        const auto specializePass = [&](const ref<ComputePass>& pass, const char* name) -> Program* {
+            if (!pass) return nullptr;
+            const bool on = specializeAny && specializePasses.find(name) != std::string::npos;
+            Program* program = pass->getProgram().get();
+            program->addDefine("VR_SPECIALIZE", on ? "1" : "0");
+            if (on && kSpecializeFields) program->addDefine("VR_SPECIALIZE_FIELDS", kSpecializeFields);
+            return on ? program : nullptr;
+        };
+        if (Program* program = specializePass(mpTraceRaysPass, "GS"))
+        {
+            program->addDefine("VR_INITIAL_OPTIONS", samplingOptionsLiteral(initialOptions));
+            program->addDefine("VR_SPATIAL_OPTIONS", samplingOptionsLiteral(spatialOptions));
+            program->addDefine("VR_NUM_INITIAL_SAMPLES", std::to_string(mParams.mInitialM));
+            program->addDefine("VR_USE_RUSSIAN_ROULETTE", mParams.mInitialUseRussianRoulette ? "true" : "false");
+            program->addDefine("VR_USE_COARSER_GRID", mParams.mInitialUseCoarserGridForIndirectBounce ? "true" : "false");
+            program->addDefine("VR_USE_REFERENCE", mParams.mUseReference ? "true" : "false");
+            program->addDefine("VR_MAX_BOUNCES_RT", std::to_string(mParams.mMaxBounces));
+        }
+        if (Program* program = specializePass(mTemporalReusePass, "TR"))
+            program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(spatialOptions));
+        if (Program* program = specializePass(mSpatialReusePass, "SR"))
+            program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(spatialOptions));
+        if (Program* program = specializePass(mFinalShadingPass, "FS"))
+            program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(finalOptions));
 
         // Thread-group size of the four big kernels: 8x8 by default (see the comment at their
         // [numthreads]); VR_GROUP=WxH overrides it for an A/B, e.g. VR_GROUP=16x16 for the old layout.

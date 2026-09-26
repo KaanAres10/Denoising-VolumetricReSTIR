@@ -18,6 +18,7 @@ target_sources(VolumetricReSTIR PRIVATE
     Reservoir.slang
     ReSTIRHelper.slang
     SpatialReuse.cs.slang
+    SpecializeOptions.slangh
     TemporalReuse.cs.slang
     TraceRays.cs.slang
     VolumeBase.slang
