@@ -5,7 +5,11 @@
 #   run_study.sh burst [labels...]    consecutive frames for the temporal autocorrelation, as shipped
 #   run_study.sh deep <label>         one factor at a time around as shipped
 #   run_study.sh refs <label>         a path-traced reference (not bistro: forkref's v9sa_ref is used)
-#   run_study.sh denoise <label>      every denoiser, as shipped vs no reuse, at the still pose
+#   run_study.sh denoise <label> [N]  every denoiser, as shipped vs no reuse, at the still pose; with N,
+#                                     as shipped + N mutations instead (den_<denoiser>_mutN)
+#   run_study.sh mutate1 [labels...]  one mutation (light + depth) on every scene (or the labels given)
+#   run_study.sh mutate <label>       Phase B: mutations 1 and 5 x strategy light / depth / both, and one
+#                                     mutation at M caps 10 / 50 / 200 (the shipped cap is mut1_both)
 #   run_study.sh summary              outputs/decorr/summary.tsv and every scene's sheet.png
 #
 # A label is a vr_graph scene, optionally with a phase-function g and a density multiplier:
@@ -107,7 +111,7 @@ score() {  # label config dir t0: m_corr against the baseline and reference, the
     local args=(--tag c)
     [ "$label" = bistro ] && args+=(--regions bistro --clamp 1)
     local base="$O/$label/noreuse/c.corr.json"
-    case "$cfg" in den_*_shipped) base="$O/$label/${cfg%_shipped}_noreuse/c.corr.json" ;; esac
+    case "$cfg" in den_*_shipped | den_*_mut*) base="$O/$label/${cfg%_*}_noreuse/c.corr.json" ;; esac
     [ "$cfg" != noreuse ] && [ "${cfg%_noreuse}" = "$cfg" ] && [ -f "$base" ] && args+=(--baseline "$base")
     local ref
     ref=$(ref_for "$label")
@@ -162,10 +166,30 @@ case "$stage" in
             name=$mode
             extra=()
             if [ "$mode" = nrd ]; then name="nrd_${method}"; extra=(VR_NRD_METHOD="$method"); fi
+            if [ -n "${2:-}" ]; then
+                # shellcheck disable=SC2086
+                cap "$l" "den_${name}_mut$2" VR_DENOISER="$mode" "${extra[@]}" $LOOK VR_MUTATIONS="$2" VR_MUT_STRAT=light,depth
+                continue
+            fi
             # shellcheck disable=SC2086
             cap "$l" "den_${name}_noreuse" VR_DENOISER="$mode" "${extra[@]}" $LOOK VR_NO_TEMPORAL=1 VR_NO_SPATIAL=1
             # shellcheck disable=SC2086
             cap "$l" "den_${name}_shipped" VR_DENOISER="$mode" "${extra[@]}" $LOOK
+        done ;;
+    mutate1)
+        for l in ${@:-$ALL}; do cap "$l" mut1_both VR_MUTATIONS=1 VR_MUT_STRAT=light,depth VR_MUT_STATS=1; done ;;
+    mutate)
+        l=$1
+        for n in 1 5; do
+            for s in light depth both; do
+                strat=$s
+                [ "$s" = both ] && strat=light,depth
+                cap "$l" "mut${n}_$s" VR_MUTATIONS=$n VR_MUT_STRAT=$strat VR_MUT_STATS=1
+            done
+        done
+        for q in 10 50 200; do
+            [ "$q" = "$(mcap_of "$l")" ] && continue  # that is mut1_both
+            cap "$l" "mcap_${q}_mut1" VR_MTHRESH="$q" VR_MUTATIONS=1 VR_MUT_STRAT=light,depth VR_MUT_STATS=1
         done ;;
     summary)
         python "$T/summarize.py" "$O"
@@ -173,7 +197,7 @@ case "$stage" in
             ls "$d"*/c.corr.json >/dev/null 2>&1 && python "$T/sheet.py" "${d%/}"
         done ;;
     *)
-        sed -n 2,22p "$0"
+        sed -n 2,26p "$0"
         exit 1 ;;
 esac
 finish_scoring

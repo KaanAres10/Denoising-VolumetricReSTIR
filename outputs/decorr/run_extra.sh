@@ -5,6 +5,7 @@
 #   2. re-render every run scored before m_corr measured correlation inside the medium, or that scored
 #      it on its own mask while a baseline existed: every volume scene's survey, plume_g-0.9's ablations
 #      and bistro's survey. After step 1, so they are scored against a reference too;
+#      plume_g-0.9's denoised runs are redone too: they predate the env-background fix (924506c);
 #   3. the WDAS density sweep of Lin et al. 2021's figure (0.2x / 3x; 1x is the wdas survey);
 #   4. the summary and every artifact figure.
 # Log: outputs/decorr/extra.log.
@@ -44,6 +45,9 @@ done
 requeue plume_g-0.9 noreuse shipped temporal_only spatial_only mcap_1 mcap_10 mcap_20 mcap_50 mcap_200 \
     radius_3 radius_30 rounds_3 pixel_offsets
 bash $O/run_study.sh deep plume_g-0.9 2>&1 | tee -a "$LOG"
+# The denoised plume runs predate the env-background fix (924506c): they are Phase B's baseline, so redo them.
+requeue plume_g-0.9 $(for d in optix oidn nrd_RelaxDiffuseSh nrd_ReblurDiffuseSh rr; do echo den_${d}_noreuse den_${d}_shipped; done)
+bash $O/run_study.sh denoise plume_g-0.9 2>&1 | tee -a "$LOG"
 for l in wdas_d0.2 wdas_d3; do
     bash $O/run_study.sh refs "$l" 2>&1 | tee -a "$LOG"
     bash $O/run_study.sh survey "$l" 2>&1 | tee -a "$LOG"

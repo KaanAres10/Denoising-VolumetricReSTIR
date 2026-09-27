@@ -62,6 +62,10 @@ def render_graph():
             'mUseReference': USE_REFERENCE,   # True = brute-force volumetric path tracing
             'mEnableTemporalReuse': not USE_REFERENCE,
             'mEnableSpatialReuse': not USE_REFERENCE,
+            # VR_MUTATIONS=N: N Metropolis-Hastings steps per pixel after temporal reuse (the decorrelation
+            # mutations). A point light, so only the scatter-depth moves apply. The unbiasedness gate.
+            'mMutationCount': int(os.environ.get('VR_MUTATIONS', '0')),
+            'mMutationStats': os.environ.get('VR_MUT_STATS', '0') not in ('0', ''),
         }})
     g.addPass(vr, "VolumetricReSTIR")
     acc = createPass("AccumulatePass", {'enabled': True})

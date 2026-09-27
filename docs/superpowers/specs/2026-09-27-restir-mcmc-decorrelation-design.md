@@ -285,8 +285,40 @@ Metropolis.
 
 ## Verification results
 
-None yet. Phase A results are recorded here as V1…Vn, each confirmed or dismissed, as in the earlier
-specs.
+Phase A results are recorded here as V1…Vn, each confirmed or dismissed, as in the earlier specs; Phase B's
+as V-B1…
+
+### V-B1 — the mutations are unbiased (R4): confirmed
+
+`outputs/decorr/gate.sh`, 2026-09-27, mutations 0 vs 1 / 5 (light + depth, Kelemen steps as the defaults):
+
+| Scene | Against | 0 mutations | 1 | 5 |
+|---|---|---|---|---|
+| Plume, one point light (depth moves only), 960×540, 4096 frames | path-traced reference | whole +2.13%, plume box +1.76% | — | +2.14%, +1.77% |
+| Bistro, verify pose, 4096 frames (`forkref/score.py @v9sa`) | path-traced reference | plume core +2.47 ± 0.10%, street −0.16 ± 0.03%, facade −0.07%, whole 0.00% | +2.47 ± 0.08, −0.15 ± 0.02, −0.07, 0.00 | +2.46 ± 0.08, −0.14 ± 0.02, −0.07, 0.00 |
+| Plume, env map, 1080p, 40 captures | no reuse | whole −0.04%, centre −0.26% | — | −0.04%, −0.26% |
+| Explosion, 1080p, 40 captures | no reuse | whole −0.57%, centre −0.66% | — | −0.57%, −0.65% |
+
+Every region's bias with mutations is within the mutation-off error bars; the offsets that remain exist
+without mutations (below). Bistro's per-frame error: trimmed MSE 0.00331 → 0.00331 → 0.00330, blurred at 2 px
+0.00282 → 0.00268 → 0.00266, at 8 px 0.000353 → 0.000340 → 0.000335 — per-pixel error unchanged, the
+low-frequency (blotchy) part down 5–6%, the paper's "little impact on MSE" with the decorrelation where it
+should be. Acceptance: plume light (env rotation) 25%, depth 45–52%; bistro light 95% (small emitters: p̂ is
+nearly flat over a triangle), depth 39%; explosion depth 38%. The temporal output's `p_y` equalled p̂_S(x₀)
+at every pixel (counter 5 = 0), so the Eq. 16 update never had to reconcile two targets.
+
+Offsets present WITHOUT mutations, not caused by them: the one-light plume's +2.1% (on record since July);
+Bistro's plume core +2.5% (no reuse is +4.2%: a reference/scene mismatch in that region); the explosion's
+−0.6% from reuse. Open.
+
+### Found while checking the plume's look: temporal reuse brightened the env background (fixed, 924506c)
+
+`ReSTIRHelper.slang` looked background samples up with `envMapSampler.eval(ray.dir, isLastFrame)`; Falcor 9's
+signature is `eval(dir, lod, isPrevFrame)`, so every previous-frame evaluation of a background sample — the
+temporal Talbot weights' — read the env map's mip 1. Plume at 1080p, temporal reuse vs no reuse: +7.89% before,
+−0.04% after (`outputs/decorr/bias_diag.sh`), the same as with Talbot MIS off; the brightest 1% of background
+pixels had been +9.4%, mid-bright ones −6%, medium pixels exact. It affected every Phase A run with temporal
+reuse on an env-lit volume scene in its background pixels only; `run_extra.sh` re-renders those.
 
 ## Out of scope
 
