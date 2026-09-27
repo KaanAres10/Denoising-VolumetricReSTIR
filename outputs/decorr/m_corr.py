@@ -97,7 +97,7 @@ def _box_sum(I, r, shape):
     return P[y1, x1] - P[y0, x1] - P[y1, x0] + P[y0, x0]
 
 
-def box_rho(stack, radii, mask=None, normalize=True, stats=None, workers=8):
+def box_rho(stack, radii, mask=None, normalize=True, stats=None, workers=4):
     """Mean over pixels i of the mean over j in the box of radius r around i (j != i) of
     Corr(i, j) (normalize=True) or Cov(i, j) (normalize=False), both over the K frames with the sample
     mean removed, as in Sawhney et al.'s Eq. 21.
@@ -263,7 +263,7 @@ def bootstrap_chains(terms, chain_of_frame, n=1000, seed=0):
     return float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5)), draws
 
 
-def reference_errors(stack, ref, regions, trim=1e-4, sigmas=(2, 8, 32), workers=8):
+def reference_errors(stack, ref, regions, trim=1e-4, sigmas=(2, 8, 32), workers=4):
     """Against a converged reference: per-region relative bias of the mean image, relMSE per frame (worst
     `trim` of pixels left out, then averaged over frames), and the RMS of the error blurred at each sigma
     over the reference's mean (blotches are low-frequency error, so they survive the blur).
@@ -319,7 +319,7 @@ def load_luminance(paths):
         out[k] = np.where(finite, x @ Y_BGR, 0.0)
         return int((~finite).sum())
 
-    with ThreadPoolExecutor(8) as pool:
+    with ThreadPoolExecutor(4) as pool:
         bad = sum(pool.map(load, range(len(paths))))
     return out, bad
 
@@ -377,20 +377,37 @@ def main(argv=None):
     res["raw"], raw_rho = _rho_block(stack, radii, None, a.bootstrap, chain_of_frame, stats)
     res["raw"]["valid_pixels"] = int((stats[1] > 0).sum())
 
-    # Robust: clamped, highest-variance 0.01% of pixels left out.
     clamp = a.clamp if a.clamp is not None else float(np.percentile(stack[:10], 99.9))
-    robust = np.minimum(stack, np.float32(clamp))
+    half = index_in_chain < (index_in_chain.max() + 1) / 2.0
+    r8 = 8 if 8 in radii else radii[-1]
+
+    # Everything else that reads the RAW captures comes first: they are then clamped in place, since a
+    # clamped copy is another 830 MB at 1080p (the machine sits near its commit limit, scoring next to a render).
+    raw_means = (float(stack[half].mean()), float(stack[~half].mean()))
+    raw_regions = {}
+    if a.regions == "bistro" and stack.shape[1:] == (1080, 1920):
+        for name, sl in BISTRO_REGIONS.items():
+            m = np.zeros(stack.shape[1:], bool)
+            m[sl] = True
+            raw_regions[name] = (box_rho(stack, (r8,), mask=m, stats=stats)[r8]["value"], float(stack[:, m].mean()))
+    if a.ref:
+        ref = read_exr(a.ref)[..., :3].astype(np.float64) @ Y_BGR
+        regions = BISTRO_REGIONS if (a.regions == "bistro" and ref.shape == (1080, 1920)) else {"whole": np.s_[:, :]}
+        res["reference"] = reference_errors(stack, ref, regions)
+        res["reference"]["path"] = a.ref
+        del ref
+
+    # Robust: clamped, highest-variance 0.01% of pixels left out.
+    robust = np.minimum(stack, np.float32(clamp), out=stack)
+    del stack
     rstats = pixel_stats(robust)
     rmask = trim_mask(std=rstats[1])
     res["robust"], robust_rho = _rho_block(robust, radii, rmask, a.bootstrap, chain_of_frame, rstats)
     res["robust"]["clamp"] = clamp
 
     # Stationarity: the first vs second half of every chain's captures.
-    half = index_in_chain < (index_in_chain.max() + 1) / 2.0
-    r8 = 8 if 8 in radii else radii[-1]
     t = robust_rho[r8]["terms"]
-    res["stationarity"] = {"radius": r8,
-                           "mean_first": float(stack[half].mean()), "mean_second": float(stack[~half].mean()),
+    res["stationarity"] = {"radius": r8, "mean_first": raw_means[0], "mean_second": raw_means[1],
                            "rho_first": float(K / (K - 1) * t[half].mean()),
                            "rho_second": float(K / (K - 1) * t[~half].mean())}
 
@@ -418,14 +435,13 @@ def main(argv=None):
                        "length_0.05": correlation_length(prof, 0.05), "rings": rings, "top_offsets": peaks}
 
     # Regions (robust and raw rho at r8).
-    if a.regions == "bistro" and stack.shape[1:] == (1080, 1920):
+    if raw_regions:
         res["regions"] = {}
         for name, sl in BISTRO_REGIONS.items():
-            m = np.zeros(stack.shape[1:], bool)
+            m = np.zeros(robust.shape[1:], bool)
             m[sl] = True
             rr = box_rho(robust, (r8,), mask=m & rmask, stats=rstats)[r8]["value"]
-            rw = box_rho(stack, (r8,), mask=m, stats=stats)[r8]["value"]
-            res["regions"][name] = {"rho_robust": rr, "rho_raw": rw, "mean": float(stack[:, m].mean())}
+            res["regions"][name] = {"rho_robust": rr, "rho_raw": raw_regions[name][0], "mean": raw_regions[name][1]}
 
     # Temporal autocorrelation from the burst, on up to 50k valid pixels.
     if sched.get("burst"):
@@ -449,7 +465,7 @@ def main(argv=None):
             return (duplicate_map(duplicate_ids(sample, light, at_surface, surface_scene)),
                     duplicate_map(light_ids(light, at_surface, surface_scene)), in_medium(sample, at_surface))
 
-        with ThreadPoolExecutor(8) as pool:
+        with ThreadPoolExecutor(4) as pool:
             dmaps, lmaps, meds = zip(*pool.map(maps, ids))
         dmean, lmean = np.mean(dmaps, axis=0), np.mean(lmaps, axis=0)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_sample.npy"), dmean)
@@ -470,13 +486,6 @@ def main(argv=None):
         if mask.any():
             block, _ = _rho_block(robust, radii, rmask & mask, a.bootstrap, chain_of_frame, rstats)
             res["medium"] = {"mask": source, "pixels": int(mask.sum()), "threshold": MEDIUM_THRESHOLD, **block}
-
-    # Against a reference.
-    if a.ref:
-        ref = read_exr(a.ref)[..., :3].astype(np.float64) @ Y_BGR
-        regions = BISTRO_REGIONS if (a.regions == "bistro" and ref.shape == (1080, 1920)) else {"whole": np.s_[:, :]}
-        res["reference"] = reference_errors(stack, ref, regions)
-        res["reference"]["path"] = a.ref
 
     # Against the no-reuse baseline.
     if a.baseline:
