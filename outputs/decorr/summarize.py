@@ -10,6 +10,7 @@ import sys
 COLUMNS = ["label", "config", "K", "mean",
            "rho_raw_r1", "rho_raw_r8", "rho_robust_r1", "rho_robust_r4", "rho_robust_r8",
            "rho_robust_r8_lo", "rho_robust_r8_hi", "delta_robust_r8", "delta_robust_r8_lo", "delta_robust_r8_hi",
+           "medium_px", "rho_medium_r1", "rho_medium_r8", "delta_medium_r8", "delta_medium_r8_lo", "delta_medium_r8_hi",
            "corr_len", "top_offset", "dup_sample", "dup_light", "temporal_lag", "relmse", "blur_rms_8", "bias_whole"]
 
 
@@ -33,6 +34,11 @@ def row(label, config, r):
         "delta_robust_r8": _get(r, "delta", "robust", "8", "value"),
         "delta_robust_r8_lo": (_get(r, "delta", "robust", "8", "ci") or ["", ""])[0],
         "delta_robust_r8_hi": (_get(r, "delta", "robust", "8", "ci") or ["", ""])[1],
+        "medium_px": _get(r, "medium", "pixels"),
+        "rho_medium_r1": _get(r, "medium", "rho", "1"), "rho_medium_r8": _get(r, "medium", "rho", "8"),
+        "delta_medium_r8": _get(r, "delta", "medium", "8", "value"),
+        "delta_medium_r8_lo": (_get(r, "delta", "medium", "8", "ci") or ["", ""])[0],
+        "delta_medium_r8_hi": (_get(r, "delta", "medium", "8", "ci") or ["", ""])[1],
         "corr_len": _get(r, "autocorr", "length_0.1"),
         "top_offset": "%d,%d:%.3f" % tuple(top[0]) if top else "",
         "dup_sample": _get(r, "duplicates", "sample_mean"), "dup_light": _get(r, "duplicates", "light_mean"),

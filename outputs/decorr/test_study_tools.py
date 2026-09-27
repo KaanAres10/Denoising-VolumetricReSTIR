@@ -86,10 +86,24 @@ class TestSummarize(unittest.TestCase):
             self.assertAlmostEqual(shipped["delta_robust_r8"], 0.02)
             self.assertEqual(shipped["dup_sample"], 12.5)
             self.assertEqual(rows[0]["delta_robust_r8"], "")
+            self.assertEqual(rows[0]["rho_medium_r8"], "")  # scored before the medium block existed
             with open(os.path.join(root, "summary.tsv")) as fh:
                 lines = fh.read().splitlines()
             self.assertEqual(len(lines), 3)
             self.assertTrue(lines[0].startswith("label\tconfig\t"))
+
+    def test_medium_columns(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "plume", "shipped"))
+            r = self.corr(0.02, 0.019)
+            r["medium"] = {"mask": "baseline", "pixels": 370000, "rho": {"1": 0.05, "8": 0.04}}
+            r["delta"]["medium"] = {"8": {"value": 0.039, "ci": [0.038, 0.041]}}
+            with open(os.path.join(root, "plume", "shipped", "c.corr.json"), "w") as fh:
+                json.dump(r, fh)
+            row, = summarize.summarize(root)
+            self.assertEqual((row["medium_px"], row["rho_medium_r1"], row["rho_medium_r8"]), (370000, 0.05, 0.04))
+            self.assertEqual((row["delta_medium_r8"], row["delta_medium_r8_lo"], row["delta_medium_r8_hi"]),
+                             (0.039, 0.038, 0.041))
 
 
 class TestSheet(unittest.TestCase):
