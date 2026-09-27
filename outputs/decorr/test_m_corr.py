@@ -32,6 +32,24 @@ def analytic_box_rho(a, r):
 
 
 class TestBoxRho(unittest.TestCase):
+    def test_box_sum_matches_a_direct_window_sum(self):
+        # The box is clipped to the image, including radii wider than the image.
+        x = RNG.standard_normal((13, 21))
+        I = mc._integral(x)
+        for r in (0, 1, 3, 7, 30):
+            direct = np.array([[x[max(0, i - r):i + r + 1, max(0, j - r):j + r + 1].sum() for j in range(21)]
+                               for i in range(13)])
+            np.testing.assert_allclose(mc._box_sum(I, r, x.shape), direct, atol=1e-10, err_msg=str(r))
+
+    def test_frames_scored_in_parallel_match_one_at_a_time(self):
+        stack = box_blur_wrap(RNG.standard_normal((24, 40, 56)), 1)
+        mask = RNG.random((40, 56)) > 0.2
+        for normalize in (True, False):
+            one = mc.box_rho(stack, (1, 4, 60), mask=mask, normalize=normalize, workers=1)
+            many = mc.box_rho(stack, (1, 4, 60), mask=mask, normalize=normalize, workers=6)
+            for r in (1, 4, 60):
+                np.testing.assert_array_equal(one[r]["terms"], many[r]["terms"])
+
     def test_white_noise_has_no_correlation(self):
         stack = RNG.standard_normal((400, 64, 64))
         res = mc.box_rho(stack, radii=(1, 4, 8))

@@ -21,6 +21,7 @@ import json
 import math
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 import cv2
@@ -89,20 +90,21 @@ def _integral(x):
 def _box_sum(I, r, shape):
     """Sum over the (2r+1)^2 box around each pixel, clipped to the image (zero outside)."""
     H, W = shape
-    y = np.arange(H)
-    x = np.arange(W)
-    y0, y1 = np.clip(y - r, 0, H), np.clip(y + r + 1, 0, H)
-    x0, x1 = np.clip(x - r, 0, W), np.clip(x + r + 1, 0, W)
-    return (I[np.ix_(y1, x1)] - I[np.ix_(y0, x1)] - I[np.ix_(y1, x0)] + I[np.ix_(y0, x0)])
+    # Edge-padding the integral image clamps the box corners to it: P[i + r] = I[clip(i, 0, H)].
+    P = np.pad(I, r, mode="edge")
+    y1, x1 = slice(2 * r + 1, 2 * r + 1 + H), slice(2 * r + 1, 2 * r + 1 + W)
+    y0, x0 = slice(0, H), slice(0, W)
+    return P[y1, x1] - P[y0, x1] - P[y1, x0] + P[y0, x0]
 
 
-def box_rho(stack, radii, mask=None, normalize=True, stats=None):
+def box_rho(stack, radii, mask=None, normalize=True, stats=None, workers=8):
     """Mean over pixels i of the mean over j in the box of radius r around i (j != i) of
     Corr(i, j) (normalize=True) or Cov(i, j) (normalize=False), both over the K frames with the sample
     mean removed, as in Sawhney et al.'s Eq. 21.
 
     Pixels with zero variance, or outside `mask`, take no part as centre or neighbour.
     Returns {r: {"value": float, "terms": per-frame terms t_k}}, value = sum_k t_k / (K - 1).
+    Frames are scored on `workers` threads; every term is computed the same way whatever the count.
     """
     K = len(stack)
     mean, std = stats if stats is not None else pixel_stats(stack)
@@ -115,16 +117,24 @@ def box_rho(stack, radii, mask=None, normalize=True, stats=None):
     for r in radii:
         N = _box_sum(Im, r, m.shape) - m
         centre = valid & (N > 0)
-        counts[r] = (N, centre, max(int(centre.sum()), 1))
+        counts[r] = (np.where(centre, N, 1.0), centre, max(int(centre.sum()), 1))
     inv = np.where(valid, 1.0 / np.where(valid, std, 1.0), 0.0) if normalize else m
     terms = {r: np.zeros(K) for r in radii}
-    for k in range(K):
+
+    def frame(k):
         z = (np.asarray(stack[k], dtype=np.float64) - mean) * inv
         Iz = _integral(z)
         for r in radii:
             N, centre, n = counts[r]
             S = _box_sum(Iz, r, z.shape) - z
-            terms[r][k] = np.sum(np.where(centre, z * S / np.where(centre, N, 1.0), 0.0)) / n
+            terms[r][k] = np.sum(np.where(centre, z * S / N, 0.0)) / n
+
+    if workers > 1 and K > 1:
+        with ThreadPoolExecutor(min(workers, K)) as pool:
+            list(pool.map(frame, range(K)))
+    else:
+        for k in range(K):
+            frame(k)
     return {r: {"value": float(terms[r].sum() / max(K - 1, 1)), "terms": terms[r]} for r in radii}
 
 
@@ -283,13 +293,15 @@ def load_luminance(paths):
     """(K, H, W) float32 luminance of the captures; non-finite values set to 0 and counted."""
     first = read_exr(paths[0])
     out = np.empty((len(paths),) + first.shape[:2], np.float32)
-    bad = 0
-    for k, p in enumerate(paths):
-        img = first if k == 0 else read_exr(p)
-        x = img[..., :3].astype(np.float64)
+
+    def load(k):
+        x = (first if k == 0 else read_exr(paths[k]))[..., :3].astype(np.float64)
         finite = np.isfinite(x).all(axis=-1)
-        bad += int((~finite).sum())
         out[k] = np.where(finite, x @ Y_BGR, 0.0)
+        return int((~finite).sum())
+
+    with ThreadPoolExecutor(8) as pool:
+        bad = sum(pool.map(load, range(len(paths))))
     return out, bad
 
 
