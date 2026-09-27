@@ -132,6 +132,14 @@ class TestLoaders(StudyEnv):
                 self.assertEqual(m.scene.envMap.rotation, rotation, name)
                 self.assertEqual(m.scene.envMap.intensity, intensity, name)
 
+    def test_display_exposure_matches_the_original_run_scripts(self):
+        # ToneMapper exposureCompensation from run_emerald_square.py (+8.5: a dusk scene under a 0.003 env
+        # map) and run_bistro.py (+8); at 0 the window shows emerald nearly black. Display only: the study
+        # captures the HDR accumulated_color, before the tonemapper.
+        for name, ev in (("emerald", 8.5), ("bistro", 8.0)):
+            vr, _ = fresh_vr()
+            self.assertEqual(vr.SCENES[name]()["exposure"], ev, name)
+
     def test_new_loaders_pin_the_camera(self):
         for name in ("emerald", "bunny", "wdas"):
             vr, m = fresh_vr()

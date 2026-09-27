@@ -314,7 +314,7 @@ def load_emerald():
     _pin_camera((-18.527357, 8.396429, 3.235079), (-17.847946, 8.211088, 2.525114), (-0.031144, 0.998985, 0.032544))
     return {
         "scatterAlbedo": float3(0.7, 0.7, 0.7),   # 14 / (14 + 6)
-        "exposure": 0.0,
+        "exposure": 8.5,                          # run_emerald_square.py: dusk under a 0.003 env map
         "params": {"mUseSurfaceScene": True, "mUseEmissiveLights": True,
                    "mUseEnvironmentLights": True, "mTemporalReuseMThreshold": 10.0},
     }
