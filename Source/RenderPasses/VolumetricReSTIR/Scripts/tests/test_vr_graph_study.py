@@ -1,0 +1,158 @@
+"""vr_graph.py's decorrelation-study additions: scene loaders, VR_PHASE_G, and the reuse knobs.
+
+vr_graph imports `falcor`, which only exists inside Mogwai, so this stubs it and records what the
+loaders and add_restir hand to Mogwai.
+
+    python -m unittest test_vr_graph_study -v
+"""
+import importlib
+import os
+import sys
+import types
+import unittest
+from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPTS))
+
+STUDY_VARS = ("VR_PHASE_G", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS")
+
+
+class Recorder:
+    """Records every method call; attributes assigned on it are kept as plain attributes."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def call(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+        return call
+
+
+def fake_falcor():
+    mod = types.ModuleType("falcor")
+    mod.float3 = lambda *a: tuple(a)
+    mod.float2 = lambda *a: tuple(a)
+    mod.createPass = lambda name, props=None: (name, props)
+    mod.RenderGraph = lambda name: Recorder()
+    return mod
+
+
+def fresh_vr():
+    sys.modules["falcor"] = fake_falcor()
+    import vr_graph
+    vr = importlib.reload(vr_graph)
+    m = Recorder()
+    m.scene = Recorder()
+    m.scene.camera = types.SimpleNamespace()
+    m.scene.envMap = types.SimpleNamespace()
+    vr.bind(m)
+    return vr, m
+
+
+def volume_call(m):
+    for name, _, kwargs in m.scene.calls:
+        if name in ("addGVDBVolume", "addGVDBVolumeSequence"):
+            return kwargs
+    raise AssertionError("loader added no GVDB volume")
+
+
+class StudyEnv(unittest.TestCase):
+    def setUp(self):
+        self._saved = {k: os.environ.pop(k) for k in STUDY_VARS if k in os.environ}
+
+    def tearDown(self):
+        for k in STUDY_VARS:
+            os.environ.pop(k, None)
+        os.environ.update(self._saved)
+
+
+class TestLoaders(StudyEnv):
+    ALL = ("plume", "bistro", "explosion", "emerald", "bunny", "wdas", "fireplume", "dust")
+
+    def test_every_study_scene_is_registered(self):
+        vr, _ = fresh_vr()
+        self.assertTrue(set(self.ALL).issubset(vr.SCENES), sorted(vr.SCENES))
+
+    def test_loaders_return_the_graph_settings(self):
+        for name in self.ALL:
+            vr, _ = fresh_vr()
+            info = vr.SCENES[name]()
+            for key in ("scatterAlbedo", "exposure", "params"):
+                self.assertIn(key, info, name)
+
+    def test_phase_g_is_unchanged_when_unset(self):
+        for name in self.ALL:
+            vr, m = fresh_vr()
+            vr.SCENES[name]()
+            self.assertEqual(volume_call(m)["g"], 0.0, name)
+
+    def test_phase_g_override_reaches_every_loader(self):
+        os.environ["VR_PHASE_G"] = "-0.9"
+        for name in self.ALL:
+            vr, m = fresh_vr()
+            vr.SCENES[name]()
+            self.assertAlmostEqual(volume_call(m)["g"], -0.9, msg=name)
+
+    def test_env_map_uses_falcor9_properties(self):
+        # Falcor 9's Scene has no setEnvMapRotation / setEnvMapIntensity (the 4.x run scripts used them);
+        # rotation and intensity are properties of scene.envMap.
+        expected = {"emerald": ((0, 72.5, 0), 0.003), "wdas": ((-37.5, 93.5, 27), 1.1)}
+        for name in self.ALL:
+            vr, m = fresh_vr()
+            vr.SCENES[name]()
+            called = {c[0] for c in m.scene.calls}
+            self.assertFalse(called & {"setEnvMapRotation", "setEnvMapIntensity"}, name)
+            if name in expected:
+                rotation, intensity = expected[name]
+                self.assertEqual(m.scene.envMap.rotation, rotation, name)
+                self.assertEqual(m.scene.envMap.intensity, intensity, name)
+
+    def test_new_loaders_pin_the_camera(self):
+        for name in ("emerald", "bunny", "wdas", "fireplume", "dust"):
+            vr, m = fresh_vr()
+            vr.SCENES[name]()
+            cam = m.scene.camera
+            self.assertFalse(cam.animated, name)
+            for attr in ("position", "target", "up"):
+                self.assertTrue(hasattr(cam, attr), (name, attr))
+
+
+class TestKnobs(StudyEnv):
+    def restir_params(self):
+        vr, _ = fresh_vr()
+        graph = Recorder()
+        vr.add_restir(graph, {"params": {}})
+        (name, args, _), = [c for c in graph.calls if c[0] == "addPass"]
+        return args[0][1]["mParams"]
+
+    def test_knobs_absent_when_unset(self):
+        params = self.restir_params()
+        for key in ("mTemporalReuseMThreshold", "mSampleRadius", "mSpatialSampleCount", "mSpatialReuseRounds"):
+            self.assertNotIn(key, params)
+
+    def test_knobs_applied_with_their_types(self):
+        os.environ.update({"VR_MTHRESH": "50", "VR_SR_RADIUS": "30", "VR_SR_COUNT": "6", "VR_SR_ROUNDS": "3"})
+        params = self.restir_params()
+        self.assertEqual(params["mTemporalReuseMThreshold"], 50.0)
+        self.assertIsInstance(params["mTemporalReuseMThreshold"], float)
+        self.assertEqual(params["mSampleRadius"], 30.0)
+        self.assertEqual(params["mSpatialSampleCount"], 6)
+        self.assertIsInstance(params["mSpatialSampleCount"], int)
+        self.assertEqual(params["mSpatialReuseRounds"], 3)
+
+    def test_knob_overrides_the_scene_default(self):
+        os.environ["VR_MTHRESH"] = "200"
+        vr, _ = fresh_vr()
+        graph = Recorder()
+        vr.add_restir(graph, {"params": {"mTemporalReuseMThreshold": 10.0}})
+        (name, args, _), = [c for c in graph.calls if c[0] == "addPass"]
+        self.assertEqual(args[0][1]["mParams"]["mTemporalReuseMThreshold"], 200.0)
+
+
+if __name__ == "__main__":
+    unittest.main()

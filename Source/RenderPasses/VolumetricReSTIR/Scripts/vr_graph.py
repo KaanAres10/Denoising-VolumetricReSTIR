@@ -178,7 +178,7 @@ def load_plume(frame="0198"):
     # daylight sky brighter than the smoke -- the opposite of hansaplatz's night square.
     m.scene.setEnvMap(DATA_DIR + "\\" + env("VR_PLUME_ENV", "hansaplatz_8k.hdr"))
     # Shared by both paths so the two cannot drift apart.
-    vol = dict(sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=0.0,
+    vol = dict(sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=env_float("VR_PHASE_G", 0.0),
                numMips=4, densityScale=0.1, hasEmission=False, LeScale=0.01,
                temperatureCutoff=900.0, temperatureScale=0.0,
                worldTranslation=float3(0, 1.686, 0), worldRotation=float3(0, 0, 0),
@@ -227,7 +227,7 @@ def load_plume(frame="0198"):
 def load_bistro():
     """Bistro exterior, emissive-lit, with a dense smoke plume. The surface-heavy counterpart."""
     m.loadScene(DATA_DIR + r"\Bistro_5_1\BistroExterior.fbx")
-    m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(80, 80, 80), g=0.0,
+    m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(80, 80, 80), g=env_float("VR_PHASE_G", 0.0),
                           dataFile=DATA_DIR + r"\smoke-plume-2", numMips=4)
     # Detach the camera from the scene's animation FIRST. Bistro's FBX drives the camera, and an
     # animated camera silently overwrites whatever is assigned below -- the view then wanders on
@@ -253,7 +253,7 @@ def load_explosion():
     should not. (The paper's skylight-dusk.exr crashes setEnvMap in this build, hence the .hdr.)"""
     m.loadScene(DATA_DIR + r"\default.obj")
     m.scene.setEnvMap(DATA_DIR + r"\satara_night_8k.hdr")
-    m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(10, 10, 10), g=0.0,
+    m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(10, 10, 10), g=env_float("VR_PHASE_G", 0.0),
                           dataFile=DATA_DIR + r"\LGHExplosion\LGHExplosion.183", numMips=4, densityScale=0.02,
                           hasVelocity=False, hasEmission=True, LeScale=env_float("VR_EXPLOSION_LESCALE", 1.0),
                           # The paper's temperatureScale 750 maps this bake below the blackbody LUT's first
@@ -274,7 +274,115 @@ def load_explosion():
     }
 
 
-SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion}
+# The remaining scenes on disk, for the decorrelation study (docs/superpowers/specs/2026-09-27-restir-
+# mcmc-decorrelation-design.md), each lifted from its run_*.py. VR_PHASE_G overrides the phase
+# function's g in every loader (unset = the scene's own), for the anisotropic stress variants.
+
+def _pin_camera(position, target, up, far=1000.0):
+    m.scene.camera.animated = False
+    m.scene.camera.position = float3(*position)
+    m.scene.camera.target = float3(*target)
+    m.scene.camera.up = float3(*up)
+    # See load_plume: the derived depth range does not include the volume.
+    m.scene.camera.nearPlane = 0.1
+    m.scene.camera.farPlane = far
+
+
+def load_emerald():
+    """Emerald Square at dusk with a fog bank (run_emerald_square.py): surfaces, emissive geometry AND a
+    sky -- the one scene lit by both light kinds."""
+    m.loadScene(DATA_DIR + r"\EmeraldSquare_v4\EmeraldSquare_Dusk.fbx")
+    m.scene.setEnvMap(DATA_DIR + r"\skylight-morn.exr")
+    # Falcor 9: rotation and intensity are properties of the env map (4.x's setEnvMapRotation /
+    # setEnvMapIntensity are gone).
+    m.scene.envMap.rotation = float3(0, 72.5, 0)
+    m.scene.envMap.intensity = 0.003
+    m.scene.addGVDBVolume(sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=env_float("VR_PHASE_G", 0.0),
+                          dataFile=DATA_DIR + r"\Fog\Fog.0043", numMips=4, densityScale=0.1,
+                          hasVelocity=False, hasEmission=False, LeScale=0.01,
+                          temperatureCutoff=900.0, temperatureScale=0.0,
+                          worldTranslation=float3(0, 5.676, -1.149), worldRotation=float3(-90, 0, 0),
+                          worldScaling=0.123)
+    _pin_camera((-18.527357, 8.396429, 3.235079), (-17.847946, 8.211088, 2.525114), (-0.031144, 0.998985, 0.032544))
+    return {
+        "scatterAlbedo": float3(0.7, 0.7, 0.7),   # 14 / (14 + 6)
+        "exposure": 0.0,
+        "params": {"mUseSurfaceScene": True, "mUseEmissiveLights": True,
+                   "mUseEnvironmentLights": True, "mTemporalReuseMThreshold": 10.0},
+    }
+
+
+def load_bunny():
+    """The Stanford-bunny cloud under a daylight sky (run_bunny_cloud.py). Lin et al. 2021 Fig. 21 renders
+    it with g = 0.8 as the highly anisotropic case (VR_PHASE_G=0.8)."""
+    m.loadScene(DATA_DIR + r"\default.obj")
+    m.scene.setEnvMap(DATA_DIR + r"\green_sanctuary_8k.hdr")
+    m.scene.addGVDBVolume(sigma_a=float3(1, 1, 1), sigma_s=float3(9, 9, 9), g=env_float("VR_PHASE_G", 0.0),
+                          dataFile=DATA_DIR + r"\bunny_cloud", numMips=7, densityScale=1.0,
+                          hasVelocity=False, hasEmission=False, LeScale=1.0)
+    _pin_camera((-17.290087, 23.748606, 45.495544), (-17.053705, 23.593506, 44.536343), (0.003480, 0.999892, -0.014248))
+    return {"scatterAlbedo": float3(0.9, 0.9, 0.9),   # 9 / (9 + 1)
+            "exposure": 0.0,
+            "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
+
+
+def load_wdas():
+    """The Disney (WDAS) cloud, quarter resolution, at dawn (run_disney_cloud.py)."""
+    m.loadScene(DATA_DIR + r"\default.obj")
+    m.scene.setEnvMap(DATA_DIR + r"\kiara_1_dawn_8k.hdr")
+    m.scene.envMap.intensity = 1.1
+    m.scene.envMap.rotation = float3(-37.5, 93.5, 27)
+    m.scene.addGVDBVolume(sigma_a=float3(1, 1, 1), sigma_s=float3(9, 9, 9), g=env_float("VR_PHASE_G", 0.0),
+                          dataFile=DATA_DIR + r"\wdas_cloud_quarter", numMips=6, densityScale=0.03,
+                          hasVelocity=False, hasEmission=False, LeScale=1.0)
+    # The cloud spans hundreds of units, hence the far plane.
+    _pin_camera((258.785950, 7.888093, -265.658325), (257.988922, 8.031697, -265.071716),
+                (0.003697, 0.999990, -0.002712), far=10000.0)
+    return {"scatterAlbedo": float3(0.9, 0.9, 0.9),
+            "exposure": 0.0,
+            "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
+
+
+def _load_embergen(name):
+    """One EmberGen dataset frame, placed the way run_volume_dataset.py places the sequence.
+
+    A single held frame -- the one ingest derived the placement from -- loaded as a static volume rather
+    than a sequence, so the study sees a still scene and pays one frame of VRAM."""
+    import vdb_pipeline as vp
+    ds = vp.get_dataset(name)
+    frame = vp.placement_frame(vp.frame_numbers(ds))
+    scale, trans = vp.derive_placement(vp.imported_extent(ds), ds["placement"]["centre"],
+                                       ds["placement"]["target_height"])
+    density = vp.derive_density_scale(ds["medium"]["density_scale_ref"], scale)
+    med = ds["medium"]
+    prefix = ds["file_pattern"].split("{")[0]
+    m.loadScene(DATA_DIR + r"\default.obj")
+    m.scene.setEnvMap(DATA_DIR + r"\hansaplatz_8k.hdr")
+    m.scene.addGVDBVolume(sigma_a=float3(*med["sigma_a"]), sigma_s=float3(*med["sigma_s"]),
+                          g=env_float("VR_PHASE_G", med["g"]),
+                          dataFile=DATA_DIR + "\\" + name + "\\" + prefix + "%04d" % frame,
+                          numMips=ds["num_mips"], densityScale=density, hasVelocity=False,
+                          hasEmission=ds["has_emission"], LeScale=med["le_scale"],
+                          temperatureCutoff=med["temperature_cutoff"], temperatureScale=med["temperature_scale"],
+                          worldTranslation=float3(*trans), worldRotation=float3(0, 0, 0), worldScaling=scale)
+    _pin_camera((1.977354, 2.411630, 2.242076), (1.366226, 2.220231, 1.474033), (0.0, 1.0, 0.0))
+    albedo = med["sigma_s"][0] / float(med["sigma_s"][0] + med["sigma_a"][0])
+    return {"scatterAlbedo": float3(albedo, albedo, albedo),
+            "exposure": 0.0,
+            "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
+
+
+def load_fireplume():
+    return _load_embergen("firePlume")
+
+
+def load_dust():
+    return _load_embergen("dustShockwave")
+
+
+SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion,
+          "emerald": load_emerald, "bunny": load_bunny, "wdas": load_wdas,
+          "fireplume": load_fireplume, "dust": load_dust}
 
 
 def load_scene(name):
@@ -388,6 +496,14 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
             props["mParams"].update(v)
         else:
             props[k] = v
+    # Decorrelation-study knobs (temporal M cap, spatial radius / taps / rounds). Applied last and only
+    # when set, so they override a scene's default and leave every existing script unchanged.
+    for _key, _var, _conv in (("mTemporalReuseMThreshold", "VR_MTHRESH", float),
+                              ("mSampleRadius", "VR_SR_RADIUS", float),
+                              ("mSpatialSampleCount", "VR_SR_COUNT", int),
+                              ("mSpatialReuseRounds", "VR_SR_ROUNDS", int)):
+        if os.environ.get(_var):
+            props["mParams"][_key] = _conv(os.environ[_var])
     g.addPass(createPass("VolumetricReSTIR", props), name)
     return name
 

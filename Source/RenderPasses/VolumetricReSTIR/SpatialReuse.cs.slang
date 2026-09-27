@@ -33,6 +33,7 @@ __exported import ReSTIRHelper;
 import Utils.Geometry.GeometryHelpers;
 import Utils.Math.MathHelpers;
 import Utils.Debug.PixelDebug;
+import Utils.Math.HashUtils; // jenkinsHash, for VR_SR_PER_PIXEL_OFFSETS
 
 Texture2D<float4> gInputColors;
 RWTexture2D<float4> gOutputColors;
@@ -72,6 +73,14 @@ static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
 #define SAMPLING_OPTIONS gSamplingOptions
 #endif
 
+// Diagnostic for the decorrelation study (docs/superpowers/specs/2026-09-27-restir-mcmc-decorrelation-
+// design.md): 1 rotates the neighbour pattern per pixel. By default every pixel uses the same offsets in a
+// frame (they depend only on frameId and sampleId), which can correlate pixels along those offsets. Set
+// through VR_SLANG_ARGS="-DVR_SR_PER_PIXEL_OFFSETS=1"; not a proposed default.
+#ifndef VR_SR_PER_PIXEL_OFFSETS
+#define VR_SR_PER_PIXEL_OFFSETS 0
+#endif
+
 int2 generateNeighborOffset(int sampleId, int sampleCount, float sampleRadius, int pixelId, int frameId)
 {
     int2 offset;
@@ -85,6 +94,15 @@ int2 generateNeighborOffset(int sampleId, int sampleCount, float sampleRadius, i
         double multiplier = frameId * gR2Params.sampleCountUpperBound + sampleId;
         u = sampleId == 0 ? float2(0, 0) : float2(frac(double2(0.754877669, 0.569840296) * multiplier));
     }
+#if VR_SR_PER_PIXEL_OFFSETS
+    // The same point set, Cranley-Patterson rotated per pixel. sampleId 0 stays the centre pixel, and the
+    // Talbot loop calls this with the same pixelId, so selection and MIS see the same neighbour set.
+    if (sampleId != 0)
+    {
+        const uint h = jenkinsHash(uint(pixelId));
+        u = frac(u + float2(h & 0xFFFFu, h >> 16) / 65536.f);
+    }
+#endif
 
     offset = int2(sampleRadius * sample_disk(u));
 
