@@ -23,7 +23,7 @@ T=outputs/decorr             # the tools
 O="${STUDY_OUT:-outputs/decorr}"  # the runs (STUDY_OUT for a dry run elsewhere)
 MOG=./build/windows-vs2022/bin/Release/Mogwai.exe
 SCRIPT='C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\correlation_pose.py'
-ALL="plume plume_g-0.9 bistro explosion emerald bunny bunny_g0.8 wdas fireplume dust"
+ALL="plume plume_g-0.9 bistro explosion emerald bunny bunny_g0.8 wdas"
 BISTRO_REF=outputs/pending_9p/forkref/cap/v9sa_ref/v9sa_ref.Accum.output.8191.exr
 # The Look configuration the locked denoiser table uses (memory: falcor9-port-rebaseline).
 LOOK="VR_NRD_SPLIT=1 VR_NRD_SH=1 VR_NRD_TAA=1 VR_TAA_LDR=1 VR_NRD_EMISSION=1 VR_NRD_VOLMASK=1 VR_VOL_NORMAL=gradient"

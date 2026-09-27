@@ -55,7 +55,7 @@ cost), then on the output of every denoiser in the harness.
 |---|---|---|
 | Order | Study first, then mutations | Establish that there is reuse-induced correlation, and where it comes from, before claiming a fix for it. |
 | Scope of round 1 | Single scatter | Every harness scene runs `mMaxBounces=1`. Multi-bounce perturbations are round 2. |
-| Scenes | All available | bistro, plume, plume g=-0.9, explosion, emerald (+Fog), bunny, bunny g=0.8, wdas, fireplume, dust. `bunny_multilight.pyscene` is missing on disk. |
+| Scenes | All available except the JangaFX EmberGen datasets | bistro, plume, plume g=-0.9, explosion, emerald (+Fog), bunny, bunny g=0.8, wdas. The user excluded FirePlumeVDB and DustShockwaveVDB (2026-09-27). `bunny_multilight.pyscene` is missing on disk. |
 | Judged on | Raw first, then denoised | Raw is the paper's own evaluation; denoised is this repo's purpose. |
 | Denoisers | OptiX, OIDN (GPU), NRD RELAX-SH, NRD REBLUR-SH, DLSS-RR | Every denoiser `add_denoiser` wires. `oidncpu` is the same network as OIDN. `sr` is an upscaler. SVGF is not wired into the harness. |
 | Headline metric | Δρ̄ against no reuse | No-reuse output is not assumed uncorrelated: final shading's R2 sampler can correlate pixels by itself. |
@@ -104,7 +104,7 @@ Read in the code, with no changes made:
 | Component | Kind | Responsibility | Depends on |
 |---|---|---|---|
 | `Scripts/correlation_pose.py` | Mogwai script | Still pose per scene, frozen animation. Warm-up, R seeded chains × m captures spaced S apart, a 256-frame burst, raw HDR EXR. `VR_MODE=reference` for references. | `vr_graph.py`, `randomizeFrameSeed` |
-| `Scripts/vr_graph.py` | Python module | Loaders for emerald, bunny, wdas, fireplume, dust. Knobs applied only when set: `VR_PHASE_G`, `VR_MTHRESH`, `VR_SR_RADIUS`, `VR_SR_COUNT`, `VR_SR_ROUNDS`, `VR_MUTATIONS`, `VR_MUT_STRAT`. | existing loaders |
+| `Scripts/vr_graph.py` | Python module | Loaders for emerald, bunny, wdas. Knobs applied only when set: `VR_PHASE_G`, `VR_MTHRESH`, `VR_SR_RADIUS`, `VR_SR_COUNT`, `VR_SR_ROUNDS`, `VR_MUTATIONS`, `VR_MUT_STRAT`. | existing loaders |
 | Sample-identity outputs | Final Shading optional outputs | `sampleId` = hash(`lightID`, `lightUV`, `depth`) and `lightId`. Bound and written only when requested. | the `gOutputLightDir` pattern |
 | `VR_SR_PER_PIXEL_OFFSETS` | `-D` define, default 0 | Per-pixel Cranley–Patterson rotation of the R2 offsets. A diagnostic only. | `SpatialReuse.cs.slang` |
 | `outputs/decorr/m_corr.py` | Python | C̄(r), ρ̄(r), Δρ̄(r) (raw and robust); 2D autocorrelation; temporal ρ(τ); duplicate heatmaps; reference errors; bootstrap CIs. | numpy, OpenCV EXR |

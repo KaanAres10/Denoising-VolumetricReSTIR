@@ -72,11 +72,16 @@ class StudyEnv(unittest.TestCase):
 
 
 class TestLoaders(StudyEnv):
-    ALL = ("plume", "bistro", "explosion", "emerald", "bunny", "wdas", "fireplume", "dust")
+    ALL = ("plume", "bistro", "explosion", "emerald", "bunny", "wdas")
 
     def test_every_study_scene_is_registered(self):
         vr, _ = fresh_vr()
         self.assertTrue(set(self.ALL).issubset(vr.SCENES), sorted(vr.SCENES))
+
+    def test_embergen_datasets_are_not_used(self):
+        # The user excluded the JangaFX EmberGen datasets (FirePlumeVDB, DustShockwaveVDB) from the study.
+        vr, _ = fresh_vr()
+        self.assertFalse({"fireplume", "dust"} & set(vr.SCENES), sorted(vr.SCENES))
 
     def test_loaders_return_the_graph_settings(self):
         for name in self.ALL:
@@ -113,7 +118,7 @@ class TestLoaders(StudyEnv):
                 self.assertEqual(m.scene.envMap.intensity, intensity, name)
 
     def test_new_loaders_pin_the_camera(self):
-        for name in ("emerald", "bunny", "wdas", "fireplume", "dust"):
+        for name in ("emerald", "bunny", "wdas"):
             vr, m = fresh_vr()
             vr.SCENES[name]()
             cam = m.scene.camera

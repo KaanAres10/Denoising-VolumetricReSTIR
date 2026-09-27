@@ -343,46 +343,10 @@ def load_wdas():
             "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
 
 
-def _load_embergen(name):
-    """One EmberGen dataset frame, placed the way run_volume_dataset.py places the sequence.
-
-    A single held frame -- the one ingest derived the placement from -- loaded as a static volume rather
-    than a sequence, so the study sees a still scene and pays one frame of VRAM."""
-    import vdb_pipeline as vp
-    ds = vp.get_dataset(name)
-    frame = vp.placement_frame(vp.frame_numbers(ds))
-    scale, trans = vp.derive_placement(vp.imported_extent(ds), ds["placement"]["centre"],
-                                       ds["placement"]["target_height"])
-    density = vp.derive_density_scale(ds["medium"]["density_scale_ref"], scale)
-    med = ds["medium"]
-    prefix = ds["file_pattern"].split("{")[0]
-    m.loadScene(DATA_DIR + r"\default.obj")
-    m.scene.setEnvMap(DATA_DIR + r"\hansaplatz_8k.hdr")
-    m.scene.addGVDBVolume(sigma_a=float3(*med["sigma_a"]), sigma_s=float3(*med["sigma_s"]),
-                          g=env_float("VR_PHASE_G", med["g"]),
-                          dataFile=DATA_DIR + "\\" + name + "\\" + prefix + "%04d" % frame,
-                          numMips=ds["num_mips"], densityScale=density, hasVelocity=False,
-                          hasEmission=ds["has_emission"], LeScale=med["le_scale"],
-                          temperatureCutoff=med["temperature_cutoff"], temperatureScale=med["temperature_scale"],
-                          worldTranslation=float3(*trans), worldRotation=float3(0, 0, 0), worldScaling=scale)
-    _pin_camera((1.977354, 2.411630, 2.242076), (1.366226, 2.220231, 1.474033), (0.0, 1.0, 0.0))
-    albedo = med["sigma_s"][0] / float(med["sigma_s"][0] + med["sigma_a"][0])
-    return {"scatterAlbedo": float3(albedo, albedo, albedo),
-            "exposure": 0.0,
-            "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
-
-
-def load_fireplume():
-    return _load_embergen("firePlume")
-
-
-def load_dust():
-    return _load_embergen("dustShockwave")
-
-
+# The JangaFX EmberGen datasets (FirePlumeVDB, DustShockwaveVDB) are deliberately not here: the user
+# excluded them from the decorrelation study. run_volume_dataset.py still plays them back.
 SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion,
-          "emerald": load_emerald, "bunny": load_bunny, "wdas": load_wdas,
-          "fireplume": load_fireplume, "dust": load_dust}
+          "emerald": load_emerald, "bunny": load_bunny, "wdas": load_wdas}
 
 
 def load_scene(name):

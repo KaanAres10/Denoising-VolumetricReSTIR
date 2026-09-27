@@ -6,7 +6,7 @@
 # captures frames `spacing` apart; chains own disjoint frame-count ranges (correlation_schedule.py says
 # why that matters). An optional burst captures consecutive frames for the temporal autocorrelation.
 #
-#   VR_SCENE=bistro|plume|explosion|emerald|bunny|wdas|fireplume|dust   (vr_graph.SCENES)
+#   VR_SCENE=bistro|plume|explosion|emerald|bunny|wdas   (vr_graph.SCENES)
 #   VR_MODE=restir|reference   ReSTIR chains, or a brute-force path-traced reference of the same pose
 #   VR_DISPLAY=1920x1080       render size
 #   VR_CHAINS=10  VR_PER_CHAIN=10  VR_SPACING=33  VR_WARM=<default max(256, 4 * M cap)>

@@ -10,7 +10,7 @@ os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 import cv2
 import numpy as np
 
-SCENES = ("plume", "bistro", "explosion", "emerald", "bunny", "wdas", "fireplume", "dust")
+SCENES = ("plume", "bistro", "explosion", "emerald", "bunny", "wdas")
 ROOT = os.environ.get("VR_SMOKE_DIR", "")
 
 

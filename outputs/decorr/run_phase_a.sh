@@ -14,7 +14,7 @@ R=/c/research/Denoising-VolumetricReSTIR
 cd "$R" || exit 1
 O=outputs/decorr
 LOG=$O/phase_a.log
-ALL="plume plume_g-0.9 bistro explosion emerald bunny bunny_g0.8 wdas fireplume dust"
+ALL="plume plume_g-0.9 bistro explosion emerald bunny bunny_g0.8 wdas"
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
 
 spacing_of() {  # label -> spacing from its burst, default 33
