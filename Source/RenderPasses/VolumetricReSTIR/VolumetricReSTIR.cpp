@@ -119,8 +119,9 @@ namespace
         { kNonEmissiveColor, "gNonEmissiveColor", "radiance excluding directly-visible emitters", true /* optional */, ResourceFormat::RGBA32Float },
         // Diagnostic for the decorrelation study (docs/superpowers/specs/2026-09-27-restir-mcmc-
         // decorrelation-design.md): which sample the final reservoir holds. .xy = a 32-bit hash of
-        // (depth, lightUV, lightID) split 24/8 bits so a float EXR stores it exactly, .z = lightID + 4
-        // (>= 1; 0 = no sample -- captures drop alpha, so validity cannot live in .w).
+        // (depth, lightUV, lightID) split 24/8 bits so a float EXR stores it exactly, +256 on .y where
+        // depth == kRayTMax, .z = lightID + 4 (>= 1; 0 = no sample -- captures drop alpha, so validity
+        // cannot live in .w). See FinalShading.cs.slang.
         { kSampleIdentity, "gSampleIdentity", "final reservoir sample identity (diagnostic)", true /* optional */, ResourceFormat::RGBA32Float }
     };
 

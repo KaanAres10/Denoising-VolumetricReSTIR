@@ -62,7 +62,10 @@ class TestDiagnosticsCapture(unittest.TestCase):
         self.assertGreater(valid.mean(), 0.3, "plume: most pixels hold a sample")
         for c in (x, y, z):
             self.assertTrue(np.all(c == np.floor(c)), "identity values are integers")
-        self.assertTrue(np.all(x[valid] < 2 ** 24) and np.all(y[valid] < 256))
+        self.assertTrue(np.all(x[valid] < 2 ** 24) and np.all(y[valid] < 512))
+        # Bit 8 of .y flags depth == kRayTMax. On the volume-only plume that is exactly the background
+        # samples (lightID 0, z = 4); samples in the medium carry the env light (z = 3).
+        self.assertTrue(np.array_equal(y[valid] >= 256, z[valid] == 4))
         self.assertTrue(np.all(x[~valid] == 0) and np.all(z[~valid] == 0))
         # Plume is env-lit and volume-only: lightID -1 for an env light sample, and 0 for a background
         # sample (ComputeInitialSample leaves createNewReservoir's lightID 0 there; only surface scenes

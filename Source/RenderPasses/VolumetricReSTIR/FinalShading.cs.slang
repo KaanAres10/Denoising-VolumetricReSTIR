@@ -131,10 +131,12 @@ RWTexture2D<float4> gSurfaceColor;
 /// complementary-pair shape as the volume/surface split, and verifiable the same way.
 RWTexture2D<float4> gEmissiveColor;
 RWTexture2D<float4> gNonEmissiveColor;
-/// Which sample the final reservoir holds: .xy = hash of (depth, lightUV, lightID) split 24/8 bits, .z =
-/// lightID + 4 (>= 1, since lightID >= -3), all zero where there is no sample. Captures drop alpha, so
-/// .z > 0 is the validity test; .w = 1 is only a convenience for interactive views. Shifts copy depth and the light sample verbatim, so
-/// reservoirs sharing a sample share the hash -- the decorrelation study's duplicate heatmaps.
+/// Which sample the final reservoir holds, for the decorrelation study's duplicate heatmaps (shifts copy
+/// depth and the light sample verbatim, so reservoirs sharing a sample share the hash):
+///   .x = low 24 bits of a hash of (depth, lightUV, lightID); .y = its high 8 bits, + 256 where
+///   depth == kRayTMax (a surface or background sample, whose "sample" may be only the pixel's own
+///   camera ray); .z = lightID + 4 (>= 1, since lightID >= -3). All zero where there is no sample.
+/// Captures drop alpha, so .z > 0 is the validity test; .w = 1 is only for interactive views.
 RWTexture2D<float4> gSampleIdentity;
 #ifdef SURFACE_SCENE
 StructuredBuffer<VBufferItem> gVBuffer;
@@ -370,7 +372,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
             h = jenkinsHash(h ^ asuint(res.lightUV.x));
             h = jenkinsHash(h ^ asuint(res.lightUV.y));
             h = jenkinsHash(h ^ asuint(res.lightID));
-            id = float4(float(h & 0xFFFFFFu), float(h >> 24), float(res.lightID + 4), 1.f);
+            const uint atSurface = res.depth == kRayTMax ? 256u : 0u;
+            id = float4(float(h & 0xFFFFFFu), float((h >> 24) | atSurface), float(res.lightID + 4), 1.f);
         }
         gSampleIdentity[pixelPos] = id;
     }
