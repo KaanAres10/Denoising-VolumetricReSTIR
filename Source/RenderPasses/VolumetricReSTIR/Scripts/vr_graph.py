@@ -156,6 +156,12 @@ def sr_preset(name):
 # Scenes
 # ---------------------------------------------------------------------------------------------
 
+def _density(scale):
+    """A loader's densityScale times VR_DENSITY_MULT, for density sweeps (Lin et al. 2021's WDAS figure
+    runs 0.2x / 1x / 3x). Unset returns the scale unchanged, so every existing script is unaffected."""
+    return scale * env_float("VR_DENSITY_MULT", 1.0) if os.environ.get("VR_DENSITY_MULT") else scale
+
+
 def load_plume(frame="0198"):
     """Plume on a bare ground plane, lit by the environment only.
 
@@ -179,7 +185,7 @@ def load_plume(frame="0198"):
     m.scene.setEnvMap(DATA_DIR + "\\" + env("VR_PLUME_ENV", "hansaplatz_8k.hdr"))
     # Shared by both paths so the two cannot drift apart.
     vol = dict(sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=env_float("VR_PHASE_G", 0.0),
-               numMips=4, densityScale=0.1, hasEmission=False, LeScale=0.01,
+               numMips=4, densityScale=_density(0.1), hasEmission=False, LeScale=0.01,
                temperatureCutoff=900.0, temperatureScale=0.0,
                worldTranslation=float3(0, 1.686, 0), worldRotation=float3(0, 0, 0),
                worldScaling=0.013)
@@ -228,7 +234,9 @@ def load_bistro():
     """Bistro exterior, emissive-lit, with a dense smoke plume. The surface-heavy counterpart."""
     m.loadScene(DATA_DIR + r"\Bistro_5_1\BistroExterior.fbx")
     m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(80, 80, 80), g=env_float("VR_PHASE_G", 0.0),
-                          dataFile=DATA_DIR + r"\smoke-plume-2", numMips=4)
+                          dataFile=DATA_DIR + r"\smoke-plume-2", numMips=4,
+                          # Bistro's own call leaves densityScale at its default (1); only a sweep sets it.
+                          **({"densityScale": _density(1.0)} if os.environ.get("VR_DENSITY_MULT") else {}))
     # Detach the camera from the scene's animation FIRST. Bistro's FBX drives the camera, and an
     # animated camera silently overwrites whatever is assigned below -- the view then wanders on
     # wall-clock time, so the same script gives a different shot on every run, and a shot facing the
@@ -254,7 +262,7 @@ def load_explosion():
     m.loadScene(DATA_DIR + r"\default.obj")
     m.scene.setEnvMap(DATA_DIR + r"\satara_night_8k.hdr")
     m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(10, 10, 10), g=env_float("VR_PHASE_G", 0.0),
-                          dataFile=DATA_DIR + r"\LGHExplosion\LGHExplosion.183", numMips=4, densityScale=0.02,
+                          dataFile=DATA_DIR + r"\LGHExplosion\LGHExplosion.183", numMips=4, densityScale=_density(0.02),
                           hasVelocity=False, hasEmission=True, LeScale=env_float("VR_EXPLOSION_LESCALE", 1.0),
                           # The paper's temperatureScale 750 maps this bake below the blackbody LUT's first
                           # non-zero row: measured, LeScale 1 and 100 render byte-identical, i.e. emission
@@ -298,7 +306,7 @@ def load_emerald():
     m.scene.envMap.rotation = float3(0, 72.5, 0)
     m.scene.envMap.intensity = 0.003
     m.scene.addGVDBVolume(sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=env_float("VR_PHASE_G", 0.0),
-                          dataFile=DATA_DIR + r"\Fog\Fog.0043", numMips=4, densityScale=0.1,
+                          dataFile=DATA_DIR + r"\Fog\Fog.0043", numMips=4, densityScale=_density(0.1),
                           hasVelocity=False, hasEmission=False, LeScale=0.01,
                           temperatureCutoff=900.0, temperatureScale=0.0,
                           worldTranslation=float3(0, 5.676, -1.149), worldRotation=float3(-90, 0, 0),
@@ -318,7 +326,7 @@ def load_bunny():
     m.loadScene(DATA_DIR + r"\default.obj")
     m.scene.setEnvMap(DATA_DIR + r"\green_sanctuary_8k.hdr")
     m.scene.addGVDBVolume(sigma_a=float3(1, 1, 1), sigma_s=float3(9, 9, 9), g=env_float("VR_PHASE_G", 0.0),
-                          dataFile=DATA_DIR + r"\bunny_cloud", numMips=7, densityScale=1.0,
+                          dataFile=DATA_DIR + r"\bunny_cloud", numMips=7, densityScale=_density(1.0),
                           hasVelocity=False, hasEmission=False, LeScale=1.0)
     _pin_camera((-17.290087, 23.748606, 45.495544), (-17.053705, 23.593506, 44.536343), (0.003480, 0.999892, -0.014248))
     return {"scatterAlbedo": float3(0.9, 0.9, 0.9),   # 9 / (9 + 1)
@@ -333,7 +341,7 @@ def load_wdas():
     m.scene.envMap.intensity = 1.1
     m.scene.envMap.rotation = float3(-37.5, 93.5, 27)
     m.scene.addGVDBVolume(sigma_a=float3(1, 1, 1), sigma_s=float3(9, 9, 9), g=env_float("VR_PHASE_G", 0.0),
-                          dataFile=DATA_DIR + r"\wdas_cloud_quarter", numMips=6, densityScale=0.03,
+                          dataFile=DATA_DIR + r"\wdas_cloud_quarter", numMips=6, densityScale=_density(0.03),
                           hasVelocity=False, hasEmission=False, LeScale=1.0)
     # The cloud spans hundreds of units, hence the far plane.
     _pin_camera((258.785950, 7.888093, -265.658325), (257.988922, 8.031697, -265.071716),

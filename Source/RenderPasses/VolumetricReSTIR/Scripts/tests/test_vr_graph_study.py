@@ -15,7 +15,7 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
-STUDY_VARS = ("VR_PHASE_G", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS")
+STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS")
 
 
 class Recorder:
@@ -102,6 +102,21 @@ class TestLoaders(StudyEnv):
             vr, m = fresh_vr()
             vr.SCENES[name]()
             self.assertAlmostEqual(volume_call(m)["g"], -0.9, msg=name)
+
+    def test_density_multiplier_scales_the_medium(self):
+        # Lin et al. 2021's WDAS figure: 0.2x / 1x / 3x density. Unset keeps each scene's own density.
+        defaults = {}
+        for name in self.ALL:
+            vr, m = fresh_vr()
+            vr.SCENES[name]()
+            defaults[name] = volume_call(m).get("densityScale")
+        self.assertEqual(defaults["wdas"], 0.03)
+        os.environ["VR_DENSITY_MULT"] = "0.2"
+        for name in self.ALL:
+            vr, m = fresh_vr()
+            vr.SCENES[name]()
+            expected = (defaults[name] if defaults[name] is not None else 1.0) * 0.2
+            self.assertAlmostEqual(volume_call(m)["densityScale"], expected, msg=name)
 
     def test_env_map_uses_falcor9_properties(self):
         # Falcor 9's Scene has no setEnvMapRotation / setEnvMapIntensity (the 4.x run scripts used them);
