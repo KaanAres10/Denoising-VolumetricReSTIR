@@ -13,8 +13,8 @@ t0=$(date +%s)
   for kv in "$@"; do export "$kv"; done
   export VR_MODE=$mode VR_FRAMES=$frames VR_SPP=$spp VR_TAG=$tag
   if [ $eng = fork ]; then
-    cd $R/legacy; VR_OUT_DIR="$(cygpath -w $O/$tag)" timeout 10800 ./Bin/x64/Release/Mogwai.exe --script "$(cygpath -w $R/legacy/Scripts/_reference_pose_legacy.py)" > $O/$tag.log 2>&1
+    cd $R/legacy; VR_OUT_DIR="$(cygpath -w $O/$tag)" timeout ${VR_TIMEOUT:-3600} ./Bin/x64/Release/Mogwai.exe --script "$(cygpath -w $R/legacy/Scripts/_reference_pose_legacy.py)" > $O/$tag.log 2>&1
   else
-    VR_OUT_DIR="$(cygpath -m $O/$tag)" timeout 10800 ./build/windows-vs2022/bin/Release/Mogwai.exe --script "C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\reference_pose.py" > $O/$tag.log 2>&1
+    VR_OUT_DIR="$(cygpath -m $O/$tag)" timeout ${VR_TIMEOUT:-3600} ./build/windows-vs2022/bin/Release/Mogwai.exe --script "C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\reference_pose.py" > $O/$tag.log 2>&1
   fi )
 echo "$tag: $(ls $O/$tag/*.exr 2>/dev/null | wc -l) exr, $(( $(date +%s) - t0 )) s"

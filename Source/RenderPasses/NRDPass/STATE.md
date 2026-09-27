@@ -852,6 +852,51 @@ bistro volume-only 0.26-0.52%, mean 19.461 -> 19.462. `VR_PRE_DDA_CLAMP=1` compi
 `mask_check.sh` now sets it with `VR_PRE_FORK_PARITY=1`, and rb_v9p_raw comes back 300/300
 (`forkref/dda_verify.sh`).
 
+### FIXED: the lamp-edge fireflies were area light sampling next to the emitter (2026-09-27)
+
+**Not a bug in the arithmetic, and not ReSTIR's alone.** The path-traced reference is heavy-tailed at the same
+pixels: at (1385, 828) its two 65k-spp halves read 0.53 and 0.89, at (1400, 824) 0.0006 and 0.046. Pinned the
+way the smoke ones were (`reference_pose.py VR_CAPTURE_AT`, the surface modes of `firefly_debug.patch`): at
+(1385, 828) the pixel is 0.000 every frame until 3241, then 1537, then x10/11 per frame for ~100 frames --
+ONE candidate, spread over time by temporal reuse's M cap. Its `F` equals its `p_hat` (1176, no mismatch),
+`W` 1.31; a surface sample on the lamp frame, lit by the lamp glass (Le 0.414) from **3.08 mm**: 0.414 x
+BSDF*cos 0.041 x cos at the light 0.64 / 0.00308^2 = 1150. Area sampling puts 1/distance^2 in every light
+sample's weight, and the emitter pickers (power by default, as in the fork) do not favour a triangle for being
+near, so a surface millimetres from an emitter lives on rare, enormous samples.
+
+**Fix: solid-angle sampling of near emitters** (`sampleSphericalTriangle` in `VolumeUtils.slang`, Arvo 1995 in
+PBRT-v4's form). `sampleSceneLights` keeps the sampler's triangle and redraws the point uniformly over the
+solid angle Omega it subtends, where Omega is in [3e-4, 6.22] (PBRT's numerically safe range; far triangles
+keep area sampling). The weight becomes Le * f * cos * Omega / selection pdf, bounded however close. The
+reservoir stores the area-sampling u that maps back to the chosen point (the existing barycentric inversion),
+so reuse re-evaluates the same point; reuse never uses the source pdf. The path tracer samples through the same
+function and has no BSDF-hit MIS to keep consistent.
+
+Bistro, still pose, 8192 frames, against a solid-angle reference (8192 x 16 spp) -- the cleanest, and it
+agrees with both area-sampled references within their noise at every scale (ratios 0.97-1.08, region means
+within 0.05%):
+
+|                             | windows > 1 / > 10 | bias (whole, plume core) | one frame | blur 2  | blur 8   |
+|-----------------------------|--------------------|--------------------------|-----------|---------|----------|
+| power, area (was)           | 73 / 3             | -0.01%, +2.6%            | 0.00347   | 0.00348 | 0.00052  |
+| power + solid angle (now)   | 3 / 0              | +0.01%, +2.6%            | 0.00331   | 0.00304 | 0.00028  |
+| light BVH, area             | 36 / 2             | +0.01%, +2.5%            | 0.00226   | 0.00171 | 0.00017  |
+| light BVH + solid angle     | 0 / 0              | +0.00%, +2.5%            | 0.00207   | 0.00043 | 0.000039 |
+
+The reference itself: per-pixel noise 4.1e-2 (power, area) -> 2.3e-4 (solid angle); the lamp-edge pixels
+converge (1385, 828 reads 0.0175 / 0.0189 in its halves -- the old reference's 0.71 there was a firefly).
+
+Cost, interleaved: solid angle alone, full scene 77.2-77.5 vs 77.6 ms (Generate Samples +0.5), volume only
++0.4-1.0 ms. Light BVH + solid angle: full scene 84-87 (+8-12%), volume only 20.8-21.1 against 19.2-19.5.
+
+**The light BVH is not the default** (`VR_EMISSIVE_SAMPLER=bvh`, `mEmissiveSamplerTypeId` 1): it cuts the
+low-frequency error 8-13x with solid angle, for ~10% time, but it changes the fork's sampler.
+
+**Pixels.** Every scene with emissive lights changes (every light sample draws two more random numbers, and
+near emitters sample differently): bistro volume-only 24% of pixels per frame, mean 19.462 -> 19.476; the
+plume (environment light) is byte-identical, 60/60 frames. `VR_PRE_SOLID_ANGLE=1` compiles it out; `mask_check.sh` sets it
+with the other two, and rb_v9p_raw comes back 300/300.
+
 ## SOLVED: REBLUR's medium was transparent under motion
 
 Symptom: with the camera orbiting, REBLUR's plume read as haze -- doors, wall panels, plant pots and

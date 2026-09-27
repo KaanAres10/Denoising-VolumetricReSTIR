@@ -22,7 +22,11 @@ import glob, re, sys
 import cv2, numpy as np
 cv2.setNumThreads(0)
 C = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cap")
+# A run is "tag" (scored against its own engine's reference) or "tag@ref" (e.g. v9bvh_restir_long@v9bvh:
+# against cap/v9bvh_ref).
 TAGS = sys.argv[1:] or ["v9_restir", "fork_restir"]
+REF_OF = {t.split("@")[0]: t.split("@")[1] for t in TAGS if "@" in t}
+TAGS = [t.split("@")[0] + ("@" + t.split("@")[1] if "@" in t else "") for t in TAGS]
 REG = {"plume core": np.s_[250:700, 900:1150], "street": np.s_[800:1080, 0:700], "facade": np.s_[0:300, 0:700],
        "cafe": np.s_[300:800, 1550:1920], "lamp+plume": np.s_[100:1080, 800:1600], "whole": np.s_[:, :]}
 Y = np.array([0.0722, 0.7152, 0.2126])  # BGR
@@ -53,11 +57,11 @@ def blur(x, s): return cv2.GaussianBlur(x, (0, 0), s) if s else x
 
 # Reference.
 refs = {}
-for e in ("v9", "fork"):
+for e in ["v9", "fork"] + sorted(set(REF_OF.values()) - {"v9", "fork"}):
     a = captures(e + "_ref", "Accum.output") if os.path.isdir(os.path.join(C, e + "_ref")) else {}
     if len(a) >= 8:
         K = max(a); first = load(a[K // 2]); full = load(a[K]); refs[e] = (full, first, 2 * full - first)
-if len(refs) == 2:
+if "v9" in refs and "fork" in refs:
     print("References agree? fork against 9.0, 8192 frames x 16 spp each:")
     for s in (0, 2, 8):
         d = np.mean((blur(refs["fork"][0], s) - blur(refs["v9"][0], s)) ** 2)
@@ -66,11 +70,11 @@ if len(refs) == 2:
     print("  region means, fork / 9.0 - 1: " + "  ".join("%s %+.2f%%" % (r, 100 * (refs["fork"][0][s].mean() / refs["v9"][0][s].mean() - 1)) for r, s in REG.items()))
 # The two engines' scenes differ slightly (the references disagree beyond their noise at low frequency: the
 # fork's cafe is ~1% brighter -- material/emission models), so each run is scored against its OWN engine's.
-REF = lambda tag: refs["fork" if tag.startswith("fork") else "v9"]
+REF = lambda tag: refs[tag.split("@")[1] if "@" in tag else ("fork" if tag.startswith("fork") else "v9")]
 
 runs = {}
 for tag in TAGS:
-    W = windows(tag); raw = captures(tag, "VolumetricReSTIR.accumulated_color")
+    base = tag.split("@")[0]; W = windows(base); raw = captures(base, "VolumetricReSTIR.accumulated_color")
     runs[tag] = (W, [load(raw[k]) for k in sorted(raw) if k > len(W) // 2])
 for x in [x for r in refs.values() for x in r] + [w for W, F in runs.values() for w in W + F]:
     x[BAD] = 0

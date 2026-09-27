@@ -1,5 +1,5 @@
 diff --git a/Source/RenderPasses/VolumetricReSTIR/FinalShading.cs.slang b/Source/RenderPasses/VolumetricReSTIR/FinalShading.cs.slang
-index 1d4690e..6a6447a 100644
+index 1d4690e..d3875cc 100644
 --- a/Source/RenderPasses/VolumetricReSTIR/FinalShading.cs.slang
 +++ b/Source/RenderPasses/VolumetricReSTIR/FinalShading.cs.slang
 @@ -157,6 +157,76 @@ import ComputeInitialSample;
@@ -89,7 +89,7 @@ index 1d4690e..6a6447a 100644
  
      SampleGenerator sg = SampleGenerator(pixelPos, gNumTotalRounds * gFrameCount + gNumTotalRounds - 1);
  
-@@ -214,6 +287,82 @@ void main(uint3 DTid : SV_DispatchThreadID)
+@@ -214,6 +287,105 @@ void main(uint3 DTid : SV_DispatchThreadID)
              //print(curReservoir.M);
              //print(W);
  
@@ -124,7 +124,30 @@ index 1d4690e..6a6447a 100644
 +                        : (ok ? luminance(ls.Le) * dot(ls.normalW, -ls.dir) / (ls.distance * ls.distance) : -1.f);
 +                }
 +#endif
-+#if VR_FF_DEBUG >= 7
++#if VR_FF_DEBUG >= 18 && defined(SURFACE_SCENE)
++                // A SURFACE sample: the shading point from the V-buffer, the reservoir's emitter point, and the
++                // pieces of its contribution. 18: (distance, cos at the light, BSDF*cos at the surface);
++                // 19: (cos at the surface, luminance(Le), light ID).
++                if (all(pixelPos == uint2(VR_FF_X1, VR_FF_Y1)) || all(pixelPos == uint2(VR_FF_X2, VR_FF_Y2)))
++                {
++                    VBufferItem vi = gVBuffer[pixelId];
++                    SurfaceHitInfo hi = { vi.meshInstanceID, vi.primitiveID, vi.barycentrics, vi.rayT };
++                    if (hi.isValidHit() && curReservoir.lightID >= (int)gScene.getLightCount())
++                    {
++                        SurfaceShadingData si = computeSurfaceShadingInfo(hi, -ray.dir);
++                        TriangleLightSample ls;
++                        SampleGenerator g = sg;
++                        if (sampleTriangleOffset(si.posW, (uint)(curReservoir.lightID - (int)gScene.getLightCount()), curReservoir.lightUV, ls))
++                        {
++                            if (VR_FF_DEBUG == 18) { ffSum = ls.distance; ffM = dot(ls.normalW, -ls.dir); ffDepth = luminance(evalBSDFCosine(si, ls.dir, g)); }
++                            else { ffSum = dot(si.N, ls.dir); ffM = luminance(ls.Le); ffDepth = curReservoir.lightID; }
++                        }
++                        else { ffSum = -2; }
++                    }
++                    else { ffSum = -1; }
++                }
++#endif
++#if VR_FF_DEBUG >= 7 && VR_FF_DEBUG < 18
 +                if (all(pixelPos == uint2(VR_FF_X1, VR_FF_Y1)) || all(pixelPos == uint2(VR_FF_X2, VR_FF_Y2)))
 +                {
 +                    SampleGenerator g = sg;
@@ -172,7 +195,7 @@ index 1d4690e..6a6447a 100644
              curOutputColor *= W;
  
              outputColor += curOutputColor;
-@@ -226,6 +375,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
+@@ -226,6 +398,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
  
      if (any(isnan(curColor) || isinf(curColor))) curColor = 0.f;
  
