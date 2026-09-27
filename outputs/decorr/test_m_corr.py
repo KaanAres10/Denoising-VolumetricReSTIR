@@ -146,6 +146,17 @@ class TestDuplicates(unittest.TestCase):
         self.assertEqual(dup[0, 1], 49)
         self.assertEqual(dup[0, 0] + dup[1, 0] + dup[1, 1], 0)
 
+    def test_duplicate_map_matches_a_per_tile_count(self):
+        # Few distinct ids, so tiles repeat; negatives are pixels with no sample; a partial last tile is dropped.
+        ids = RNG.integers(-3, 40, size=(47, 65))
+        dup = mc.duplicate_map(ids, tile=10)
+        self.assertEqual(dup.shape, (4, 6))
+        for by in range(4):
+            for bx in range(6):
+                v = ids[by * 10:(by + 1) * 10, bx * 10:(bx + 1) * 10]
+                v = v[v >= 0]
+                self.assertEqual(dup[by, bx], v.size - np.unique(v).size, (by, bx))
+
     def test_invalid_pixels_are_not_duplicates(self):
         ids = np.full((20, 20), -1, dtype=np.int64)
         self.assertEqual(mc.duplicate_map(ids, tile=20)[0, 0], 0)
@@ -202,6 +213,14 @@ class TestBootstrap(unittest.TestCase):
 
 
 class TestReferenceErrors(unittest.TestCase):
+    def test_frames_scored_in_parallel_match_one_at_a_time(self):
+        ref = 1.0 + RNG.random((48, 80))
+        frames = ref + 0.3 * box_blur_wrap(RNG.standard_normal((12, 48, 80)), 2)
+        regions = {"all": np.s_[:, :], "left": np.s_[:, :40]}
+        one = mc.reference_errors(frames, ref, regions, workers=1)
+        many = mc.reference_errors(frames, ref, regions, workers=6)
+        self.assertEqual(one, many)
+
     def test_unbiased_frames_have_small_bias_and_known_relmse(self):
         ref = np.full((64, 64), 2.0)
         frames = ref + 0.2 * RNG.standard_normal((50, 64, 64))

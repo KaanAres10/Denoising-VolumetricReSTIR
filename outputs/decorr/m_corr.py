@@ -224,13 +224,12 @@ def duplicate_map(ids, tile=20):
     """Per tile x tile block: pixels holding a sample some other pixel of the block also holds, i.e.
     count(valid) - count(distinct). Ids < 0 are pixels with no sample."""
     H, W = ids.shape[0] // tile, ids.shape[1] // tile
-    out = np.zeros((H, W), dtype=np.int64)
-    for by in range(H):
-        for bx in range(W):
-            block = ids[by * tile:(by + 1) * tile, bx * tile:(bx + 1) * tile]
-            v = block[block >= 0]
-            out[by, bx] = v.size - np.unique(v).size
-    return out
+    blocks = np.asarray(ids)[:H * tile, :W * tile].reshape(H, tile, W, tile).swapaxes(1, 2).reshape(H, W, -1)
+    s = np.sort(blocks, axis=-1)
+    valid = s >= 0
+    first = np.ones_like(valid)  # the first pixel of each run of equal ids (sorted, so runs are contiguous)
+    first[..., 1:] = s[..., 1:] != s[..., :-1]
+    return (valid.sum(axis=-1) - (valid & first).sum(axis=-1)).astype(np.int64)
 
 
 def bootstrap_chains(terms, chain_of_frame, n=1000, seed=0):
@@ -248,27 +247,31 @@ def bootstrap_chains(terms, chain_of_frame, n=1000, seed=0):
     return float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5)), draws
 
 
-def reference_errors(stack, ref, regions, trim=1e-4, sigmas=(2, 8, 32)):
+def reference_errors(stack, ref, regions, trim=1e-4, sigmas=(2, 8, 32), workers=8):
     """Against a converged reference: per-region relative bias of the mean image, relMSE per frame (worst
     `trim` of pixels left out, then averaged over frames), and the RMS of the error blurred at each sigma
-    over the reference's mean (blotches are low-frequency error, so they survive the blur)."""
+    over the reference's mean (blotches are low-frequency error, so they survive the blur).
+    Frames are scored on `workers` threads; the result does not depend on the count."""
     ref = np.asarray(ref, dtype=np.float64)
     K = len(stack)
-    total = np.zeros_like(ref)
-    relmse = []
-    blur = {s: [] for s in sigmas}
     level = max(float(ref.mean()), 1e-12)
-    for k in range(K):
+
+    def frame(k):
         x = np.asarray(stack[k], dtype=np.float64)
-        total += x
         e = (x - ref) ** 2 / (ref ** 2 + 1e-4)
         n = int(round(trim * e.size))
         if n > 0:
             e = np.sort(e.ravel())[:-n]
-        relmse.append(float(e.mean()))
-        for s in sigmas:
-            b = cv2.GaussianBlur(x - ref, (0, 0), sigmaX=s)
-            blur[s].append(float(np.sqrt(np.mean(b ** 2))) / level)
+        return float(e.mean()), [float(np.sqrt(np.mean(cv2.GaussianBlur(x - ref, (0, 0), sigmaX=s) ** 2))) / level
+                                 for s in sigmas]
+
+    with ThreadPoolExecutor(max(1, min(workers, K))) as pool:
+        per = list(pool.map(frame, range(K)))
+    relmse = [p[0] for p in per]
+    blur = {s: [p[1][i] for p in per] for i, s in enumerate(sigmas)}
+    total = np.zeros_like(ref)
+    for k in range(K):
+        total += np.asarray(stack[k], dtype=np.float64)
     mean_img = total / K
     out = {"relmse": float(np.mean(relmse)), "blur_rms": {str(s): float(np.mean(v)) for s, v in blur.items()},
            "regions": {}}
@@ -425,12 +428,13 @@ def main(argv=None):
     ids = sorted(glob.glob(os.path.join(a.run_dir, "%s.VolumetricReSTIR.sampleIdentity.*.exr" % a.tag)))
     if ids:
         surface_scene = sched.get("scene") in SURFACE_SCENES
-        dmaps, lmaps = [], []
-        for p in ids:
-            img = read_exr(p)[..., :3][..., ::-1]
-            sample, light, at_surface = decode_identity(img)
-            dmaps.append(duplicate_map(duplicate_ids(sample, light, at_surface, surface_scene)))
-            lmaps.append(duplicate_map(light_ids(light, at_surface, surface_scene)))
+        def maps(p):
+            sample, light, at_surface = decode_identity(read_exr(p)[..., :3][..., ::-1])
+            return (duplicate_map(duplicate_ids(sample, light, at_surface, surface_scene)),
+                    duplicate_map(light_ids(light, at_surface, surface_scene)))
+
+        with ThreadPoolExecutor(8) as pool:
+            dmaps, lmaps = zip(*pool.map(maps, ids))
         dmean, lmean = np.mean(dmaps, axis=0), np.mean(lmaps, axis=0)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_sample.npy"), dmean)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_light.npy"), lmean)
