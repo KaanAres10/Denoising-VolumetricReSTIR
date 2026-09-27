@@ -362,6 +362,13 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
                        ("mUseEnvironmentLights", "VR_USE_ENVLIGHT")):
         if os.environ.get(_var) is not None:
             props["mParams"][_key] = env_bool(_var, True)
+    # VR_EMISSIVE_SAMPLER=power|bvh|uniform: how an emissive triangle is picked for a light sample. Power (the
+    # default, as in the 4.x fork) ignores distance, so an emitter millimetres from a surface -- bistro's lamp
+    # glass against its frame -- is picked as rarely as a far one and weighs enormously when it is; the light
+    # BVH weighs by distance too. Only applied when set.
+    _es = env("VR_EMISSIVE_SAMPLER", "").lower()
+    if _es:
+        props["mEmissiveSamplerTypeId"] = {"uniform": 0, "bvh": 1, "lightbvh": 1, "power": 2}[_es]
     # The reference is brute-force path tracing: no reuse, accumulated over thousands of frames.
     props["mParams"].update({
         "mUseReference": bool(reference),

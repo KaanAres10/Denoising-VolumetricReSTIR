@@ -26,6 +26,93 @@ __exported import InlineRayTracingHelpers;
 #define VR_REUSE_ON 0
 #endif
 
+// Solid-angle sampling of an emissive triangle, for triangles close to the shading point.
+//
+// The emissive samplers pick a point uniformly by AREA, so a light sample's weight carries 1/distance^2.
+// Next to an emitter that is a firefly source nothing else removes: bistro's lamp frames sit ~3 mm from the
+// lamp glass, and a sample there weighed 10^5 (0.414 radiance x 0.04 BSDF x 0.64 / 0.003^2); ReSTIR's temporal
+// reuse then kept it alive for ~100 frames, and the path-traced reference is heavy-tailed there too. Sampling
+// the direction uniformly over the triangle's solid angle Omega instead makes the weight Le * f * cos * Omega /
+// (selection pdf): bounded however close the triangle is.
+//
+// Arvo, "Stratified sampling of spherical triangles" (SIGGRAPH 1995), in the form of PBRT-v4's
+// SampleSphericalTriangle, and like PBRT used only where it is numerically sound, Omega in [3e-4, 6.22]; far
+// or tiny triangles keep area sampling. The choice depends only on the shading point and the triangle, so the
+// source pdf stays well defined. VR_PRE_SOLID_ANGLE=1 compiles it out: the code the locked rb_v9p captures
+// were made with (VR_SLANG_ARGS="-DVR_PRE_SOLID_ANGLE=1"; mask_check.sh sets it).
+#ifndef VR_PRE_SOLID_ANGLE
+#define VR_PRE_SOLID_ANGLE 0
+#endif
+static const float kSphericalPi = 3.14159265358979323846f;
+static const float kMinSphericalSampleArea = 3e-4f;
+static const float kMaxSphericalSampleArea = 6.22f;
+
+float sphericalAngleBetween(const float3 v1, const float3 v2)
+{
+    if (dot(v1, v2) < 0.f) return kSphericalPi - 2.f * asin(min(1.f, length(v1 + v2) * 0.5f));
+    return 2.f * asin(min(1.f, length(v2 - v1) * 0.5f));
+}
+
+float3 gramSchmidt(const float3 v, const float3 w) { return v - dot(v, w) * w; }
+
+/** Sample a point on triangle (v0, v1, v2) uniformly in the solid angle it subtends from p.
+    Returns false (and the caller keeps area sampling) outside [kMinSphericalSampleArea, kMaxSphericalSampleArea]
+    or for a degenerate triangle. On success, bary = the point's barycentrics, solidAngle = Omega (pdf 1 / Omega). */
+bool sampleSphericalTriangle(const float3 p, const float3 v0, const float3 v1, const float3 v2, const float2 u, out float3 bary, out float solidAngle)
+{
+    bary = float3(1.f / 3.f); solidAngle = 0.f;
+    float3 a = v0 - p, b = v1 - p, c = v2 - p;
+    const float la = length(a), lb = length(b), lc = length(c);
+    if (la == 0.f || lb == 0.f || lc == 0.f) return false;
+    a /= la; b /= lb; c /= lc;
+
+    // Solid angle first (Van Oosterom & Strackee), to decide whether to sample it at all.
+    const float omega = abs(2.f * atan2(dot(a, cross(b, c)), 1.f + dot(a, b) + dot(a, c) + dot(b, c)));
+    if (!(omega >= kMinSphericalSampleArea && omega <= kMaxSphericalSampleArea)) return false;
+
+    float3 n_ab = cross(a, b), n_bc = cross(b, c), n_ca = cross(c, a);
+    if (dot(n_ab, n_ab) == 0.f || dot(n_bc, n_bc) == 0.f || dot(n_ca, n_ca) == 0.f) return false;
+    n_ab = normalize(n_ab); n_bc = normalize(n_bc); n_ca = normalize(n_ca);
+
+    // Angles at the spherical triangle's vertices; their sum minus pi is its area.
+    const float alpha = sphericalAngleBetween(n_ab, -n_ca);
+    const float beta = sphericalAngleBetween(n_bc, -n_ab);
+    const float gamma = sphericalAngleBetween(n_ca, -n_bc);
+    const float A_pi = alpha + beta + gamma;
+    const float A = A_pi - kSphericalPi;
+    if (!(A > 0.f)) return false;
+
+    // Sample the sub-triangle area A' uniformly, then find the point c' on arc (a, c) that bounds it.
+    const float Ap_pi = lerp(kSphericalPi, A_pi, u.x);
+    const float cosAlpha = cos(alpha), sinAlpha = sin(alpha);
+    const float sinPhi = sin(Ap_pi) * cosAlpha - cos(Ap_pi) * sinAlpha;
+    const float cosPhi = cos(Ap_pi) * cosAlpha + sin(Ap_pi) * sinAlpha;
+    const float k1 = cosPhi + cosAlpha;
+    const float k2 = sinPhi - sinAlpha * dot(a, b);
+    float cosBp = (k2 + (k2 * cosPhi - k1 * sinPhi) * cosAlpha) / ((k2 * sinPhi + k1 * cosPhi) * sinAlpha);
+    cosBp = clamp(cosBp, -1.f, 1.f);
+    const float sinBp = sqrt(max(0.f, 1.f - cosBp * cosBp));
+    const float3 cp = cosBp * a + sinBp * normalize(gramSchmidt(c, a));
+
+    // Sample the direction along the arc from b to c'.
+    const float cosTheta = 1.f - u.y * (1.f - dot(cp, b));
+    const float sinTheta = sqrt(max(0.f, 1.f - cosTheta * cosTheta));
+    const float3 w = cosTheta * b + sinTheta * normalize(gramSchmidt(cp, b));
+
+    // Intersect w with the triangle for the barycentrics.
+    const float3 e1 = v1 - v0, e2 = v2 - v0;
+    const float3 s1 = cross(w, e2);
+    const float divisor = dot(s1, e1);
+    if (divisor == 0.f) return false;
+    const float3 s = p - v0;
+    float b1 = clamp(dot(s, s1) / divisor, 0.f, 1.f);
+    float b2 = clamp(dot(w, cross(s, e1)) / divisor, 0.f, 1.f);
+    if (b1 + b2 > 1.f) { const float sum = b1 + b2; b1 /= sum; b2 /= sum; }
+    bary = float3(1.f - b1 - b2, b1, b2);
+    solidAngle = A;
+    return true;
+}
+
 // VR_PRE_FORK_PARITY: see InlineRayTracingHelpers.slang.
 #ifndef VR_PRE_FORK_PARITY
 #define VR_PRE_FORK_PARITY 0
@@ -135,6 +222,45 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
             TriangleLightSample lightSample;
             bool valid = emissiveSampler.sampleLight(rayOrigin, surfaceNormal, false, sg, lightSample); // [8.0 port] added upperHemisphere=false
 
+            // Near triangles: keep the sampler's triangle, redraw the point by solid angle (see
+            // sampleSphericalTriangle). The sampler's pdf is selection * distSqr / (cos * area) and its geometryTerm
+            // cos / distSqr, so their product times the area is the selection pdf alone.
+            bool solidAngleSampled = false;
+#if !VR_PRE_SOLID_ANGLE
+            if (valid)
+            {
+                const EmissiveTriangle tri = gScene.lightCollection.getTriangle(lightSample.triangleIndex);
+                float3 bary; float omega;
+                if (sampleSphericalTriangle(rayOrigin, tri.posW[0], tri.posW[1], tri.posW[2], sampleNext2D(sg), bary, omega))
+                {
+                    const float triangleSelectionPdf = lightSample.pdf * lightSample.geometryTerm * tri.area;
+                    const float3 posW = tri.getPosition(bary);
+                    const float3 toLight = posW - rayOrigin;
+                    const float distSqr = max(1e-38f, dot(toLight, toLight));
+                    const float distance = sqrt(distSqr);
+                    const float3 dir = toLight / distance;
+                    const float cosTheta = dot(tri.normal, -dir);
+                    if (cosTheta <= 0.f)
+                    {
+                        valid = false;
+                    }
+                    else
+                    {
+                        float3 Le = gScene.materials.evalEmissive(tri.materialID, tri.getTexCoord(bary));
+                        if (gScene.materials.hasLightProfile(tri.materialID)) Le *= gScene.materials.evalLightProfile(cosTheta);
+                        lightSample.posW = posW;
+                        lightSample.dir = dir;
+                        lightSample.distance = distance;
+                        lightSample.Le = Le;
+                        lightSample.pdf = triangleSelectionPdf / omega;
+                        lightSample.geometryTerm = cosTheta / distSqr;
+                        lightSample.uv = bary.yz;
+                        solidAngleSampled = true;
+                    }
+                }
+            }
+#endif
+
             // The 4.x fork's sampleTriangle offset the sampled point off the light triangle
             // (computeRayOrigin) BEFORE computing the light vector, distance and pdf; the shadow ray
             // below then offsets it once more. Falcor 8/9's sampleTriangle has no offset, so the port
@@ -158,7 +284,8 @@ bool sampleSceneLights(const EnvMapSampler envMapSampler, const EmissiveLightSam
                 {
                     // Solid-angle pdf = selection pdf * distSqr / (cos * area); geometryTerm is cos / distSqr
                     // at the original point, so this swaps the original geometry for the offset one.
-                    lightSample.pdf *= lightSample.geometryTerm * distSqr / cosTheta;
+                    // A solid-angle sample's pdf is per steradian already, and the offset is far below any change in it.
+                    if (!solidAngleSampled) lightSample.pdf *= lightSample.geometryTerm * distSqr / cosTheta;
                     lightSample.geometryTerm = cosTheta / distSqr;
                     lightSample.posW = posOffset;
                     lightSample.dir = dir;
