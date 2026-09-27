@@ -15,6 +15,7 @@ target_sources(VolumetricReSTIR PRIVATE
     GuideLightStats.cs.slang
     HostDeviceSharedConstants.slang
     InlineRayTracingHelpers.slang
+    MutateSamples.cs.slang
     Reservoir.slang
     ReSTIRHelper.slang
     SpatialReuse.cs.slang

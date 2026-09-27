@@ -72,6 +72,13 @@ public:
 
 private:
     void updateSceneDefines(ref<ComputePass>& pPass, const ref<Scene>& pScene);
+    /// Whether this frame runs the mutation pass: a mutation count, reuse on, single scattering without
+    /// vertex reuse (the moves cover the primary scatter depth and the light vertex only), and a
+    /// deterministic p_hat -- the acceptance ratio needs p_hat itself, and ratio tracking would make it
+    /// a random estimate of it.
+    bool mutationsActive() const;
+    void createMutateSamplesPass();
+    void runMutations(RenderContext* pRenderContext, int bufferId, int numTotalRounds, SamplingOptions options, uint2 dims);
     bool updateLights(RenderContext* pRenderContext);
     void beginFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void toggleCameraAnimation();
@@ -119,6 +126,9 @@ private:
     ref<ComputePass> mCopyReservoirPass;
     ref<ComputePass> mFinalShadingPass;
     ref<ComputePass> mComputeAvgDensityPass;
+    ref<ComputePass> mMutateSamplesPass;   ///< created on first use, see mutationsActive()
+    ref<Buffer> mMutationStatsBuffer;      ///< MutateSamples' counters, see kMutationStatNames
+    int mMutationStatFrames = 0;
 
 
 	bool mFreezeFrame = false;
@@ -217,6 +227,21 @@ private:
         uint32_t mFinalRandomSamplerType = kR2;
         float mFinalTStepScale = 0.2f;
 
+        /////////////////////
+        /// Mutations (Sawhney et al. 2024): Metropolis-Hastings moves on every pixel's reservoir sample
+        /// right after temporal reuse, to decorrelate what reuse shares. 0 = off: the pass is neither
+        /// created nor dispatched. See MutateSamples.cs.slang.
+        /////////////////////
+        int mMutationCount = 0;
+        uint32_t mMutationStrategyMask = 3;         ///< bit 0 light vertex, bit 1 scatter depth
+        float mMutationLightStepMin = 1.f / 1024.f; ///< torus step in the emitter's area-uniform u
+        float mMutationLightStepMax = 1.f / 64.f;
+        float mMutationDirStepMinDeg = 0.1f;        ///< env-map rotation angle
+        float mMutationDirStepMaxDeg = 5.f;
+        float mMutationDepthStepMin = 0.5f;         ///< scatter-depth step, in ray-march steps
+        float mMutationDepthStepMax = 16.f;
+        bool mMutationStats = false;                ///< log acceptance per strategy every 256 frames
+
         template<typename Archive>
         void serialize(Archive& ar)
         {
@@ -270,6 +295,15 @@ private:
             ar("mFinalLightTrackingMethod", mFinalLightTrackingMethod);
             ar("mFinalRandomSamplerType", mFinalRandomSamplerType);
             ar("mFinalTStepScale", mFinalTStepScale);
+            ar("mMutationCount", mMutationCount);
+            ar("mMutationStrategyMask", mMutationStrategyMask);
+            ar("mMutationLightStepMin", mMutationLightStepMin);
+            ar("mMutationLightStepMax", mMutationLightStepMax);
+            ar("mMutationDirStepMinDeg", mMutationDirStepMinDeg);
+            ar("mMutationDirStepMaxDeg", mMutationDirStepMaxDeg);
+            ar("mMutationDepthStepMin", mMutationDepthStepMin);
+            ar("mMutationDepthStepMax", mMutationDepthStepMax);
+            ar("mMutationStats", mMutationStats);
         }
     } mParams;
 

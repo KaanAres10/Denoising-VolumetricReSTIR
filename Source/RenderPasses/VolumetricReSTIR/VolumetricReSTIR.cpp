@@ -59,6 +59,12 @@ namespace
     const std::string kNonEmissiveColor = "nonEmissiveColor";
     const std::string kSampleIdentity = "sampleIdentity";
 
+    /// MutateSamples.cs.slang's gMutationStats counters, in order.
+    const char* kMutationStatNames[] = {"light proposed", "light accepted", "depth proposed", "depth accepted",
+                                        "empty or invalid (skipped)", "p_hat(x0) != p_y"};
+    constexpr uint32_t kMutationStatCount = sizeof(kMutationStatNames) / sizeof(kMutationStatNames[0]);
+    constexpr int kMutationStatInterval = 256; ///< frames between acceptance log lines
+
     const Falcor::ChannelList kOutputChannels =
     {
         // [8.0 port] accumulated_color is written as a UAV by FinalShading, so it needs an explicit
@@ -543,6 +549,91 @@ void VolumetricReSTIR::resetCamera(bool useLastCameraPosition)
     mpScene->getCamera()->setTarget(useLastCameraPosition ? mBackedupCameraTarget : mInitialCameraTarget);
 }
 
+bool VolumetricReSTIR::mutationsActive() const
+{
+    const auto deterministic = [](uint32_t method) { return method == kRayMarching || method == kAnalyticTracking; };
+    return mParams.mMutationCount > 0 && !mParams.mUseReference && (mParams.mEnableTemporalReuse || mParams.mEnableSpatialReuse) &&
+           mParams.mMaxBounces == 1 && !mParams.mVertexReuse && deterministic(mParams.mSpatialVisibilityTrackingMethod) &&
+           deterministic(mParams.mSpatialLightingTrackingMethod);
+}
+
+void VolumetricReSTIR::createMutateSamplesPass()
+{
+    // Built like Temporal Reuse, whose p_hat it evaluates (the per-frame block in execute() adds the same
+    // tracking mask, specialization and group defines). On first use only, so a frame without mutations
+    // never compiles it.
+    const std::string file = kShaderDirectory + "MutateSamples.cs.slang";
+    mMutateSamplesPass = mParams.mUseSurfaceScene ? createSceneComputePass(mpDevice, file, "main", mDefaultDefines, mpScene)
+                                                  : createSimpleComputePass(mpDevice, file, "main", mDefaultDefines);
+    // Every define that shapes the parameter layout goes in BEFORE updateSceneDefines, which creates the
+    // vars (setVars): the emissive sampler's type changes the CB's EmissiveLightSampler members, and vars
+    // made before it cannot bind them ("No member named '_emissivePower'" on bistro).
+    mMutateSamplesPass->getProgram()->addDefines(mpSampleGenerator->getDefines());
+    if (mpEmissiveSampler) mMutateSamplesPass->getProgram()->addDefines(mpEmissiveSampler->getDefines());
+    updateSceneDefines(mMutateSamplesPass, mpScene);
+    mpSampleGenerator->bindShaderData(mMutateSamplesPass->getRootVar());
+}
+
+void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId, int numTotalRounds, SamplingOptions options, uint2 dims)
+{
+    FALCOR_PROFILE(pRenderContext, "Mutate Samples");
+    auto vars = mMutateSamplesPass->getRootVar();
+    mpPixelDebug->prepareProgram(mMutateSamplesPass->getProgram(), vars);
+
+    mpScene->setVolumeShaderData(vars);
+    vars["gLinearSampler"] = mpSampler;
+    vars["gPointSampler"] = mpPointSampler;
+
+    vars["gCurReservoirs"] = mPerPixelReservoirBuffer[bufferId];
+    vars["gCurExtraBounceReservoirs"] = mPerPixelExtraBounceReservoirBuffer[bufferId];
+    if (mParams.mUseSurfaceScene) vars["gVBuffer"] = mVBuffer;
+
+    if (!mMutationStatsBuffer)
+    {
+        mMutationStatsBuffer = mpDevice->createStructuredBuffer(sizeof(uint32_t), kMutationStatCount,
+                                                                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+        pRenderContext->clearUAV(mMutationStatsBuffer->getUAV().get(), uint4(0));
+        mMutationStatFrames = 0;
+    }
+    vars["gMutationStats"] = mMutationStatsBuffer;
+
+    vars["CB"]["gResolution"] = dims;
+    vars["CB"]["gFrameCount"] = mFrameCount;
+    vars["CB"]["gNumTotalRounds"] = numTotalRounds;
+    vars["CB"]["gMutationCount"] = mParams.mMutationCount;
+    vars["CB"]["gStrategyMask"] = mParams.mMutationStrategyMask;
+    vars["CB"]["gLightStepMin"] = mParams.mMutationLightStepMin;
+    vars["CB"]["gLightStepMax"] = mParams.mMutationLightStepMax;
+    // The kernel works in radians.
+    vars["CB"]["gDirStepMin"] = math::radians(mParams.mMutationDirStepMinDeg);
+    vars["CB"]["gDirStepMax"] = math::radians(mParams.mMutationDirStepMaxDeg);
+    vars["CB"]["gDepthStepMin"] = mParams.mMutationDepthStepMin;
+    vars["CB"]["gDepthStepMax"] = mParams.mMutationDepthStepMax;
+    vars["CB"]["gCollectStats"] = mParams.mMutationStats;
+    options.setShaderData(vars["CB"]["gSamplingOptions"]);
+
+    if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
+    if (mpEmissiveSampler) mpEmissiveSampler->bindShaderData(vars["CB"]["emissiveSampler"]);
+
+    if (mParams.mUseSurfaceScene)
+        mpScene->bindShaderDataForRaytracing(pRenderContext, mMutateSamplesPass->getRootVar()["gScene"], 0);
+    else
+        mpScene->bindShaderData(mMutateSamplesPass->getRootVar()["gScene"]);
+
+    mMutateSamplesPass->execute(pRenderContext, dims.x, dims.y);
+
+    if (mParams.mMutationStats && ++mMutationStatFrames >= kMutationStatInterval)
+    {
+        const std::vector<uint32_t> s = mMutationStatsBuffer->getElements<uint32_t>(0, kMutationStatCount);
+        const auto rate = [](uint32_t accepted, uint32_t proposed) { return proposed ? double(accepted) / proposed : 0.0; };
+        logInfo("VolumetricReSTIR mutations, last {} frames: light {}/{} accepted ({:.3f}), depth {}/{} accepted ({:.3f}), "
+                "{} {}, {} {}", mMutationStatFrames, s[1], s[0], rate(s[1], s[0]), s[3], s[2], rate(s[3], s[2]),
+                s[4], kMutationStatNames[4], s[5], kMutationStatNames[5]);
+        pRenderContext->clearUAV(mMutationStatsBuffer->getUAV().get(), uint4(0));
+        mMutationStatFrames = 0;
+    }
+}
+
 void VolumetricReSTIR::updateSceneDefines(ref<ComputePass>& pPass, const ref<Scene>& pScene)
 {
     if (!pScene) return;
@@ -601,6 +692,13 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mFinalShadingPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mFinalShadingPass->getRootVar()["gScene"]);
         if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mpTraceRaysPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mpTraceRaysPass->getRootVar()["gScene"]);
         if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mGenerateFeaturePass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mGenerateFeaturePass->getRootVar()["gScene"]);
+
+        if (mMutateSamplesPass)
+        {
+            mMutateSamplesPass->getProgram()->addDefines(mpEmissiveSampler->getDefines());
+            mMutateSamplesPass->setVars(nullptr);
+            if (mParams.mUseSurfaceScene) mpScene->bindShaderDataForRaytracing(pRenderContext, mMutateSamplesPass->getRootVar()["gScene"], 0); else mpScene->bindShaderData(mMutateSamplesPass->getRootVar()["gScene"]);
+        }
     }
 
     if (mpScene->mNewEnvMapLoaded)
@@ -799,6 +897,9 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
 
     bool specializeFeatures = false; // Generate Features' switches, set in its own block below
 
+    const bool mutate = mutationsActive();
+    if (mutate && !mMutateSamplesPass) createMutateSamplesPass();
+
     // Compile into each pass only the transmittance trackers its sampling options can select
     // (VR_TRACKING_MASK, see computeVisibility in VolumeUtils.slang). addDefine only recompiles when a
     // mask actually changes, i.e. when a tracking method is switched in the UI or reference mode toggles.
@@ -824,6 +925,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         setMask(mTemporalReusePass, spatialMask);
         setMask(mSpatialReusePass, spatialMask);
         setMask(mFinalShadingPass, finalMask);
+        setMask(mMutateSamplesPass, spatialMask); // evaluates p_hat as Temporal Reuse does
 
         // Compile-time mirrors of the light-kind switches and of reuse (see VolumeUtils.slang). They
         // come from the same parameters as the runtime flags in SamplingOptions / gNoReuse, so a light
@@ -853,7 +955,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         // reads +0.7..+3.5%. Output is byte-identical either way. VR_HOIST_ATLAS=0|1 in the
         // environment forces every pass, for A/B.
         static const char* kHoistOverride = std::getenv("VR_HOIST_ATLAS");
-        for (const auto& pass : {mGenerateFeaturePass, mpTraceRaysPass, mTemporalReusePass, mSpatialReusePass, mFinalShadingPass})
+        for (const auto& pass : {mGenerateFeaturePass, mpTraceRaysPass, mTemporalReusePass, mSpatialReusePass, mFinalShadingPass, mMutateSamplesPass})
         {
             if (!pass) continue;
             bool hoist = !(mParams.mUseSurfaceScene && (pass == mSpatialReusePass || pass == mpTraceRaysPass));
@@ -894,6 +996,9 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         }
         if (Program* program = specializePass(mTemporalReusePass, "TR"))
             program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(spatialOptions));
+        // Mutate Samples follows Temporal Reuse ("TR"): the same p_hat, the same options.
+        if (Program* program = specializePass(mMutateSamplesPass, "TR"))
+            program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(spatialOptions));
         if (Program* program = specializePass(mSpatialReusePass, "SR"))
             program->addDefine("VR_SAMPLING_OPTIONS", samplingOptionsLiteral(spatialOptions));
         if (Program* program = specializePass(mGenerateFeaturePass, "GF"))
@@ -922,7 +1027,8 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         // VR_GROUP=8x8 for the previous layout; VR_GROUP_GS / _TR / _SR / _FS=WxH override one pass.
         static const char* kGroupOverride = std::getenv("VR_GROUP");
         const std::pair<ref<ComputePass>, const char*> groupPasses[] = {
-            {mpTraceRaysPass, "VR_GROUP_GS"}, {mTemporalReusePass, "VR_GROUP_TR"}, {mSpatialReusePass, "VR_GROUP_SR"}, {mFinalShadingPass, "VR_GROUP_FS"}};
+            {mpTraceRaysPass, "VR_GROUP_GS"}, {mTemporalReusePass, "VR_GROUP_TR"}, {mSpatialReusePass, "VR_GROUP_SR"}, {mFinalShadingPass, "VR_GROUP_FS"},
+            {mMutateSamplesPass, "VR_GROUP_MU"}};
         for (const auto& [pass, envName] : groupPasses)
         {
             if (!pass) continue;
@@ -1189,6 +1295,10 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
 
             mTemporalReusePass->execute(pRenderContext, (int)scrWidth , (int)scrHeight );
 
+            // Mutations act on the temporal output before anything copies it: the history then carries
+            // the mutated samples, as in Sawhney et al.'s pipeline.
+            if (mutate) runMutations(pRenderContext, totalRoundId, numTotalRounds, spatialOptions, renderDims);
+
             if (!mParams.mEnableSpatialReuse)
             {
                 pRenderContext->copyResource(mTemporalReservoirBuffer.get(), mPerPixelReservoirBuffer[totalRoundId].get());
@@ -1200,6 +1310,10 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             if (mParams.mUseSurfaceScene)
                 pRenderContext->copyResource(mTemporalVBuffer.get(), mVBuffer.get());
         }
+
+    // Without temporal reuse the mutations act on the initial samples (mutate implies !mUseReference).
+    if (!mFreezeFrame && mutate && !mParams.mEnableTemporalReuse)
+        runMutations(pRenderContext, totalRoundId, numTotalRounds, spatialOptions, renderDims);
 
     if (!mFreezeFrame)
         if (!mParams.mUseReference && mParams.mEnableSpatialReuse)
@@ -1940,6 +2054,31 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
             group3.release();
         }
 
+        auto groupMutations = Gui::Group(widget, "Mutations (decorrelation)", false);
+        if (groupMutations.open())
+        {
+            dirty |= widget.var("Mutations per pixel", mParams.mMutationCount, 0, 64);
+            widget.tooltip("Metropolis-Hastings steps on each pixel's reservoir sample after temporal reuse "
+                           "(Sawhney et al. 2024). 0 = off. Runs only for single scattering without vertex reuse "
+                           "and with ray-marching or analytic spatial trackers (p_hat must be deterministic).", true);
+            bool light = mParams.mMutationStrategyMask & 1u, depth = mParams.mMutationStrategyMask & 2u;
+            bool strategies = widget.checkbox("Light-vertex moves", light);
+            strategies |= widget.checkbox("Scatter-depth moves", depth);
+            if (strategies)
+            {
+                mParams.mMutationStrategyMask = (light ? 1u : 0u) | (depth ? 2u : 0u);
+                dirty = true;
+            }
+            dirty |= widget.var("Light step min (u)", mParams.mMutationLightStepMin, 1e-6f, 0.5f);
+            dirty |= widget.var("Light step max (u)", mParams.mMutationLightStepMax, 1e-6f, 0.5f);
+            dirty |= widget.var("Env step min (deg)", mParams.mMutationDirStepMinDeg, 1e-3f, 90.f);
+            dirty |= widget.var("Env step max (deg)", mParams.mMutationDirStepMaxDeg, 1e-3f, 90.f);
+            dirty |= widget.var("Depth step min (march steps)", mParams.mMutationDepthStepMin, 1e-3f, 1e3f);
+            dirty |= widget.var("Depth step max (march steps)", mParams.mMutationDepthStepMax, 1e-3f, 1e3f);
+            widget.checkbox("Log acceptance rates", mParams.mMutationStats);
+            groupMutations.release();
+        }
+
         auto group5 = Gui::Group(widget, "Final Shading Options", false);
         widget.tooltip("Sampling options to estimate the final integrand F.");
         if (group5.open())
@@ -1997,6 +2136,7 @@ void VolumetricReSTIR::setScene(RenderContext* pRenderContext, const ref<Scene>&
         // [8.0 port] CopyReservoirs also needs its vars created (compute passes are created with
         // createVars=false); without this its getRootVar() null-derefs during temporal reuse.
         this->updateSceneDefines(mCopyReservoirPass, pScene);
+        mMutateSamplesPass = nullptr; // rebuilt for this scene on first use
 
         mpScene->getCurrentVolumeDesc().usePrevGridForReproj = mParams.mUsePrevVolumeForReproj;
 
