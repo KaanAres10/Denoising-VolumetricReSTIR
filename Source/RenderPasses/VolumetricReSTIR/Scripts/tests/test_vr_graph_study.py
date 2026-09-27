@@ -15,7 +15,9 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
-STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS")
+STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS",
+              "VR_MUTATIONS", "VR_MUT_STRAT", "VR_MUT_STATS", "VR_INITIAL_M",
+              "VR_PARAMS")
 
 
 class Recorder:
@@ -160,11 +162,12 @@ class TestKnobs(StudyEnv):
 
     def test_knobs_absent_when_unset(self):
         params = self.restir_params()
-        for key in ("mTemporalReuseMThreshold", "mSampleRadius", "mSpatialSampleCount", "mSpatialReuseRounds"):
+        for key in ("mTemporalReuseMThreshold", "mSampleRadius", "mSpatialSampleCount", "mSpatialReuseRounds", "mInitialM"):
             self.assertNotIn(key, params)
 
     def test_knobs_applied_with_their_types(self):
-        os.environ.update({"VR_MTHRESH": "50", "VR_SR_RADIUS": "30", "VR_SR_COUNT": "6", "VR_SR_ROUNDS": "3"})
+        os.environ.update({"VR_MTHRESH": "50", "VR_SR_RADIUS": "30", "VR_SR_COUNT": "6", "VR_SR_ROUNDS": "3",
+                           "VR_INITIAL_M": "8"})
         params = self.restir_params()
         self.assertEqual(params["mTemporalReuseMThreshold"], 50.0)
         self.assertIsInstance(params["mTemporalReuseMThreshold"], float)
@@ -172,6 +175,37 @@ class TestKnobs(StudyEnv):
         self.assertEqual(params["mSpatialSampleCount"], 6)
         self.assertIsInstance(params["mSpatialSampleCount"], int)
         self.assertEqual(params["mSpatialReuseRounds"], 3)
+        self.assertEqual(params["mInitialM"], 8)  # initial candidates: the equal-time rival of mutations
+        self.assertIsInstance(params["mInitialM"], int)
+
+    def test_mutation_knobs_absent_when_unset(self):
+        params = self.restir_params()
+        for key in ("mMutationCount", "mMutationStrategyMask", "mMutationStats"):
+            self.assertNotIn(key, params)
+
+    def test_mutation_knobs(self):
+        os.environ.update({"VR_MUTATIONS": "5", "VR_MUT_STATS": "1"})
+        for strat, mask in (("light,depth", 3), ("depth", 2), ("light", 1), ("", 0)):
+            os.environ["VR_MUT_STRAT"] = strat  # set but empty = no strategy: every step a self-transition
+            params = self.restir_params()
+            self.assertEqual(params["mMutationStrategyMask"], mask, strat)
+        self.assertEqual(params["mMutationCount"], 5)
+        self.assertIsInstance(params["mMutationCount"], int)
+        self.assertIs(params["mMutationStats"], True)
+
+    def test_unknown_mutation_strategy_is_an_error(self):
+        os.environ["VR_MUT_STRAT"] = "light,scatter"
+        with self.assertRaises(ValueError):
+            self.restir_params()
+
+    def test_params_json_is_merged_last(self):
+        # Diagnostics: any mParams field, e.g. the temporal MIS method, without a dedicated knob.
+        os.environ["VR_PARAMS"] = '{"mTemporalMISMethod": 0, "mTemporalReprojectionMode": 1}'
+        os.environ["VR_MTHRESH"] = "50"
+        params = self.restir_params()
+        self.assertEqual(params["mTemporalMISMethod"], 0)
+        self.assertEqual(params["mTemporalReprojectionMode"], 1)
+        self.assertEqual(params["mTemporalReuseMThreshold"], 50.0)
 
     def test_knob_overrides_the_scene_default(self):
         os.environ["VR_MTHRESH"] = "200"

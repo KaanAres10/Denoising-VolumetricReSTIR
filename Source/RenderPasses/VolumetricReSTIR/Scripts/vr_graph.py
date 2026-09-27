@@ -387,6 +387,19 @@ def load_scene(name):
 # Graph pieces
 # ---------------------------------------------------------------------------------------------
 
+MUTATION_STRATEGIES = {"light": 1, "depth": 2}  # MutateSamples.cs.slang's strategy bits
+
+
+def mutation_strategy_mask(spec):
+    """"light,depth" -> 3; "" -> 0. An unknown name is an error, not a silently disabled strategy."""
+    mask = 0
+    for name in filter(None, (t.strip() for t in spec.split(","))):
+        if name not in MUTATION_STRATEGIES:
+            raise ValueError("VR_MUT_STRAT: unknown strategy %r (known: %s)" % (name, ", ".join(MUTATION_STRATEGIES)))
+        mask |= MUTATION_STRATEGIES[name]
+    return mask
+
+
 def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=False,
                jitter=False, reference=False, name="VolumetricReSTIR", render=None, **params):
     """The estimator. Returns the pass name.
@@ -468,14 +481,28 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
             props["mParams"].update(v)
         else:
             props[k] = v
-    # Decorrelation-study knobs (temporal M cap, spatial radius / taps / rounds). Applied last and only
+    # Decorrelation-study knobs (temporal M cap, spatial radius / taps / rounds, initial candidates). Applied last and only
     # when set, so they override a scene's default and leave every existing script unchanged.
     for _key, _var, _conv in (("mTemporalReuseMThreshold", "VR_MTHRESH", float),
                               ("mSampleRadius", "VR_SR_RADIUS", float),
                               ("mSpatialSampleCount", "VR_SR_COUNT", int),
-                              ("mSpatialReuseRounds", "VR_SR_ROUNDS", int)):
+                              ("mSpatialReuseRounds", "VR_SR_ROUNDS", int),
+                              ("mInitialM", "VR_INITIAL_M", int)):
         if os.environ.get(_var):
             props["mParams"][_key] = _conv(os.environ[_var])
+    # Metropolis-Hastings mutations after temporal reuse (Sawhney et al. 2024): VR_MUTATIONS steps per
+    # pixel per frame, VR_MUT_STRAT the strategies ("light,depth"; set but empty = none, so every step is a
+    # self-transition), VR_MUT_STATS=1 logs acceptance rates. Only when set.
+    if os.environ.get("VR_MUTATIONS"):
+        props["mParams"]["mMutationCount"] = int(os.environ["VR_MUTATIONS"])
+    if "VR_MUT_STRAT" in os.environ:
+        props["mParams"]["mMutationStrategyMask"] = mutation_strategy_mask(os.environ["VR_MUT_STRAT"])
+    if os.environ.get("VR_MUT_STATS"):
+        props["mParams"]["mMutationStats"] = env_bool("VR_MUT_STATS", False)
+    # VR_PARAMS='{"mTemporalMISMethod": 0}': any mParams fields, as JSON, merged last. For diagnostics.
+    if os.environ.get("VR_PARAMS"):
+        import json
+        props["mParams"].update(json.loads(os.environ["VR_PARAMS"]))
     g.addPass(createPass("VolumetricReSTIR", props), name)
     return name
 
