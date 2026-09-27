@@ -246,7 +246,14 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
         #endif
         if (isBackgroundSample)
         {
-            float3 backgroundIntensity = envMapSampler.eval(ray.dir, isLastFrame);
+            // Falcor 9's EnvMapSampler::eval is (dir, lod, isPrevFrame). This call used to pass
+            // isLastFrame as the second argument -- the LOD -- so every "previous frame" evaluation of a
+            // background sample (temporal reuse's Talbot weights) read the env map's blurred mip 1
+            // instead of mip 0. Where the sharp value exceeds the blurred one (a street lamp) the
+            // canonical sample's weight rose above its share and the weights stopped summing to one:
+            // temporal reuse brightened lamps and darkened their surroundings, +7.9% on the plume's
+            // image mean at 1080p (outputs/decorr/bias_diag.sh), 0 with Talbot MIS off.
+            float3 backgroundIntensity = envMapSampler.eval(ray.dir, 0.f, isLastFrame);
             F *= backgroundIntensity;
         }
         else if (isSelfEmission)
