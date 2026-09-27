@@ -8,10 +8,12 @@
 #   run_study.sh denoise <label>      every denoiser, as shipped vs no reuse, at the still pose
 #   run_study.sh summary              outputs/decorr/summary.tsv and every scene's sheet.png
 #
-# A label is a vr_graph scene, optionally with a phase-function g: plume_g-0.9 = VR_SCENE=plume
-# VR_PHASE_G=-0.9. Each config lands in outputs/decorr/<label>/<config>/, is scored by m_corr.py (against
-# the label's noreuse run and reference when they exist), then pruned to a few frames by prune.py. A
-# config that already has c.corr.json is skipped, so an interrupted run resumes.
+# A label is a vr_graph scene, optionally with a phase-function g and a density multiplier:
+# plume_g-0.9 = VR_SCENE=plume VR_PHASE_G=-0.9, wdas_d0.2 = VR_SCENE=wdas VR_DENSITY_MULT=0.2. Each config
+# lands in outputs/decorr/<label>/<config>/, is scored by m_corr.py (against the label's noreuse run and
+# reference when they exist), then pruned to a few frames by prune.py. Scoring runs on the CPU while the
+# next config renders on the GPU; one scoring at a time, in order. A config that already has c.corr.json
+# is skipped, so an interrupted run resumes.
 #
 # STUDY_DISPLAY=WxH (default 1920x1080), STUDY_CHAINS, STUDY_PER_CHAIN, STUDY_WARM override the harness
 # defaults; STUDY_SPACING sets the capture spacing for every label, STUDY_SPACING_<label> for one (dashes
@@ -32,11 +34,19 @@ if tasklist 2>/dev/null | grep -qi mogwai; then echo "[study] Mogwai is running;
 ls build/windows-vs2022/bin/Release/libprotoc.dll build/windows-vs2022/bin/Release/z.dll >/dev/null 2>&1 ||
     ./tools/.packman/cmake/bin/cmake.exe --build build/windows-vs2022 --config Release --target restore_runtime_dlls >/dev/null 2>&1
 
-scene_env() {  # label -> VR_SCENE (+ VR_PHASE_G)
-    case "$1" in
-        *_g*) echo "VR_SCENE=${1%%_g*} VR_PHASE_G=${1#*_g}" ;;
-        *) echo "VR_SCENE=$1" ;;
-    esac
+scene_env() {  # label -> VR_SCENE (+ VR_PHASE_G for _g<g>, VR_DENSITY_MULT for _d<mult>)
+    local IFS=_
+    # shellcheck disable=SC2086
+    set -- $1
+    local out="VR_SCENE=$1" m
+    shift
+    for m in "$@"; do
+        case "$m" in
+            g*) out="$out VR_PHASE_G=${m#g}" ;;
+            d*) out="$out VR_DENSITY_MULT=${m#d}" ;;
+        esac
+    done
+    echo "$out"
 }
 
 spacing_for() {
@@ -68,6 +78,12 @@ render() {  # dir, then env assignments; runs correlation_pose.py into dir
     )
 }
 
+SCORING=  # pid of the previous config's scoring, which overlaps this config's render
+
+finish_scoring() {
+    if [ -n "$SCORING" ]; then wait "$SCORING"; SCORING=; fi
+}
+
 cap() {  # label config [env assignments...]
     local label=$1 cfg=$2
     shift 2
@@ -80,6 +96,14 @@ cap() {  # label config [env assignments...]
         echo "[study] FAILED $label/$cfg (see $d/run.log)"
         return 1
     fi
+    # The previous config's scoring ends first: it can be this one's baseline (noreuse before shipped).
+    finish_scoring
+    score "$label" "$cfg" "$d" "$t0" &
+    SCORING=$!
+}
+
+score() {  # label config dir t0: m_corr against the baseline and reference, then prune
+    local label=$1 cfg=$2 d=$3 t0=$4
     local args=(--tag c)
     [ "$label" = bistro ] && args+=(--regions bistro --clamp 1)
     local base="$O/$label/noreuse/c.corr.json"
@@ -96,7 +120,7 @@ cap() {  # label config [env assignments...]
     echo "[study] $label/$cfg $((SECONDS - t0))s  $(tail -1 "$d/metrics.log")"
 }
 
-mcap_of() { case "${1%%_g*}" in bistro|emerald) echo 10 ;; *) echo 4 ;; esac; }
+mcap_of() { case "${1%%_*}" in bistro|emerald) echo 10 ;; *) echo 4 ;; esac; }
 
 stage=${1:-}
 shift || true
@@ -149,6 +173,7 @@ case "$stage" in
             ls "$d"*/c.corr.json >/dev/null 2>&1 && python "$T/sheet.py" "${d%/}"
         done ;;
     *)
-        sed -n 2,20p "$0"
+        sed -n 2,22p "$0"
         exit 1 ;;
 esac
+finish_scoring
