@@ -235,7 +235,7 @@ private:
         int mMutationCount = 0;
         uint32_t mMutationStrategyMask = 3;         ///< bit 0 light vertex, bit 1 scatter depth
         float mMutationLightStepMin = 1.f / 1024.f; ///< torus step in the emitter's area-uniform u
-        float mMutationLightStepMax = 1.f / 64.f;
+        float mMutationLightStepMax = 0.25f;        ///< up to a quarter of the triangle (bistro accepts 95%)
         float mMutationDirStepMinDeg = 0.1f;        ///< env-map rotation angle
         float mMutationDirStepMaxDeg = 5.f;
         float mMutationDepthStepMin = 0.5f;         ///< scatter-depth step, in ray-march steps
