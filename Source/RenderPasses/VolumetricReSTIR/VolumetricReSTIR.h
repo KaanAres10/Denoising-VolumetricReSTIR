@@ -427,6 +427,10 @@ private:
 
     bool mOptionsChanged = true;
     bool mRandomizeFrameSpeed = false;
+    /// >= 0: the next history reset starts mFrameCount here, then this reverts to -1. Every random
+    /// stream is seeded from mFrameCount, so chains given non-overlapping ranges are separately
+    /// seeded; overlapping ranges would replay the same random numbers (correlation_pose.py).
+    int mFrameSeed = -1;
 
     // light animation
     bool mLastAnimateEnvLight = false;

@@ -57,6 +57,7 @@ namespace
     const std::string kSurfaceColor = "surfaceColor";
     const std::string kEmissiveColor = "emissiveColor";
     const std::string kNonEmissiveColor = "nonEmissiveColor";
+    const std::string kSampleIdentity = "sampleIdentity";
 
     const Falcor::ChannelList kOutputChannels =
     {
@@ -115,7 +116,12 @@ namespace
         // Directly-visible emitters and everything else. RGBA32Float so the pair sums back to
         // accumulated_color exactly; at RGBA16 the round trip would not close.
         { kEmissiveColor, "gEmissiveColor", "radiance from directly-visible emitters", true /* optional */, ResourceFormat::RGBA32Float },
-        { kNonEmissiveColor, "gNonEmissiveColor", "radiance excluding directly-visible emitters", true /* optional */, ResourceFormat::RGBA32Float }
+        { kNonEmissiveColor, "gNonEmissiveColor", "radiance excluding directly-visible emitters", true /* optional */, ResourceFormat::RGBA32Float },
+        // Diagnostic for the decorrelation study (docs/superpowers/specs/2026-09-27-restir-mcmc-
+        // decorrelation-design.md): which sample the final reservoir holds. .xy = a 32-bit hash of
+        // (depth, lightUV, lightID) split 24/8 bits so a float EXR stores it exactly, .z = lightID + 4
+        // (>= 1; 0 = no sample -- captures drop alpha, so validity cannot live in .w).
+        { kSampleIdentity, "gSampleIdentity", "final reservoir sample identity (diagnostic)", true /* optional */, ResourceFormat::RGBA32Float }
     };
 
     const Gui::DropdownList kEmissiveSamplerList =
@@ -248,6 +254,7 @@ void VolumetricReSTIR::parseProperties(const Properties& props)
     props.getTo("mOutputMotionVec", mOutputMotionVec);
     props.getTo("mTransposePrevMatrices", mTransposePrevMatrices);
     props.getTo("mApplyPrevJitter", mApplyPrevJitter);
+    props.getTo("frameSeed", mFrameSeed);
 
     // Back-compat: the old boolean selects the legacy stochastic writer.
     if (mOutputMotionVec && mMotionVecMode == MotionVecMode::Off) mMotionVecMode = MotionVecMode::Legacy;
@@ -634,7 +641,8 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
 
     if (mOptionsChanged)
     {
-        if (mRandomizeFrameSpeed) mFrameCount = rand() % 65536;
+        if (mFrameSeed >= 0) { mFrameCount = mFrameSeed; mFrameSeed = -1; }
+        else if (mRandomizeFrameSpeed) mFrameCount = rand() % 65536;
         else mFrameCount = 0;
         mTemporalSampleAccumulated = 0;
         Dictionary& dict = renderData.getDictionary();
@@ -905,6 +913,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             program->addDefine("VR_OUTPUT_SURFACE_COLOR", b(renderData.getTexture(kSurfaceColor) != nullptr));
             program->addDefine("VR_OUTPUT_EMISSIVE_COLOR", b(renderData.getTexture(kEmissiveColor) != nullptr));
             program->addDefine("VR_OUTPUT_NON_EMISSIVE_COLOR", b(renderData.getTexture(kNonEmissiveColor) != nullptr));
+            program->addDefine("VR_OUTPUT_SAMPLE_IDENTITY", b(renderData.getTexture(kSampleIdentity) != nullptr));
         }
 
         // Thread-group size of the four big kernels, which sets their register budget (defaults and
@@ -1307,6 +1316,9 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         if (pNonEmissive) vars["gNonEmissiveColor"] = pNonEmissive;
         vars["CB"]["gOutputEmissiveColor"] = pEmissive != nullptr;
         vars["CB"]["gOutputNonEmissiveColor"] = pNonEmissive != nullptr;
+        ref<Texture> pSampleIdentity = renderData.getTexture(kSampleIdentity);
+        if (pSampleIdentity) vars["gSampleIdentity"] = pSampleIdentity;
+        vars["CB"]["gOutputSampleIdentity"] = pSampleIdentity != nullptr;
 
         if (mParams.mUseSurfaceScene)
             vars["gVBuffer"] = mVBuffer;

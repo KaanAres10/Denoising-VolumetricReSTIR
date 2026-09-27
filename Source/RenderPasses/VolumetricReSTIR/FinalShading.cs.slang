@@ -39,6 +39,7 @@ __exported import ReSTIRHelper;
 #include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
 import Utils.Math.MathHelpers;
+import Utils.Math.HashUtils;
 #include "Utils/Math/MathConstants.slangh"
 
 cbuffer CB
@@ -71,6 +72,8 @@ cbuffer CB
     // so emission can skip the filter.
     bool    gOutputEmissiveColor;
     bool    gOutputNonEmissiveColor;
+    // The decorrelation study's sample-identity diagnostic (see the channel list in VolumetricReSTIR.cpp).
+    bool    gOutputSampleIdentity;
     SamplingOptions gSamplingOptions;
     EnvMapSampler           envMapSampler; 
     EmissiveLightSampler    emissiveSampler; 
@@ -90,6 +93,7 @@ static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
 #define OUTPUT_SURFACE_COLOR (VR_SPECIALIZES(22) ? VR_OUTPUT_SURFACE_COLOR : gOutputSurfaceColor)
 #define OUTPUT_EMISSIVE_COLOR (VR_SPECIALIZES(23) ? VR_OUTPUT_EMISSIVE_COLOR : gOutputEmissiveColor)
 #define OUTPUT_NON_EMISSIVE_COLOR (VR_SPECIALIZES(24) ? VR_OUTPUT_NON_EMISSIVE_COLOR : gOutputNonEmissiveColor)
+#define OUTPUT_SAMPLE_IDENTITY (VR_SPECIALIZES(25) ? VR_OUTPUT_SAMPLE_IDENTITY : gOutputSampleIdentity)
 #else
 #define SAMPLING_OPTIONS gSamplingOptions
 #define USE_REFERENCE gUseReference
@@ -99,6 +103,7 @@ static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
 #define OUTPUT_SURFACE_COLOR gOutputSurfaceColor
 #define OUTPUT_EMISSIVE_COLOR gOutputEmissiveColor
 #define OUTPUT_NON_EMISSIVE_COLOR gOutputNonEmissiveColor
+#define OUTPUT_SAMPLE_IDENTITY gOutputSampleIdentity
 #endif
 // Input data to accumulate and accumulated output.
 StructuredBuffer<Reservoir> gCurReservoirs;
@@ -126,6 +131,11 @@ RWTexture2D<float4> gSurfaceColor;
 /// complementary-pair shape as the volume/surface split, and verifiable the same way.
 RWTexture2D<float4> gEmissiveColor;
 RWTexture2D<float4> gNonEmissiveColor;
+/// Which sample the final reservoir holds: .xy = hash of (depth, lightUV, lightID) split 24/8 bits, .z =
+/// lightID + 4 (>= 1, since lightID >= -3), all zero where there is no sample. Captures drop alpha, so
+/// .z > 0 is the validity test; .w = 1 is only a convenience for interactive views. Shifts copy depth and the light sample verbatim, so
+/// reservoirs sharing a sample share the hash -- the decorrelation study's duplicate heatmaps.
+RWTexture2D<float4> gSampleIdentity;
 #ifdef SURFACE_SCENE
 StructuredBuffer<VBufferItem> gVBuffer;
 #endif
@@ -348,6 +358,21 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
 
         gLightDir[pixelPos] = float4(wi, valid);
+    }
+
+    if (OUTPUT_SAMPLE_IDENTITY)
+    {
+        const Reservoir res = gCurReservoirs[pixelId];
+        float4 id = 0.f;
+        if (!USE_REFERENCE && res.runningSum > 0.f)
+        {
+            uint h = jenkinsHash(asuint(res.depth));
+            h = jenkinsHash(h ^ asuint(res.lightUV.x));
+            h = jenkinsHash(h ^ asuint(res.lightUV.y));
+            h = jenkinsHash(h ^ asuint(res.lightID));
+            id = float4(float(h & 0xFFFFFFu), float(h >> 24), float(res.lightID + 4), 1.f);
+        }
+        gSampleIdentity[pixelPos] = id;
     }
 }
 
