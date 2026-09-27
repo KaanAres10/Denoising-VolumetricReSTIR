@@ -889,8 +889,12 @@ converge (1385, 828 reads 0.0175 / 0.0189 in its halves -- the old reference's 0
 Cost, interleaved: solid angle alone, full scene 77.2-77.5 vs 77.6 ms (Generate Samples +0.5), volume only
 +0.4-1.0 ms. Light BVH + solid angle: full scene 84-87 (+8-12%), volume only 20.8-21.1 against 19.2-19.5.
 
-**The light BVH is not the default** (`VR_EMISSIVE_SAMPLER=bvh`, `mEmissiveSamplerTypeId` 1): it cuts the
-low-frequency error 8-13x with solid angle, for ~10% time, but it changes the fork's sampler.
+**The light BVH stays an option, not the default** (decided 2026-09-27; `VR_EMISSIVE_SAMPLER=bvh`,
+`mEmissiveSamplerTypeId` 1): with solid angle it cuts the raw low-frequency error 8-13x for ~10% time, but it
+changes the fork's sampler. Denoised (matched settings, bistro orbit, `fastmath/score.py`) it is only 1-2%
+steadier -- RELAX-SH s=32 9.23 -> 9.14, DLSS RR 8.57 -> 8.47 -- plus visibly correct light on the lamp frame
+beside the glass, which the power sampler reaches too rarely for the denoisers to keep. Side-by-side videos:
+`forkref/sidebyside.py`.
 
 **Pixels.** Every scene with emissive lights changes (every light sample draws two more random numbers, and
 near emitters sample differently): bistro volume-only 24% of pixels per frame, mean 19.462 -> 19.476; the
