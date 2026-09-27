@@ -323,7 +323,9 @@ def main(argv=None):
     radii = tuple(int(r) for r in a.radii.split(","))
     with open(os.path.join(a.run_dir, a.tag + ".schedule.json")) as fh:
         sched = json.load(fh)
-    color = lambda f: os.path.join(a.run_dir, "%s.VolumetricReSTIR.accumulated_color.%d.exr" % (a.tag, f))
+    # The captured output: the estimator's by default, a denoiser's when correlation_pose ran with one.
+    channel = sched.get("channel", "VolumetricReSTIR.accumulated_color")
+    color = lambda f: os.path.join(a.run_dir, "%s.%s.%d.exr" % (a.tag, channel, f))
     frames, chain_of_frame, index_in_chain = [], [], []
     for c, chain in enumerate(sched["chains"]):
         for k, f in enumerate(chain["frames"]):
@@ -334,7 +336,7 @@ def main(argv=None):
     index_in_chain = np.array(index_in_chain)
     stack, bad = load_luminance([color(f) for f in frames])
     K = len(frames)
-    res = {"run_dir": a.run_dir, "tag": a.tag, "scene": sched.get("scene"), "K": K,
+    res = {"run_dir": a.run_dir, "tag": a.tag, "scene": sched.get("scene"), "channel": channel, "K": K,
            "chains": len(sched["chains"]), "per_chain": len(sched["chains"][0]["frames"]),
            "warm": sched.get("warm"), "spacing": sched.get("spacing"), "env": sched.get("env", {}),
            "nonfinite": bad, "radii": list(radii), "mean_level": float(stack.mean())}
@@ -378,7 +380,7 @@ def main(argv=None):
     rings = {}
     dyy, dxx = np.mgrid[-h:h + 1, -h:h + 1]
     dist = np.rint(np.hypot(dyy, dxx)).astype(int)
-    for d in (1, 2, 4, 8):
+    for d in (d for d in (1, 2, 4, 8) if d <= h):
         ring = ac[dist == d]
         rings[str(d)] = {"mean": float(ring.mean()), "max": float(ring.max()), "min": float(ring.min())}
     res["autocorr"] = {"radial": prof.round(5).tolist(), "length_0.1": correlation_length(prof, 0.1),

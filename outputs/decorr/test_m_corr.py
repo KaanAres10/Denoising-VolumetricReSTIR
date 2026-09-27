@@ -204,10 +204,11 @@ class TestReferenceErrors(unittest.TestCase):
 class TestCommandLine(unittest.TestCase):
     """main() on a synthetic run directory laid out the way correlation_pose.py writes one."""
 
-    def make_run(self, root, tag, blur, ids=False):
+    def make_run(self, root, tag, blur, ids=False, channel=None):
         import cv2
         import json
         chains = []
+        name = channel or "VolumetricReSTIR.accumulated_color"
         f = 100
         noise = RNG.standard_normal((20, 60, 80))
         if blur:
@@ -217,7 +218,7 @@ class TestCommandLine(unittest.TestCase):
             for k in range(5):
                 lum = 1.0 + 0.2 * noise[c * 5 + k]
                 img = np.dstack([lum, lum, lum]).astype(np.float32)  # grey: luminance == value
-                cv2.imwrite(os.path.join(root, "%s.VolumetricReSTIR.accumulated_color.%d.exr" % (tag, f)), img)
+                cv2.imwrite(os.path.join(root, "%s.%s.%d.exr" % (tag, name, f)), img)
                 if ids and k == 0:
                     ident = np.zeros((60, 80, 3), np.float32)
                     ident[..., 2] = 3.0                      # every pixel holds an env sample
@@ -228,8 +229,20 @@ class TestCommandLine(unittest.TestCase):
                 frames.append(f)
                 f += 7
             chains.append({"seed": 1000 * c, "first": frames[0], "length": 30, "frames": frames})
+        sched = {"scene": "synthetic", "chains": chains, "burst": None, "warm": 8, "spacing": 7}
+        if channel:
+            sched["channel"] = channel
         with open(os.path.join(root, tag + ".schedule.json"), "w") as fh:
-            json.dump({"scene": "synthetic", "chains": chains, "burst": None, "warm": 8, "spacing": 7}, fh)
+            json.dump(sched, fh)
+
+    def test_reads_the_channel_the_schedule_names(self):
+        # A denoiser run captures the denoiser's output, not the estimator's.
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            self.make_run(root, "den", blur=False, channel="Denoiser.output")
+            res = mc.main([root, "--tag", "den", "--bootstrap", "50", "--radii", "1", "--half", "4"])
+            self.assertEqual(res["K"], 20)
+            self.assertEqual(res["channel"], "Denoiser.output")
 
     def test_end_to_end_with_baseline_and_identity(self):
         import tempfile
