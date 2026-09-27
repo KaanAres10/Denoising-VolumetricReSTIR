@@ -212,6 +212,18 @@ class TestBootstrap(unittest.TestCase):
         self.assertAlmostEqual(float(np.mean(draws)), res["value"], delta=0.01)
 
 
+class TestMediumMask(unittest.TestCase):
+    def test_medium_is_where_most_frames_scatter_in_the_medium(self):
+        # One row of four pixels over three frames: in the medium 3/3, 2/3, 1/3 and never (no sample).
+        in_medium = np.array([[1, 1, 1, 0], [1, 1, 0, 0], [1, 0, 0, 0]], bool)
+        frames = []
+        for m in in_medium:
+            sample = np.array([[5, 6, 7, -1]])
+            at_surface = ~m[None, :] & (sample >= 0)
+            frames.append((sample, np.zeros_like(sample), at_surface))
+        np.testing.assert_array_equal(mc.medium_mask(frames), [[True, True, False, False]])
+
+
 class TestReferenceErrors(unittest.TestCase):
     def test_frames_scored_in_parallel_match_one_at_a_time(self):
         ref = 1.0 + RNG.random((48, 80))
@@ -241,7 +253,7 @@ class TestReferenceErrors(unittest.TestCase):
 class TestCommandLine(unittest.TestCase):
     """main() on a synthetic run directory laid out the way correlation_pose.py writes one."""
 
-    def make_run(self, root, tag, blur, ids=False, channel=None):
+    def make_run(self, root, tag, blur, ids=False, channel=None, medium_cols=None):
         import cv2
         import json
         chains = []
@@ -261,6 +273,8 @@ class TestCommandLine(unittest.TestCase):
                     ident[..., 2] = 3.0                      # every pixel holds an env sample
                     yy, xx = np.mgrid[0:60, 0:80]
                     ident[..., 0] = (yy % 10) * 100 + xx     # repeats every 10 rows: 200 per 20x20 tile
+                    if medium_cols is not None:              # columns >= medium_cols: surface/background samples
+                        ident[..., 1] = np.where(xx < medium_cols, 0.0, 256.0)
                     cv2.imwrite(os.path.join(root, "%s.VolumetricReSTIR.sampleIdentity.%d.exr" % (tag, f)),
                                 ident[..., ::-1].copy())    # RGB -> BGR for OpenCV
                 frames.append(f)
@@ -280,6 +294,25 @@ class TestCommandLine(unittest.TestCase):
             res = mc.main([root, "--tag", "den", "--bootstrap", "50", "--radii", "1", "--half", "4"])
             self.assertEqual(res["K"], 20)
             self.assertEqual(res["channel"], "Denoiser.output")
+            self.assertNotIn("medium", res)  # no sampleIdentity captures, so no medium mask
+
+    def test_medium_region_uses_the_baselines_mask(self):
+        # Volume scenes: correlation inside the medium, on the no-reuse run's medium pixels, so the delta
+        # compares the same pixels in both runs.
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            args = ["--bootstrap", "100", "--radii", "1,2", "--half", "4"]
+            self.make_run(root, "base", blur=False, ids=True, medium_cols=30)
+            base = mc.main([root, "--tag", "base"] + args)
+            self.assertEqual(base["medium"]["mask"], "own")
+            self.assertEqual(base["medium"]["pixels"], 60 * 30)
+            self.make_run(root, "reuse", blur=True, ids=True, medium_cols=50)
+            res = mc.main([root, "--tag", "reuse", "--baseline", os.path.join(root, "base.corr.json")] + args)
+            self.assertEqual(res["medium"]["mask"], "baseline")
+            self.assertEqual(res["medium"]["pixels"], 60 * 30)
+            self.assertGreater(res["medium"]["rho"]["2"], 0.3)
+            self.assertGreater(res["delta"]["medium"]["2"]["ci"][0], 0.0)
+            self.assertTrue(os.path.exists(os.path.join(root, "reuse.medium.npy")))
 
     def test_end_to_end_with_baseline_and_identity(self):
         import tempfile

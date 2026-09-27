@@ -220,6 +220,22 @@ def light_ids(light, at_surface, surface_scene):
     return np.where(keep, light, -1)
 
 
+MEDIUM_THRESHOLD = 0.5
+
+
+def in_medium(sample, at_surface):
+    """Pixels whose reservoir sample scattered in the medium (not a surface, not the background)."""
+    return (sample >= 0) & ~at_surface
+
+
+def medium_mask(identities, threshold=MEDIUM_THRESHOLD):
+    """The medium region of a volume scene: pixels whose sample scattered in the medium in more than
+    `threshold` of the frames, from decoded sampleIdentity captures [(sample, light, at_surface), ...].
+    Correlation there is what the medium shows; the near-noiseless background around a volume would
+    otherwise outnumber it in an image-wide mean."""
+    return np.mean([in_medium(s, a) for s, _, a in identities], axis=0) > threshold
+
+
 def duplicate_map(ids, tile=20):
     """Per tile x tile block: pixels holding a sample some other pixel of the block also holds, i.e.
     count(valid) - count(distinct). Ids < 0 are pixels with no sample."""
@@ -431,16 +447,29 @@ def main(argv=None):
         def maps(p):
             sample, light, at_surface = decode_identity(read_exr(p)[..., :3][..., ::-1])
             return (duplicate_map(duplicate_ids(sample, light, at_surface, surface_scene)),
-                    duplicate_map(light_ids(light, at_surface, surface_scene)))
+                    duplicate_map(light_ids(light, at_surface, surface_scene)), in_medium(sample, at_surface))
 
         with ThreadPoolExecutor(8) as pool:
-            dmaps, lmaps = zip(*pool.map(maps, ids))
+            dmaps, lmaps, meds = zip(*pool.map(maps, ids))
         dmean, lmean = np.mean(dmaps, axis=0), np.mean(lmaps, axis=0)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_sample.npy"), dmean)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_light.npy"), lmean)
         res["duplicates"] = {"frames": len(ids), "tile": 20,
                              "sample_mean": float(dmean.mean()), "sample_max": float(dmean.max()),
                              "light_mean": float(lmean.mean()), "light_max": float(lmean.max())}
+
+        # The medium region (robust), on the baseline's medium pixels when it has them, so a delta compares
+        # the same pixels in both runs.
+        own = np.mean(meds, axis=0) > MEDIUM_THRESHOLD
+        np.save(os.path.join(a.run_dir, a.tag + ".medium.npy"), own)
+        mask, source = own, "own"
+        if a.baseline and a.baseline.endswith(".corr.json"):
+            p = a.baseline[:-len(".corr.json")] + ".medium.npy"
+            if os.path.exists(p) and np.load(p).shape == own.shape:
+                mask, source = np.load(p), "baseline"
+        if mask.any():
+            block, _ = _rho_block(robust, radii, rmask & mask, a.bootstrap, chain_of_frame, rstats)
+            res["medium"] = {"mask": source, "pixels": int(mask.sum()), "threshold": MEDIUM_THRESHOLD, **block}
 
     # Against a reference.
     if a.ref:
@@ -454,7 +483,9 @@ def main(argv=None):
         with open(a.baseline) as fh:
             base = json.load(fh)
         res["delta"] = {}
-        for kind in ("raw", "robust"):
+        for kind in ("raw", "robust", "medium"):
+            if kind not in res or kind not in base:
+                continue
             res["delta"][kind] = {}
             for r in radii:
                 key = str(r)
@@ -475,6 +506,12 @@ def main(argv=None):
         d = res["delta"]["robust"].get(str(r8))
         if d:
             line += "  delta_robust(r%d)=%.4f [%.4f, %.4f]" % (r8, d["value"], d["ci"][0], d["ci"][1])
+    if "medium" in res:
+        line += "  medium(%s mask) %s" % (res["medium"]["mask"],
+                                          " ".join("r%s=%.4f" % (k, v) for k, v in res["medium"]["rho"].items()))
+        d =res.get("delta", {}).get("medium", {}).get(str(r8))
+        if d:
+            line += "  delta_medium(r%d)=%.4f [%.4f, %.4f]" % (r8, d["value"], d["ci"][0], d["ci"][1])
     print(line)
     return res
 
