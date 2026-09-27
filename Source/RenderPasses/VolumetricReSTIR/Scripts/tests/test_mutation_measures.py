@@ -1,0 +1,165 @@
+"""The measure assumptions the Phase-B mutations rest on, checked on numpy replicas of the shader math.
+
+A Metropolis-Hastings step accepts with min(1, p_hat(z) / p_hat(x)) only if the proposal is symmetric in
+the measure p_hat is a density in. For this estimator that is dt x area (emissive), dt x solid angle
+(env map); the reservoir stores the emissive point as the area-uniform u and the env direction as the
+lat-long uv, so these tests pin that:
+  - sample_triangle (Falcor MathHelpers.slang) maps u to area with a CONSTANT Jacobian, so a symmetric
+    step in u is a symmetric step in area on the fixed triangle;
+  - the inverse VolumeUtils.slang applies to the barycentrics it gets back recovers u;
+  - the lat-long maps round-trip, so the env move can go uv -> direction -> uv;
+  - the env move (rotate by a log-uniform angle, uniform azimuth) has a density that depends only on
+    the angle between the directions: symmetric in solid angle;
+  - the torus step frac(u + delta) and the depth step t + delta are symmetric.
+
+    python -m unittest test_mutation_measures -v
+"""
+import unittest
+
+import numpy as np
+
+RNG = np.random.default_rng(20260927)
+f32 = np.float32
+
+
+def sample_triangle(u):
+    """MathHelpers.slang: barycentrics (1-u-v, u, v) of the uniformly sampled point."""
+    su = np.sqrt(u[..., 0])
+    b = np.stack([1 - su, u[..., 1] * su], axis=-1)
+    return np.stack([1 - b[..., 0] - b[..., 1], b[..., 0], b[..., 1]], axis=-1)
+
+
+def stored_light_uv(bary_yz):
+    """VolumeUtils.slang: the random numbers u recovered from TriangleLightSample.uv = bary.yz."""
+    su = 1 - bary_yz[..., 0]
+    safe = np.where(su > 0, su, 1)
+    return np.stack([su * su, np.where(su > 0, np.clip(bary_yz[..., 1] / safe, 0, 1), 0)], axis=-1)
+
+
+def world_to_latlong_map(d):
+    p = d / np.linalg.norm(d, axis=-1, keepdims=True)
+    return np.stack([np.arctan2(p[..., 0], -p[..., 2]) * (0.5 / np.pi) + 0.5,
+                     np.arccos(np.clip(p[..., 1], -1, 1)) / np.pi], axis=-1)
+
+
+def latlong_map_to_world(uv):
+    phi = np.pi * (2 * np.clip(uv[..., 0], 0, 1) - 1)
+    theta = np.pi * np.clip(uv[..., 1], 0, 1)
+    return np.stack([np.sin(theta) * np.sin(phi), np.cos(theta), -np.sin(theta) * np.cos(phi)], axis=-1)
+
+
+def perp_stark(u):
+    """MathHelpers.slang: a unit vector perpendicular to u."""
+    a = np.abs(u)
+    uyx = (a[..., 0] - a[..., 1]) < 0
+    uzx = (a[..., 0] - a[..., 2]) < 0
+    uzy = (a[..., 1] - a[..., 2]) < 0
+    xm = uyx & uzx
+    ym = ~xm & uzy
+    zm = ~(xm | ym)
+    v = np.cross(u, np.stack([xm, ym, zm], axis=-1).astype(u.dtype))
+    return v / np.linalg.norm(v, axis=-1, keepdims=True)
+
+
+def kelemen_step(lo, hi, u):
+    """MutateSamples.cs.slang: magnitude hi * exp(-log(hi / lo) * u.x), sign from u.y."""
+    s = hi * np.exp(-np.log(hi / lo) * u[..., 0])
+    return np.where(u[..., 1] < 0.5, s, -s)
+
+
+def rotate_proposal(w, lo, hi, n):
+    """MutateSamples.cs.slang's env-map move from direction w: n proposals."""
+    theta = np.abs(kelemen_step(lo, hi, RNG.random((n, 2))))
+    phi = 2 * np.pi * RNG.random(n)
+    w = np.broadcast_to(w, (n, 3))
+    t = perp_stark(w)
+    b = np.cross(w, t)
+    w2 = np.cos(theta)[:, None] * w + np.sin(theta)[:, None] * (np.cos(phi)[:, None] * t + np.sin(phi)[:, None] * b)
+    return w2 / np.linalg.norm(w2, axis=-1, keepdims=True)
+
+
+def ks_distance(a, b):
+    """Two-sample Kolmogorov-Smirnov statistic."""
+    a, b = np.sort(a), np.sort(b)
+    grid = np.concatenate([a, b])
+    return np.max(np.abs(np.searchsorted(a, grid, side="right") / len(a) - np.searchsorted(b, grid, side="right") / len(b)))
+
+
+class TestEmissiveTriangle(unittest.TestCase):
+    def test_triangle_warp_has_a_constant_jacobian(self):
+        # |det d(bary.yz)/du| = 0.5 everywhere: the unit square of u maps onto the half-unit
+        # barycentric triangle uniformly, so a step symmetric in u is symmetric in area.
+        u = np.column_stack([RNG.uniform(1e-3, 1 - 1e-3, 1000), RNG.uniform(1e-3, 1 - 1e-3, 1000)])
+        h = 1e-6
+        J = np.empty((1000, 2, 2))
+        for j in range(2):
+            e = np.zeros(2)
+            e[j] = h
+            J[:, :, j] = (sample_triangle(u + e)[:, 1:] - sample_triangle(u - e)[:, 1:]) / (2 * h)
+        np.testing.assert_allclose(np.abs(np.linalg.det(J)), 0.5, rtol=1e-6)
+
+    def test_stored_light_uv_recovers_the_random_numbers(self):
+        u = np.column_stack([RNG.uniform(1e-3, 1, 100000), RNG.uniform(0, 1, 100000)]).astype(f32)
+        back = stored_light_uv(sample_triangle(u)[:, 1:].astype(f32))
+        np.testing.assert_allclose(back, u, atol=1e-5)
+
+
+class TestEnvMap(unittest.TestCase):
+    def test_latlong_maps_round_trip_away_from_the_poles(self):
+        uv = np.column_stack([RNG.uniform(0, 1, 100000), RNG.uniform(0.01, 0.99, 100000)]).astype(f32)
+        back = world_to_latlong_map(latlong_map_to_world(uv).astype(f32)).astype(f32)
+        du = np.abs(back[:, 0] - uv[:, 0])
+        du = np.minimum(du, 1 - du)  # u wraps at the seam
+        self.assertLess(du.max(), 1e-5)
+        self.assertLess(np.abs(back[:, 1] - uv[:, 1]).max(), 1e-5)
+
+    def test_rotation_proposal_density_depends_only_on_the_angle(self):
+        # Two very different starting directions (near a pole, on the equator): the distribution of the
+        # angle to the proposal is the same, and it is exactly the drawn theta in [lo, hi].
+        lo, hi, n = np.radians(0.1), np.radians(5.0), 1_000_000
+        angles = []
+        for w in (np.array([0.05, 0.998, 0.03]), np.array([0.8, 0.0, -0.6])):
+            w = w / np.linalg.norm(w)
+            w2 = rotate_proposal(w, lo, hi, n)
+            angles.append(np.arccos(np.clip(w2 @ w, -1, 1)))
+        self.assertLess(ks_distance(*angles), 0.003)
+        for a in angles:
+            self.assertGreaterEqual(a.min(), lo * 0.999)
+            self.assertLessEqual(a.max(), hi * 1.001)
+
+    def test_rotation_proposal_azimuth_is_uniform(self):
+        # Uniform azimuth about w makes the density at w' a function of angle(w, w') alone, which is
+        # symmetric in w and w'.
+        w = np.array([0.3, -0.5, 0.81])
+        w = w / np.linalg.norm(w)
+        w2 = rotate_proposal(w, np.radians(0.1), np.radians(5.0), 200000)
+        t = perp_stark(w[None])[0]
+        b = np.cross(w, t)
+        az = np.arctan2(w2 @ b, w2 @ t)
+        hist, _ = np.histogram(az, bins=36, range=(-np.pi, np.pi))
+        self.assertLess(np.abs(hist / hist.mean() - 1).max(), 0.05)
+
+
+class TestSteps(unittest.TestCase):
+    def test_torus_step_is_symmetric(self):
+        u = RNG.random(1_000_000)
+        d = kelemen_step(1 / 1024, 1 / 64, RNG.random((1_000_000, 2)))
+        moved = np.mod(u + d, 1.0)
+        wrapped = (moved - u + 0.5) % 1.0 - 0.5  # signed torus displacement
+        np.testing.assert_allclose(wrapped, d, atol=1e-12)  # steps are far below the half-period
+        self.assertLess(ks_distance(wrapped, -wrapped), 0.003)
+        self.assertLess(abs(wrapped.mean()), 1e-4)
+
+    def test_kelemen_step_magnitude_is_log_uniform_and_the_sign_fair(self):
+        lo, hi = 0.5, 16.0
+        d = kelemen_step(lo, hi, RNG.random((1_000_000, 2)))
+        mag = np.abs(d)
+        self.assertGreaterEqual(mag.min(), lo * 0.9999)
+        self.assertLessEqual(mag.max(), hi * 1.0001)
+        hist, _ = np.histogram(np.log(mag), bins=20, range=(np.log(lo), np.log(hi)))
+        self.assertLess(np.abs(hist / hist.mean() - 1).max(), 0.03)
+        self.assertLess(abs((d > 0).mean() - 0.5), 0.002)
+
+
+if __name__ == "__main__":
+    unittest.main()
