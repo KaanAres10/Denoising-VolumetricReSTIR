@@ -7,6 +7,7 @@
 #   run_study.sh refs <label>         a path-traced reference (not bistro: forkref's v9sa_ref is used)
 #   run_study.sh denoise <label> [N]  every denoiser, as shipped vs no reuse, at the still pose; with N,
 #                                     as shipped + N mutations instead (den_<denoiser>_mutN)
+#   run_study.sh one <label> <config> [VAR=value...]   a single config (e.g. equal-time runs)
 #   run_study.sh mutate1 [labels...]  one mutation (light + depth) on every scene (or the labels given)
 #   run_study.sh mutate <label>       Phase B: mutations 1 and 5 x strategy light / depth / both, and one
 #                                     mutation at M caps 10 / 50 / 200 (the shipped cap is mut1_both)
@@ -176,6 +177,8 @@ case "$stage" in
             # shellcheck disable=SC2086
             cap "$l" "den_${name}_shipped" VR_DENOISER="$mode" "${extra[@]}" $LOOK
         done ;;
+    one)
+        cap "$@" ;;
     mutate1)
         for l in ${@:-$ALL}; do cap "$l" mut1_both VR_MUTATIONS=1 VR_MUT_STRAT=light,depth VR_MUT_STATS=1; done ;;
     mutate)
@@ -197,7 +200,7 @@ case "$stage" in
             ls "$d"*/c.corr.json >/dev/null 2>&1 && python "$T/sheet.py" "${d%/}"
         done ;;
     *)
-        sed -n 2,26p "$0"
+        sed -n 2,27p "$0"
         exit 1 ;;
 esac
 finish_scoring
