@@ -40,6 +40,9 @@
 __exported import ReSTIRHelper;
 #include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
+#if VR_DUP_CAP_RANDOM
+import Utils.Math.HashUtils;
+#endif
 
 cbuffer CB
 {
@@ -318,7 +321,15 @@ void main(uint3 DTid : SV_DispatchThreadID)
         float historyCap = gTemporalHistoryThreshold;
         if (numUsedReservoirs == 2)
         {
-            const float t = pow(saturate(gDuplication[getPixelID(reprojScreenPos, gResolution)]), gDuplicationCapPower);
+#if VR_DUP_CAP_RANDOM
+            // Diagnostic (VR_SLANG_ARGS=-DVR_DUP_CAP_RANDOM=1): the same per-pixel cap from a random fraction
+            // that does not depend on any sample. GRIS is unbiased for such confidences, so a bias that survives
+            // this is the implementation's and one that goes away is the state dependence of the real map.
+            const float fraction = float(jenkinsHash(uint(pixelId) ^ jenkinsHash(uint(gFrameCount))) & 0xFFFFu) / 65535.f;
+#else
+            const float fraction = gDuplication[getPixelID(reprojScreenPos, gResolution)];
+#endif
+            const float t = pow(saturate(fraction), gDuplicationCapPower);
             historyCap = max(1.f, lerp(gTemporalHistoryThreshold, 1.f, t));
         }
         float MaxPrevM = historyCap * curM;

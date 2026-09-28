@@ -647,9 +647,12 @@ void VolumetricReSTIR::runDuplicationMap(RenderContext* pRenderContext, const re
     {
         DefineList defines = mDefaultDefines;
         defines.add("MAX_BOUNCES", "1");
-        mDuplicationMapPass = createSimpleComputePass(mpDevice, kShaderDirectory + "DuplicationMap.cs.slang", "main", defines);
-        // Reservoir.slang imports the scene module, so the pass needs the scene defines; this also creates
-        // its vars, which createSimpleComputePass defers.
+        // Reservoir.slang imports the scene module, so the pass needs the scene defines (updateSceneDefines, which
+        // also creates the vars createSimpleComputePass defers) and, on surface scenes, the scene's shader modules
+        // for the material type conformances updateSceneDefines adds.
+        const std::string file = kShaderDirectory + "DuplicationMap.cs.slang";
+        mDuplicationMapPass = mParams.mUseSurfaceScene ? createSceneComputePass(mpDevice, file, "main", defines, mpScene)
+                                                       : createSimpleComputePass(mpDevice, file, "main", defines);
         updateSceneDefines(mDuplicationMapPass, mpScene);
     }
     const uint32_t count = dims.x * dims.y;
