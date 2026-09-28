@@ -146,7 +146,10 @@ def make(root, label, ref_path=None, out=None, size=360):
     for cfg in ("noreuse", "shipped"):
         a.plot(rad, [corr[cfg]["robust"]["rho"][str(x)] for x in rad], "o-", label=cfg)
     a.set_xscale("log", base=2); a.set_xlabel("box radius r (px)"); a.set_ylabel("rho(r)"); a.legend(); a.set_title("mean neighbour correlation")
-    t = corr["shipped"].get("temporal") or json.load(open(os.path.join(root, label, "burst", "c.corr.json"))).get("temporal")
+    t = corr["shipped"].get("temporal")
+    burst = os.path.join(root, label, "burst", "c.corr.json")
+    if not t and os.path.exists(burst):  # labels without a burst run (the density sweep) get no temporal panel
+        t = json.load(open(burst)).get("temporal")
     a = ax[r, 2]; a.axis("on")
     if t:
         a.plot(t["rho"][:24], "o-", ms=3); a.axhline(0, color="k", lw=.5)
