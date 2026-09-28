@@ -288,6 +288,99 @@ Metropolis.
 Phase A results are recorded here as V1…Vn, each confirmed or dismissed, as in the earlier specs; Phase B's
 as V-B1…
 
+All Phase A numbers: 1920×1080, K = 100 captures (10 separately seeded chains × 10, spacing 5 — emerald 3 —
+from the bursts), warm-up max(256, 4·Mcap), 95% CIs from a bootstrap over chains. ρ̄(r) is the robust
+Eq. 21 correlation (clamped luminance, worst 0.01% of pixels out), Δρ̄ its excess over the same scene without
+reuse. "Smoke" is m_corr's `medium` block: pixels whose sample scattered in the medium in most frames, on the
+no-reuse run's mask. Volume scenes re-rendered after the env-background fix (924506c); bistro has no env
+background, emerald's is 1000× dimmer (−0.03%), so theirs stand. `outputs/decorr/summary.tsv` has every run.
+
+### V1 — reuse correlates neighbouring pixels on every scene: confirmed
+
+| Scene | Δρ̄(8) whole | Δρ̄(8) smoke | shared-sample px / 400 (frame) | relMSE reuse / none | bias vs ref |
+|---|---|---|---|---|---|
+| emerald (fog + surfaces) | 0.0196 | 0.0223 | 147 (+131 emitter) | 0.00046 / 0.0177 | −0.03% |
+| bistro (smoke + surfaces) | 0.0142 | 0.0251¹ | 170 (+252 emitter) | 0.00087 / 0.0228 | 0.00% |
+| plume g = −0.9 | 0.0141 | 0.0164 | 22 | 0.097 / 2.26 | +0.02% |
+| bunny g = 0.8 | 0.0075 | 0.0082 | 29 | 0.034 / 0.458 | 0.00% |
+| bunny | 0.0065 | 0.0074 | 28 | 0.035 / 0.477 | +0.01% |
+| plume | 0.0063 | 0.0072 | 19 | 0.031 / 0.436 | +0.03% |
+| wdas 1× | 0.0053 | 0.0059 | 37 | 0.053 / 0.476 | 0.00% |
+| explosion | 0.0053 | 0.0035 | 25 | 0.071 / 0.125 | −0.56% |
+
+¹ bistro's smoke mask is small (0.1% of pixels: most smoke pixels alternate between surface and medium
+samples), hence its CI [0.019, 0.031]. Inside the medium 100–110 of 400 pixels per tile share a sample on the
+volume scenes (the frame means above include background). No-reuse ρ̄ is 0 ± 1e-4 everywhere except bistro's
+smoke, which is slightly anti-correlated at 1 px (−0.016: final shading's stratified sampler). The variance of
+a 17×17 box average is 1 + 288 ρ̄ times the independent-pixel variance: 5.7× in the plume's smoke, 7.4× in
+emerald's fog, 7.9× in bistro's smoke at the shipped settings. Error: reuse is 1.7–38× lower in relMSE and
+1.3–4.1× lower after an 8 px blur — the blotches are correlated, but still less error than no reuse — except
+on the explosion, whose blurred error is 2.4× (8 px) to 3.7× (32 px) HIGHER with reuse: its −0.56% reuse
+bias is low-frequency by nature and survives the blur that averages the noise away. Open.
+
+### V2 — spatial reuse creates it, temporal history multiplies it: confirmed
+
+Temporal reuse alone adds nothing between pixels (Δρ̄(8) 0.0001 bistro, 0.0000 plume g = −0.9, 0.0004 emerald —
+the last flat over r, a frame-wide wobble). Spatial reuse alone adds the same on all three deep scenes
+(0.0052 / 0.0047 / 0.0050, dip at r = 2–4, rise at 8: the fixed offsets). Both together: 2.7–3.9× the
+spatial-only value — the history carries shared samples forward.
+
+### V3 — the M cap is the strongest lever; radius and rounds trade correlation for error: confirmed
+
+| Δρ̄(8) (smoke on the volumes) | cap 1 | shipped | 10 | 20 | 50 | 200 |
+|---|---|---|---|---|---|---|
+| plume g = −0.9 (shipped cap 4) | 0.009 | 0.016 | 0.021 | 0.025 | 0.044 | 0.120 |
+| bistro whole (cap 10) | 0.0071 | 0.0142 | — | 0.0170 | 0.0275 | 0.078 |
+| emerald fog (cap 10) | 0.010 | 0.022 | — | 0.023 | 0.026 | 0.056 |
+
+A longer history lowers error (bistro relMSE 0.00087 → 0.00050 at cap 200) until the correlated samples
+start to cost it (plume: 0.025 at cap 50, 0.029 at 200, blurred error 0.0074 → 0.0102). Reuse radius 3
+concentrates the correlation (ρ̄(1) ≈ 0.20 on all three), radius 30 removes it (Δρ̄(8) 0.002–0.004) at +37–
+69% relMSE — radius 10 is the lowest-error setting on all three, Lin et al.'s choice. Three spatial rounds:
+1.75–3× the correlation, reaching 16 px, for −29% relMSE (bistro).
+
+### V4 — the shared R2 offsets shape the correlation but do not cause it: confirmed
+
+Per-pixel offsets (VR_SR_PER_PIXEL_OFFSETS) RAISE Δρ̄(8) by 28–36% on all three deep scenes and shared
+samples (bistro 170 → 192 per tile): a frame-wide offset is a translation, so every source pixel feeds exactly
+one pixel per slot; per-pixel offsets collide. What the shared pattern does is put the correlation at fixed
+offsets — isolated autocorrelation peaks at (5,4) 0.071 and (7,0) 0.056 against a 1-px ring mean of 0.025
+(bistro), smoothed away by per-pixel offsets. Keep the shared offsets.
+
+### V5 — exact-sample vs emitter sharing: emitter sharing dominates the surface scenes
+
+Per 20×20 tile, whole frame: bistro 170 pixels share an exact sample and 252 an emissive triangle; emerald 147
+and 131; the volume scenes share exact samples only (env map + self-emission, no triangle IDs). Round-1
+mutations can break exact sharing, never emitter sharing (V-B2).
+
+### V6 — temporal: shipped ρ(τ = 1) ≈ 0.3, below 0.05 by lag 4–5 (emerald 3): confirmed (bursts)
+
+### V7 — what reaches the denoisers: temporal denoisers keep it, single-frame ones blur it
+
+Δρ̄(8) of the denoised output, reuse against no reuse through the same denoiser (plume g = −0.9, fixed build):
+OptiX +0.024, OIDN −0.053, NRD RELAX-SH +0.194, NRD REBLUR-SH +0.124, DLSS RR +0.024; bistro covariance at 8 px
+×1.1 / ×0.7 / ×16 / ×60 / ×2.4. NRD accumulates over frames, which averages independent noise away but not a
+sample shared across pixels and frames: the residual is 16–60× more low-frequency structure. OptiX and OIDN
+filter spatially and hide it (OIDN's ρ̄ even drops with reuse: it smooths the cleaner input less). The
+reuse-vs-none comparison after a denoiser is confounded by a 25× difference in input noise, so Phase B
+compares the same denoiser with and without mutations. Against the reference, OptiX and RR are dominated by
+their own bias (OptiX blurs bistro's facade texture 7% dark; RR's relMSE is unchanged by reuse).
+
+### V8 — Lin et al.'s density figure (wdas 0.2× / 1× / 3×): partly reproduced
+
+Smoke Δρ̄(8) 0.0072 / 0.0059 / 0.0044 — thinner media correlate more, and the 0.2× frames show the chroma
+speckle of Lin's figure. But reuse stays far ahead of no reuse on error: relMSE 0.014 vs 0.176, 0.053 vs 0.476,
+0.138 vs 0.677, all unbiased. Lin's "ReSTIR worse at 0.2×" compares against equal-time path tracing, not
+against the same pipeline without reuse, and ran on the Falcor 4 build.
+
+### V9 — measuring volumes: judge the smoke, not the frame (instrument fix)
+
+The image-wide ρ̄ weights every pixel alike, and 63–82% of a volume frame is near-noiseless background: it
+diluted the medium's correlation (plume g = −0.9, M cap 200: 0.106 whole vs 0.120 smoke on the fixed build) and,
+before 924506c, the bug's background pixels added their own (the ρ̄(1) = 0.18 spike at cap 50 was the bug).
+m_corr's `medium` block, on the no-reuse run's mask, is the volume headline. Also fixed along the way:
+emerald's display exposure (0 → run_emerald_square.py's +8.5 EV, display only).
+
 ### V-B1 — the mutations are unbiased (R4): confirmed
 
 `outputs/decorr/gate.sh`, 2026-09-27, mutations 0 vs 1 / 5 (light + depth, Kelemen steps as the defaults):
