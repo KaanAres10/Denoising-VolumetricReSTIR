@@ -187,7 +187,8 @@ def focus(root, label, configs, n=3, size=128, out=None, in_medium=False):
                 full.add_patch(plt.Rectangle((w[1].start, w[0].start), size, size, fill=False, ec="yellow", lw=1.5))
                 full.text(w[1].start, w[0].start - 8, str(i + 1), color="yellow", fontsize=11)
             a = ax[1 + i, j]
-            a.imshow(art.tonemap(img[w], k), interpolation="nearest")
+            kw = np.percentile(ref[w] @ mc.Y_RGB, 99) + 1e-9  # each zoom exposed for its own reference crop
+            a.imshow(art.tonemap(img[w], kw), interpolation="nearest")
             if img is not ref:
                 eb = np.sqrt(sum(cv2.GaussianBlur((img - ref)[..., c], (0, 0), 6)[w] ** 2 for c in range(3)))
                 a.set_title("region %d: blurred error %.1f%%" % (i + 1, 100 * eb.mean() / ((ref[w] @ mc.Y_RGB).mean() + 1e-12)), fontsize=10)
@@ -215,7 +216,7 @@ if __name__ == "__main__":
     ap.add_argument("--out")
     a = ap.parse_args()
     if a.focus:
-        print(focus(a.root, a.label, a.configs, in_medium=a.in_medium))
+        print(focus(a.root, a.label, a.configs, out=a.out, in_medium=a.in_medium))
     elif a.frames:
         print(frames(a.root, a.label, a.configs, a.size, a.out))
     else:
