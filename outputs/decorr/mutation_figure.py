@@ -33,7 +33,10 @@ def name(cfg):
         return NAMES[cfg]
     parts = cfg.split("_")
     out = []
-    if parts[0] == "mcap":
+    if parts[0] == "dec":
+        out.append("decoupled history,")
+        parts = parts[1:]
+    if parts and parts[0] == "mcap":
         out.append("M cap " + parts[1])
         parts = parts[2:]
     for p in parts:
@@ -42,7 +45,9 @@ def name(cfg):
             out.append("+ %s mutation%s" % (n, "" if n == "1" else "s"))
         elif p in ("light", "depth", "both"):
             out.append("(%s)" % p)
-    return " ".join(out) or cfg
+        elif p.startswith("dup"):
+            out.append("+ duplication cap %s" % (p[3] + "." + p[4:]))
+    return " ".join(out).rstrip(",") or cfg
 
 
 def make(root, label, configs, size=300, out=None):
