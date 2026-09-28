@@ -483,6 +483,89 @@ Same denoiser, shipped vs 1 mutation (bistro, plume g = −0.9): ρ̄(8) within 
 bistro −18%), blurred error unchanged — the raw decorrelation at these caps is 5–9%, and the denoisers see
 that. The long-history configurations (V-B3) are where a denoised comparison is worth running next.
 
+### V-B7 — root cause of the small effect: the correlation lives in shared normalizations, which mutations keep
+
+Not a bug: the kernel is unbiased (V-B1), its moves are accepted at sane rates, and a step size of 10⁶ drops
+acceptance to 0 as it must. The limit is structural. A pixel's estimate is f(y)·W = (f/p̂)(y) · runningSum/M,
+and here p̂ is the final shading's integrand evaluated on the coarse grid, so f/p̂ ≈ 1 and the estimate is
+≈ runningSum/M, the reservoir's normalization. Eq. 16 keeps that normalization by construction (the paper's
+Eq. 17). Pixels that resampled from the same inputs share their normalizations, and that part of the covariance
+is out of any mutation's reach; in the supplement's analysis it is the (p̄·W − 1) factor of Eq. 11, the input's own
+importance-sampling error, which mutations do not change; what they remove is the mismatch of neighbouring
+targets (Eq. 18), which is small in a smooth medium. Evidence, plume g = −0.9, smoke ρ̄(8):
+
+| | 0 mutations | 1 | 5 | 32 (depth) |
+|---|---|---|---|---|
+| spatial reuse only | 0.0054 | — | 0.0054 | — |
+| shipped (Mcap 4) | 0.0164 | 0.0150 | 0.0139 | 0.0136 |
+| Mcap 50 | 0.0439 | 0.0217 | 0.0152 | 0.0120 |
+
+1. Spatial-only correlation is identical to four decimals with 5 mutations: within one frame the mutations
+   change which sample a pixel offers, not the weight its neighbours receive for it.
+2. The mutations saturate: 32 remove 17% at the shipped cap and 73% at Mcap 50, leaving 0.012–0.014 — 2.2–2.5×
+   the spatial-only level.
+3. Sample identity is not the carrier: with 5 or 32 mutations a frame holds fewer duplicated samples than
+   spatial-only reuse (13.6 vs 18.3 pixels per 20×20 tile) and 2.5× its correlation. What mutations remove is
+   the persistence of "winner" samples, which grows with the M cap (Mcap 50: 29.0 → 13.0 duplicates per tile);
+   the rest is spatially shared normalization compounded through the history (spatial output → history →
+   next frame's spatial reuse).
+
+Literature agreeing: Lin et al. 2026 (ReSTIR PT Enhanced, §5) note that mutations "only reduce certain types of
+correlation" and cut the M cap where samples are duplicated instead; Zhou 2025 (thesis §5.5.5) keeps spatial
+output out of the history ("decoupled"), which "rarely suffers from correlation artifacts" at more noise;
+Junkins et al. 2026 frame ReSTIR's error–correlation trade-off as a Pareto curve that the M cap and the reuse
+radius move along. On that curve (`outputs/decorr/pareto_chart.png`) the mutations are a real improvement where the
+paper evaluates them — at a long history, equal error with 47–73% less correlation (plume Mcap 50: 0.044 →
+0.012; emerald: 0.026 → 0.014) — and a small one at the shipped caps, which already sit at the low-correlation
+end. Radius 30 at the shipped cap is well below the M-cap curve on both scenes (plume relMSE 0.166 at
+ρ̄ 0.0020; emerald 0.00063 at 0.0055).
+
+### V-B8 — sharing less: a decoupled history wins; a wide radius makes mutations pay; the duplication cap fails here
+
+Three fixes from the literature for the normalizations V-B7 found shared (b8ea445, all opt-in): a decoupled
+history (`VR_DECOUPLED=1`: the history is the temporal and mutated reservoir, spatial reuse only shades; Zhou 2025
+§5.5.5), a duplication-driven M cap (`VR_DUP_CAP=0.5`; Lin et al. 2026 §5, RTXDI's strength curve), and the
+reuse radius (Junkins et al. 2026 §6). Correlation in the medium, ρ̄(8); bias relative; blurred = RMS error at
+8 px (`outputs/decorr/pareto_chart.png`, `run_share.sh`, `run_share2.sh`):
+
+| plume g = −0.9 | smoke ρ̄(8) | relMSE | blurred 8 px | bias |
+|---|---|---|---|---|
+| shipped (Mcap 4) | 0.0164 | 0.0969 | 0.0096 | +0.02% |
+| Mcap 50 / + 5 mutations | 0.0439 / 0.0152 | 0.0250 / 0.0236 | 0.0075 / 0.0073 | +0.02% |
+| decoupled, Mcap 4 | 0.0050 | 0.2341 | 0.0098 | +0.01% |
+| decoupled, Mcap 50 (+ 5 mutations) | 0.0032 (0.0032) | 0.0462 (0.0452) | 0.0071 | +0.02% |
+| **decoupled, Mcap 200** | **0.0020** | **0.0265** | **0.0071** | +0.02% |
+| radius 30, Mcap 50 / + 5 mutations | 0.0077 / 0.0021 | 0.0643 / 0.0617 | 0.0075 / 0.0073 | +0.01% |
+| duplication cap, Mcap 50 / 200 | 0.0184 / 0.0304 | 0.335 / 1.24 | 0.138 / 0.222 | −0.1% |
+
+| Emerald (fog) | fog ρ̄(8) | relMSE | blurred 8 px | bias |
+|---|---|---|---|---|
+| shipped (Mcap 10) | 0.0223 | 0.00046 | 0.160 | −0.03% |
+| Mcap 50 / + 5 mutations | 0.0262 / 0.0140 | 0.00018 / 0.00018 | 0.100 / 0.105 | −0.09 / −0.14% |
+| decoupled, Mcap 10 | 0.0043 | 0.00192 | 0.176 | −0.01% |
+| decoupled, Mcap 50 (+ 5 mutations) | 0.0033 (0.0033) | 0.00069 (0.00069) | 0.127 | +0.02% |
+| **decoupled, Mcap 200** | **0.0025** | **0.00033** | **0.047** | −0.08% |
+| radius 30, Mcap 50 / **+ 5 mutations** | 0.0075 / **0.0035** | 0.00027 / **0.00026** | 0.119 / 0.109 | −0.04 / +0.01% |
+
+- **Decoupled history, long cap: better than shipped on every axis on both scenes** — plume 8× less correlation
+  and 3.7× less error, emerald 9× less correlation, 28% less error and 3.4× less blurred error. Without spatial
+  feedback the history no longer grows correlation with the cap (Mcap 200: 0.0020 decoupled vs 0.120 coupled),
+  so the cap can go long. Mutations add nothing there (0.0032 → 0.0032 on both scenes): the history-borne
+  sharing they remove is gone. Cost: none (a copy moves). Untested: motion — a decoupled history gets no
+  spatial help after disocclusion, and a long cap keeps stale samples when things move (Lin et al. Fig. 14).
+- **Radius 30 is where mutations pay off**: 5 mutations take plume 0.0077 → 0.0021 and emerald 0.0075 → 0.0035
+  (−54 to −73%; exact-sample sharing 72 → 8 pixels per tile on emerald). Neighbours 30 px apart have less
+  similar targets, and that mismatch (supplement Eq. 18) is what mutations remove. Emerald radius 30, Mcap 50,
+  5 mutations beats shipped by 84% in correlation and 43% in relMSE.
+- **The duplication cap fails on these volumes**: stationary bright blobs (≈50 where the reference is 0.15,
+  up to 1300 px) at the same two places near the plume's bright flame in independently seeded chains —
+  a systematic bias, not noise. The paper reports that the cap "introduces some bias"; here it is severe. The
+  control — the same cap curve from a random fraction that depends on no sample (`-DVR_DUP_CAP_RANDOM=1`,
+  Mcap 50) — has no blobs (largest 6 px vs 1285) and the plain cap's bias (+0.018% vs +0.019%): the per-pixel
+  caps are handled correctly, and the blobs come from the cap depending on the pixel's own sample (how widely
+  it was duplicated), which breaks GRIS's unbiasedness. The emerald runs failed on a pass-creation bug (surface
+  scenes need the scene's shader modules; fixed) and are being re-run.
+
 ### Found while checking the plume's look: temporal reuse brightened the env background (fixed, 924506c)
 
 `ReSTIRHelper.slang` looked background samples up with `envMapSampler.eval(ray.dir, isLastFrame)`; Falcor 9's

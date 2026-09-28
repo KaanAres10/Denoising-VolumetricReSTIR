@@ -45,9 +45,11 @@ def name(cfg):
             out.append("+ %s mutation%s" % (n, "" if n == "1" else "s"))
         elif p in ("light", "depth", "both"):
             out.append("(%s)" % p)
+        elif p.startswith("r") and p[1:].isdigit():
+            out.append(", radius %s" % p[1:])
         elif p.startswith("dup"):
             out.append("+ duplication cap %s" % (p[3] + "." + p[4:]))
-    return " ".join(out).rstrip(",") or cfg
+    return " ".join(out).replace(" ,", ",").rstrip(",") or cfg
 
 
 def make(root, label, configs, size=300, out=None):
@@ -104,7 +106,7 @@ def make(root, label, configs, size=300, out=None):
     curve.axhline(0, color="k", lw=0.5)
     curve.legend(fontsize=9)
     curve.set_title("correlation vs distance")
-    fig.suptitle("%s: what one mutation does (crop %dx%d inside the medium, the same frame and seed per row)"
+    fig.suptitle("%s: one frame per configuration (crop %dx%d inside the medium, the same frame and seed per row)"
                  % (label, size, size), fontsize=13)
     fig.tight_layout()
     out = out or os.path.join(root, "mutation_%s.png" % label)
