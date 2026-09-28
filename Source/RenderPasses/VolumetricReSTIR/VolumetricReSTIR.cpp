@@ -634,6 +634,37 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
     }
 }
 
+bool VolumetricReSTIR::duplicationCapActive() const
+{
+    return mParams.mDuplicationCapStrength > 0.f && !mParams.mUseReference && mParams.mEnableTemporalReuse &&
+           mParams.mMaxBounces == 1 && !mParams.mVertexReuse;
+}
+
+void VolumetricReSTIR::runDuplicationMap(RenderContext* pRenderContext, const ref<Buffer>& pReservoirs, uint2 dims)
+{
+    FALCOR_PROFILE(pRenderContext, "Duplication Map");
+    if (!mDuplicationMapPass)
+    {
+        DefineList defines = mDefaultDefines;
+        defines.add("MAX_BOUNCES", "1");
+        mDuplicationMapPass = createSimpleComputePass(mpDevice, kShaderDirectory + "DuplicationMap.cs.slang", "main", defines);
+        // Reservoir.slang imports the scene module, so the pass needs the scene defines; this also creates
+        // its vars, which createSimpleComputePass defers.
+        updateSceneDefines(mDuplicationMapPass, mpScene);
+    }
+    const uint32_t count = dims.x * dims.y;
+    if (!mDuplicationBuffer || mDuplicationBuffer->getElementCount() != count)
+    {
+        mDuplicationBuffer = mpDevice->createStructuredBuffer(sizeof(float), count, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+        pRenderContext->clearUAV(mDuplicationBuffer->getUAV().get(), uint4(0));
+    }
+    auto vars = mDuplicationMapPass->getRootVar();
+    vars["gReservoirs"] = pReservoirs;
+    vars["gDuplication"] = mDuplicationBuffer;
+    vars["CB"]["gResolution"] = dims;
+    mDuplicationMapPass->execute(pRenderContext, uint3(dims, 1));
+}
+
 void VolumetricReSTIR::updateSceneDefines(ref<ComputePass>& pPass, const ref<Scene>& pScene)
 {
     if (!pScene) return;
@@ -926,6 +957,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         setMask(mSpatialReusePass, spatialMask);
         setMask(mFinalShadingPass, finalMask);
         setMask(mMutateSamplesPass, spatialMask); // evaluates p_hat as Temporal Reuse does
+        if (mTemporalReusePass) mTemporalReusePass->getProgram()->addDefine("VR_DUP_CAP", duplicationCapActive() ? "1" : "0");
 
         // Compile-time mirrors of the light-kind switches and of reuse (see VolumeUtils.slang). They
         // come from the same parameters as the runtime flags in SamplingOptions / gNoReuse, so a light
@@ -1249,6 +1281,9 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
 
             vars["CB"]["gResolution"] = uint2(scrWidth, scrHeight);
             vars["CB"]["gTemporalHistoryThreshold"] = mParams.mTemporalReuseMThreshold;
+            // RTXDI's curve for ReSTIR PT Enhanced's history reduction: strength 0.5 gives t = fraction^0.1.
+            vars["CB"]["gDuplicationCapPower"] = 0.1f * std::exp2(6.f * (1.f - std::clamp(mParams.mDuplicationCapStrength, 0.f, 1.f)) - 3.f);
+            if (duplicationCapActive() && mDuplicationBuffer) vars["gDuplication"] = mDuplicationBuffer;
             vars["CB"]["gNumTotalRounds"] = numTotalRounds;
             vars["CB"]["gRoundOffset"] = numInitialSamplingRounds;
             vars["CB"]["gIsFirstFrame"] = mTemporalSampleAccumulated == 0;
@@ -1299,7 +1334,8 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             // the mutated samples, as in Sawhney et al.'s pipeline.
             if (mutate) runMutations(pRenderContext, totalRoundId, numTotalRounds, spatialOptions, renderDims);
 
-            if (!mParams.mEnableSpatialReuse)
+            // Without spatial reuse, or with a decoupled history, the history is this (mutated) temporal output.
+            if (!mParams.mEnableSpatialReuse || mParams.mDecoupledHistory)
             {
                 pRenderContext->copyResource(mTemporalReservoirBuffer.get(), mPerPixelReservoirBuffer[totalRoundId].get());
                 if (mTemporalExtraBounceReservoirBuffer && mParams.mMaxBounces > 1)
@@ -1374,8 +1410,9 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             }
         }
 
+    // A decoupled history was copied right after temporal reuse: spatial reuse's output only shades.
     if (!mFreezeFrame)
-        if (!mParams.mUseReference && mParams.mEnableTemporalReuse)
+        if (!mParams.mUseReference && mParams.mEnableTemporalReuse && !(mParams.mDecoupledHistory && mParams.mEnableSpatialReuse))
         {
             // launch a shader to copy resources
             FALCOR_PROFILE(pRenderContext, "Copy resource");
@@ -1392,6 +1429,10 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
             vars["gTemporalReservoirs"] = mTemporalReservoirBuffer;
             mCopyReservoirPass->execute(pRenderContext, uint3(renderDims, 1));
         }
+
+    // What next frame's temporal reuse caps by: duplication among the reservoirs final shading uses.
+    if (!mFreezeFrame && duplicationCapActive())
+        runDuplicationMap(pRenderContext, mPerPixelReservoirBuffer[totalRoundId % 2], renderDims);
 
     {
         FALCOR_PROFILE(pRenderContext, "Final Shading");
@@ -2076,6 +2117,12 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
             dirty |= widget.var("Depth step min (march steps)", mParams.mMutationDepthStepMin, 1e-3f, 1e3f);
             dirty |= widget.var("Depth step max (march steps)", mParams.mMutationDepthStepMax, 1e-3f, 1e3f);
             widget.checkbox("Log acceptance rates", mParams.mMutationStats);
+            dirty |= widget.checkbox("Decoupled history", mParams.mDecoupledHistory);
+            widget.tooltip("History = the temporal (and mutated) reservoir; spatial reuse's output only shades "
+                           "(Zhou 2025, sec. 5.5.5).", true);
+            dirty |= widget.var("Duplication M-cap strength", mParams.mDuplicationCapStrength, 0.f, 1.f);
+            widget.tooltip("0 = off. Each pixel's M cap falls toward 1 as more of its 17x17 window shares its "
+                           "sample (Lin et al. 2026).", true);
             groupMutations.release();
         }
 

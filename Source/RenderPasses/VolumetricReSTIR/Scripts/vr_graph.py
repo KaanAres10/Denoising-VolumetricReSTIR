@@ -499,6 +499,12 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
         props["mParams"]["mMutationStrategyMask"] = mutation_strategy_mask(os.environ["VR_MUT_STRAT"])
     if os.environ.get("VR_MUT_STATS"):
         props["mParams"]["mMutationStats"] = env_bool("VR_MUT_STATS", False)
+    # Sharing less: VR_DECOUPLED=1 keeps spatial reuse's output out of the history (Zhou 2025);
+    # VR_DUP_CAP=<strength in (0, 1]> lowers each pixel's M cap with duplication (Lin et al. 2026).
+    if os.environ.get("VR_DECOUPLED"):
+        props["mParams"]["mDecoupledHistory"] = env_bool("VR_DECOUPLED", False)
+    if os.environ.get("VR_DUP_CAP"):
+        props["mParams"]["mDuplicationCapStrength"] = float(os.environ["VR_DUP_CAP"])
     # VR_PARAMS='{"mTemporalMISMethod": 0}': any mParams fields, as JSON, merged last. For diagnostics.
     if os.environ.get("VR_PARAMS"):
         import json

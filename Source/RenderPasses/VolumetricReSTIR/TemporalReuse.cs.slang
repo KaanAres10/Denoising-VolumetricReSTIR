@@ -48,6 +48,7 @@ cbuffer CB
     int     gNumTotalRounds;
     int     gRoundOffset;
     float   gTemporalHistoryThreshold;
+    float   gDuplicationCapPower;   // VR_DUP_CAP: exponent on the duplication fraction, see mDuplicationCapStrength
     bool    gIsFirstFrame;
     uint    gMISMethod;
     float4x4 gPrevViewMat;
@@ -93,6 +94,10 @@ RWTexture2D<float2> gMotionVec;
 StructuredBuffer<VBufferItem> gVBuffer;
 StructuredBuffer<VBufferItem> gTemporalVBuffer;
 #endif
+/// DuplicationMap.cs.slang's output for last frame's final reservoirs, per pixel; read only with VR_DUP_CAP.
+/// Declared either way: the pass's vars are built once, so a define that added a resource would leave
+/// them without it.
+StructuredBuffer<float> gDuplication;
 /// GuideLightStats.cs.slang's running average of (medium light, coverage, surface light, transmittance).
 Texture2D<float4> gGuideLightStats;
 
@@ -306,7 +311,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
         if (gOutputMotionVec) gMotionVec[pixelPos] = (reprojScreenPos - pixelPos) / float2(gResolution);
 
         float curM = taps[0].M;
+#if VR_DUP_CAP
+        // Duplication-based history reduction (Lin et al. 2026): the cap falls from the threshold toward 1
+        // as more of the history pixel's 17x17 window held the same sample last frame (DuplicationMap.cs.slang).
+        // The one cap enters every tap's Talbot weight alike, so the weights still sum to one.
+        float historyCap = gTemporalHistoryThreshold;
+        if (numUsedReservoirs == 2)
+        {
+            const float t = pow(saturate(gDuplication[getPixelID(reprojScreenPos, gResolution)]), gDuplicationCapPower);
+            historyCap = max(1.f, lerp(gTemporalHistoryThreshold, 1.f, t));
+        }
+        float MaxPrevM = historyCap * curM;
+#else
         float MaxPrevM = gTemporalHistoryThreshold * curM;
+#endif
 
         // convert depths to current frame depths
         if (numUsedReservoirs == 2)

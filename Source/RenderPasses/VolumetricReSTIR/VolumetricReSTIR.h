@@ -79,6 +79,8 @@ private:
     bool mutationsActive() const;
     void createMutateSamplesPass();
     void runMutations(RenderContext* pRenderContext, int bufferId, int numTotalRounds, SamplingOptions options, uint2 dims);
+    bool duplicationCapActive() const;
+    void runDuplicationMap(RenderContext* pRenderContext, const ref<Buffer>& pReservoirs, uint2 dims);
     bool updateLights(RenderContext* pRenderContext);
     void beginFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void toggleCameraAnimation();
@@ -129,6 +131,8 @@ private:
     ref<ComputePass> mMutateSamplesPass;   ///< created on first use, see mutationsActive()
     ref<Buffer> mMutationStatsBuffer;      ///< MutateSamples' counters, see kMutationStatNames
     int mMutationStatFrames = 0;
+    ref<ComputePass> mDuplicationMapPass;  ///< created on first use, see duplicationCapActive()
+    ref<Buffer> mDuplicationBuffer;        ///< last frame's duplication fraction per pixel (DuplicationMap.cs.slang)
 
 
 	bool mFreezeFrame = false;
@@ -242,6 +246,18 @@ private:
         float mMutationDepthStepMax = 16.f;
         bool mMutationStats = false;                ///< log acceptance per strategy every 256 frames
 
+        /////////////////////
+        /// Sharing less. When p_hat is close to the integrand a pixel's estimate is close to its reservoir's
+        /// normalization, which mutations keep (Sawhney et al. 2024, Eq. 17), so what pixels share through
+        /// it only goes away by sharing less. Both off by default.
+        /////////////////////
+        /// The history is the temporal (and mutated) reservoir, not spatial reuse's output: spatial reuse
+        /// only shades, and what it shares no longer compounds from frame to frame (Zhou 2025, sec. 5.5.5).
+        bool mDecoupledHistory = false;
+        /// > 0: each pixel's M cap falls from mTemporalReuseMThreshold toward 1 as more of its 17x17
+        /// window held the same sample last frame (Lin et al. 2026). 1 = any duplication cuts the cap.
+        float mDuplicationCapStrength = 0.f;
+
         template<typename Archive>
         void serialize(Archive& ar)
         {
@@ -304,6 +320,8 @@ private:
             ar("mMutationDepthStepMin", mMutationDepthStepMin);
             ar("mMutationDepthStepMax", mMutationDepthStepMax);
             ar("mMutationStats", mMutationStats);
+            ar("mDecoupledHistory", mDecoupledHistory);
+            ar("mDuplicationCapStrength", mDuplicationCapStrength);
         }
     } mParams;
 

@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS",
               "VR_MUTATIONS", "VR_MUT_STRAT", "VR_MUT_STATS", "VR_INITIAL_M",
+              "VR_DECOUPLED", "VR_DUP_CAP",
               "VR_PARAMS")
 
 
@@ -192,6 +193,16 @@ class TestKnobs(StudyEnv):
         self.assertEqual(params["mMutationCount"], 5)
         self.assertIsInstance(params["mMutationCount"], int)
         self.assertIs(params["mMutationStats"], True)
+
+    def test_sharing_knobs(self):
+        params = self.restir_params()
+        self.assertNotIn("mDecoupledHistory", params)
+        self.assertNotIn("mDuplicationCapStrength", params)
+        os.environ.update({"VR_DECOUPLED": "1", "VR_DUP_CAP": "0.5"})
+        params = self.restir_params()
+        self.assertIs(params["mDecoupledHistory"], True)
+        self.assertEqual(params["mDuplicationCapStrength"], 0.5)
+        self.assertIsInstance(params["mDuplicationCapStrength"], float)
 
     def test_unknown_mutation_strategy_is_an_error(self):
         os.environ["VR_MUT_STRAT"] = "light,scatter"

@@ -10,6 +10,7 @@ target_sources(VolumetricReSTIR PRIVATE
     ArrayDataProvider.slang
     ComputeInitialSample.slang
     CopyReservoirs.cs.slang
+    DuplicationMap.cs.slang
     FinalShading.cs.slang
     GenerateFeatures.cs.slang
     GuideLightStats.cs.slang
