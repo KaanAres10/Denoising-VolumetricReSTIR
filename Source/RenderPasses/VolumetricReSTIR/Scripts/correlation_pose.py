@@ -136,9 +136,23 @@ else:
           % (NAME, len(s["chains"]), len(s["chains"][0]["frames"]), warm, vr.env_int("VR_SPACING", 33),
              vr.env_int("VR_BURST", 0), s["total"], [r["seed"] for r in runs]))
     m.clock.exitFrame = captures[-1] + 60
+    # VR_PASS_TIMES=1: median GPU time per pass over the run -> <TAG>.passes.json (as time_raw.py). The timer
+    # queries cost time themselves: use it in runs of its own, not in the correlation runs.
+    pass_times = vr.env_bool("VR_PASS_TIMES", False)
+    if pass_times:
+        m.profiler.enabled = True
+        m.profiler.start_capture(s["total"] + 16)
     for run in runs:
         g.get_pass("VolumetricReSTIR").set_properties({"frameSeed": run["seed"]})
         for _ in range(run["length"]):
             m.renderFrame()
+    if pass_times:
+        lanes = {}
+        for lane_name, lane in (m.profiler.end_capture() or {}).get("events", {}).items():
+            rec = sorted(r for r in lane["records"] if r == r)
+            if rec:
+                lanes[lane_name] = {"median": rec[len(rec) // 2], "mean": lane["stats"]["mean"], "n": len(rec)}
+        with open(os.path.join(OUT_DIR, TAG + ".passes.json"), "w") as fh:
+            json.dump(lanes, fh, indent=1)
     for _ in range(64):
         m.renderFrame()
