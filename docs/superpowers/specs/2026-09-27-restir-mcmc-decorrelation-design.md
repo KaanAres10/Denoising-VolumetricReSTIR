@@ -404,6 +404,85 @@ Offsets present WITHOUT mutations, not caused by them: the one-light plume's +2.
 Bistro's plume core +2.5% (no reuse is +4.2%: a reference/scene mismatch in that region); the explosion's
 −0.6% from reuse. Open.
 
+### V-B2 — how much one round of mutations decorrelates: 2–18% at the shipped M caps, 50–80% at long histories
+
+Relative covariance, Sawhney et al.'s Table 1 form (mean covariance within 8 px, mutated ÷ not, same M cap):
+
+| | 1 mutation (light + depth) | 5 mutations |
+|---|---|---|
+| Paper, ReSTIR PT, Mcap 50 (their scenes) | 0.69–0.93 | 0.61–0.88 |
+| Ours, shipped caps (4 / 10), whole image, all 10 scenes | 0.82–0.98 | 0.87–0.92 |
+| Ours, shipped caps, smoke | 0.71 (bistro) – 0.99 | 0.59 (bistro) – 0.91 |
+| **plume g = −0.9, Mcap 50** | **0.40 whole / 0.48 smoke** | — |
+| **plume g = −0.9, Mcap 200** | **0.22 / 0.21** | — |
+| emerald, Mcap 200 | 0.52 / 0.43 | — |
+
+Mutations also halve the pixels that share an exact sample (bistro 170 → 82, emerald 147 → 78, plume 22 → 16
+per 20×20 tile) and leave emitter sharing as it was (bistro 252) — round 1 cannot reach it. Per-pixel error is
+unchanged at the shipped caps (the paper's "little impact on MSE").
+
+Why small at the shipped caps: (1) with p̂ = luminance(f), Eq. 16 leaves the mutated pixel's own luminance
+estimate unchanged (the paper's Eq. 17; measured: 0.15% mean change) — mutations decorrelate only through what
+spatial and temporal reuse do with the diversified samples afterwards; (2) spatial reuse runs after the
+mutation and re-shares within the frame (the spatial-only part, a third of Δρ̄, is out of reach); (3) a 4–10×
+history is diluted by fresh candidates before diversity accumulates. The paper evaluates at Mcap 20–1000.
+
+### V-B3 — mutations make a long history usable: confirmed (the paper's Fig. 11, on volumes)
+
+| plume g = −0.9 | whole ρ̄(8) | smoke ρ̄(8) | relMSE | blurred err 8 px |
+|---|---|---|---|---|
+| shipped (Mcap 4) | 0.0141 | 0.0164 | 0.0969 | 0.0096 |
+| Mcap 50 | 0.0391 | 0.0439 | 0.0250 | 0.0074 |
+| Mcap 50 + 1 (depth only) | 0.0160 | 0.0174 | — | — |
+| **Mcap 50 + 5** | **0.0140** | **0.0152** | **0.0236** | 0.0073 |
+| Mcap 200 | 0.1057 | 0.1200 | 0.0286 | 0.0102 |
+| Mcap 200 + 1 | 0.0381 | 0.0415 | 0.0242 | 0.0078 |
+
+Mcap 50 + 5 mutations: the shipped correlation at a quarter of its error, unbiased (+0.02%). Past ~50 the
+correlated history costs error back (Mcap 200: relMSE 0.029, blurred 0.0102); one mutation takes that back
+(0.024, 0.0078). Emerald: Mcap 50 + 5 mutations has less correlation than shipped (fog 0.0140 vs 0.0223,
+whole 0.0162 vs 0.0196; 68 vs 147 shared-sample pixels per tile) at 2.5× lower relMSE (0.00018 vs 0.00046),
+bias −0.14% (no reuse −0.09%, within the scatter); depth-only 5: fog 0.0147 (emerald's emissive lamps let light
+moves help a little). In its fog the blurred single-frame error halves with the longer history (worst regions
+45 / 32 / 26% → 27 / 15 / 12%) and the mutations take the correlation.
+
+Why 50 (`outputs/decorr/mcap_chart.png`): error falls steeply with the cap up to ~50 and then flattens
+(emerald, bistro) or turns back up (plume g = −0.9 without mutations), while correlation keeps rising and
+accelerates past 50; at 50 the mutations bring it back to or below shipped. Between 50 and 200 with one
+mutation the error is the same (plume 0.0241 / 0.0242) and the correlation twice as high (0.022 / 0.042).
+Untested: caps 20–100 with mutations (the optimum may sit anywhere in that range), and any camera or medium
+motion — a long history keeps stale samples when things move (Lin et al. Fig. 14); every number here is a still
+pose on a static medium.
+
+### V-B4 — which moves: depth; light moves do not decorrelate these scenes
+
+Light moves (env rotation 0.1–5° or up to 30°, emitter u steps up to a quarter of the triangle) leave ρ̄ where
+it was on every scene (plume g = −0.9: 0.0164 with 1 or 5 light moves, 0.0164 with 30° steps at 14%
+acceptance). What a neighbour q gains from p's reused sample scales with p̂_q/p̂_p, and for adjacent pixels that
+ratio hardly depends on the light direction or the point on the emitter — it depends on where the scatter point
+is. Depth moves change exactly that. Mcap 50: 1 depth-only mutation 0.0174 vs 1 mixed 0.0217 (smoke). The
+paper's large DI gains come from glossy BSDF lobes, where p̂_q/p̂_p IS direction-dependent; volumes and diffuse
+surfaces lack that. Default depth steps (0.5–16 march steps) beat 0.05–1.6 (smoke 0.0150 vs 0.0160, 1 move;
+0.0139 vs 0.0153, 5) and match 2–64: in a dense medium every step exceeds the mean free path, so moves toward
+the camera are always accepted and deeper ones rejected (acceptance 0.499 at any step past the free path; 0.74 in
+the 0.2× cloud, 0.33 at 3×) — correct MH, one-way exploration. Next: an independence move that redraws the depth
+from the free-path distribution along the ray (Pauly's propagation idea), q in the acceptance ratio.
+
+### V-B5 — equal time and cost: on bistro, more initial candidates win
+
+One mutation costs 13.5 ms at 1080p on bistro (+15%; 5 cost 33 ms), the same as mInitialM 4 → 8. At equal time
+mInitialM 8 beats one mutation everywhere on bistro (whole ρ̄(8) 0.0119 vs 0.0137, relMSE 0.00072 vs 0.00086,
+blurred 0.0150 vs 0.0209) and mInitialM 14 beats five (0.0105 vs 0.0133): bistro's correlation is emitter
+sharing, which more candidates dilute and mutations cannot touch. A mutation evaluates p̂ twice (the current
+sample, then the proposal); the first is redundant (temporal output p_y equalled p̂(x₀) at every pixel) —
+about a third of the pass.
+
+### V-B6 — denoisers: one mutation at the shipped caps changes little
+
+Same denoiser, shipped vs 1 mutation (bistro, plume g = −0.9): ρ̄(8) within ±2.4%, covariance −2 to −6% (RR
+bistro −18%), blurred error unchanged — the raw decorrelation at these caps is 5–9%, and the denoisers see
+that. The long-history configurations (V-B3) are where a denoised comparison is worth running next.
+
 ### Found while checking the plume's look: temporal reuse brightened the env background (fixed, 924506c)
 
 `ReSTIRHelper.slang` looked background samples up with `envMapSampler.eval(ray.dir, isLastFrame)`; Falcor 9's
