@@ -3347,3 +3347,42 @@ brightness, and the medium's light per unit coverage is not flat across the silh
 truth, 2.70x the deep-smoke value at 1-3% coverage, 2.36x at 3-10%, 2.21x at 10-30%, 1.12x at 90-99%.
 The correction the moving frames would need runs from 1.01x (deep) to 2.08x (thinnest) and grows with
 camera speed, so any fixed curve fits the bias rather than fixing it.
+
+## Decorrelation study, Phase A: what ReSTIR's reuse correlates, and an env-background bug (2026-09-27/28)
+
+Branch `decorrelation`. Spec `docs/superpowers/specs/2026-09-27-restir-mcmc-decorrelation-design.md` (V1-V9, the
+full tables); runs in `outputs/decorr/` (`summary.tsv`, `artifacts_<scene>.png`), tools `m_corr.py` /
+`run_study.sh`. 1080p, 100 captures from 10 separately seeded chains per config, correlation as Sawhney et al.
+Eq. 21 against the same scene without reuse.
+
+**FIXED: temporal reuse brightened the environment background +7.9% (924506c).** `ReSTIRHelper.slang` looked
+background samples up with `envMapSampler.eval(ray.dir, isLastFrame)`, and Falcor 9's signature is
+`eval(dir, lod, isPrevFrame)`: every previous-frame evaluation -- the temporal Talbot weights' -- read the env
+map's mip 1. At a street lamp the sharp value exceeds the blurred one, the canonical sample's weight rose above
+its share, and the weights stopped summing to one. Plume at 1080p, temporal reuse vs no reuse: +7.89% before,
+-0.04% after (`outputs/decorr/bias_diag.sh`); brightest 1% of background pixels had been +9.4%, mid-bright
+ones -6%; medium pixels were always exact. Bunny +5.3% -> +0.01%. Dates from the Falcor 8 port (the other two
+env lookups in the file were ported as `(dir, 0.f, isLastFrame)`). Bistro has no env background: raw 300/300
+byte-identical to rb_v9p_raw after the fix.
+
+What reuse correlates (Δρ̄(8), the excess mean neighbour correlation within 8 px, "smoke" = the medium's pixels):
+  * every scene: 0.004-0.025 at the shipped settings; the variance of a 17x17 box average is 5.7-7.9x the
+    independent-pixel one in the smoke. No reuse is uncorrelated (bistro's smoke slightly ANTI-correlated).
+  * spatial reuse creates it (0.005 on bistro, plume g=-0.9 and emerald alike); temporal reuse alone adds
+    none; together 2.7-3.9x -- the history carries the shared samples forward.
+  * the M cap is the lever: plume g=-0.9 smoke 0.009 (cap 1) -> 0.016 (4, shipped) -> 0.044 (50) -> 0.120
+    (200); past ~50 the correlation costs error back (relMSE 0.025 at cap 50, 0.029 at 200).
+  * radius 30 removes it (+37-69% relMSE); radius 3 concentrates it (ρ̄(1) 0.20); 3 rounds 1.75-3x.
+  * the shared R2 offsets PLACE it (autocorrelation peaks at fixed offsets) but per-pixel offsets make it
+    28-36% WORSE: a frame-wide offset is a permutation of source pixels, per-pixel ones collide.
+  * surface scenes are dominated by EMITTER sharing (bistro: 252 of 400 pixels per tile share a triangle, 170
+    an exact sample), which round-1 mutations cannot touch.
+  * denoisers: NRD RELAX/REBLUR keep it (plume g=-0.9 Δρ̄(8) +0.19 / +0.12 after denoising; bistro covariance
+    16x / 60x) -- temporal accumulation cannot average away a sample shared across pixels and frames; OptiX /
+    OIDN blur it (OIDN's even drops: it smooths the cleaner input less).
+  * WDAS density sweep (Lin's figure): thinner correlates more (smoke 0.0072 at 0.2x, 0.0044 at 3x), but reuse
+    is 5-12x lower relMSE than no reuse at every density, unbiased.
+  * judge volumes on the smoke: 63-82% of a volume frame is near-noiseless background that dilutes an
+    image-wide mean (plume g=-0.9, cap 200: 0.106 frame vs 0.120 smoke).
+Open, not caused by any of this work: the explosion's reuse bias (-0.56%, and 2.4-3.7x MORE blurred error
+than no reuse because of it), bistro's plume-core +2.5% against v9sa_ref, the one-light plume test's +2.1%.
