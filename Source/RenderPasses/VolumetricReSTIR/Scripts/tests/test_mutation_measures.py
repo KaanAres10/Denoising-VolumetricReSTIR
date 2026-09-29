@@ -160,6 +160,59 @@ class TestSteps(unittest.TestCase):
         self.assertLess(np.abs(hist / hist.mean() - 1).max(), 0.03)
         self.assertLess(abs((d > 0).mean() - 0.5), 0.002)
 
+def light_select_step(x, target, propose, q, u):
+    """MutateSamples.cs.slang's light re-selection (independence Metropolis-Hastings) on a replica state: draw z
+    from the scene's own light samplers, accept with min(1, p_hat(z) q(x) / (p_hat(x) q(z)))."""
+    z = propose()
+    pz, qz = target(z), q(z)
+    return z if pz > 0 and qz > 0 and u * target(x) * qz < pz * q(x) else x
+
+
+class TestLightSelect(unittest.TestCase):
+    def test_independence_move_keeps_the_mixed_target(self):
+        # One point light (a point mass), one emissive triangle (area, t in [0, 1)) and a sky (solid angle,
+        # reduced to an angle a in [0, pi)): p_hat and q are densities in that mixed measure, and the chain
+        # must spend on each part its share of the integral of p_hat -- whatever the proposal's kind
+        # probabilities or the sky sampler's importance.
+        point, tri_int, sky_int = 0.5, 1.0 / 3.0, 2.0 / np.pi   # integral of p_hat over each part
+        def target(s):
+            kind, v = s
+            return point if kind == 0 else (v * v if kind == 1 else np.sin(v) / np.pi)
+        pk = 1.0 / 3.0
+        def propose():
+            k = int(RNG.integers(0, 3))
+            if k == 0:
+                return (0, 0.0)
+            if k == 1:
+                return (1, RNG.random())                        # uniform point: q = pk / area
+            return (2, np.pi * np.sqrt(RNG.random()))          # importance on the sky: density 2a / pi^2
+        def q(s):
+            kind, v = s
+            return pk if kind == 0 else (pk if kind == 1 else pk * 2 * v / np.pi ** 2)
+        x, kinds, tri = (1, 0.9), np.zeros(3), []
+        for i in range(200000):
+            x = light_select_step(x, target, propose, q, RNG.random())
+            kinds[x[0]] += 1
+            if x[0] == 1:
+                tri.append(x[1])
+        total = point + tri_int + sky_int
+        np.testing.assert_allclose(kinds / kinds.sum(), [point / total, tri_int / total, sky_int / total], atol=0.01)
+        # Within the triangle the chain follows p_hat = t^2: its CDF is t^3.
+        self.assertLess(ks_distance(np.array(tri) ** 3, RNG.random(len(tri))), 0.02)
+
+    def test_the_inverted_ratio_is_caught(self):
+        # The same chain with q(z) / q(x) the wrong way round converges elsewhere: the test above can fail.
+        pk = 0.5
+        target = lambda s: 1.0 if s[0] == 0 else 1.0     # equal shares
+        propose = lambda: (0, 0.0) if RNG.random() < 0.9 else (1, 0.0)
+        q = lambda s: 0.9 if s[0] == 0 else 0.1
+        wrong = lambda x, u: (lambda z: z if u * target(x) * q(x) < target(z) * q(z) else x)(propose())
+        x, n0 = (0, 0.0), 0
+        for i in range(50000):
+            x = wrong(x, RNG.random())
+            n0 += x[0] == 0
+        self.assertGreater(abs(n0 / 50000 - 0.5), 0.2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -202,8 +202,9 @@ def focus(root, label, configs, n=3, size=128, out=None, in_medium=False):
             else:
                 a.set_title("region %d" % (i + 1), fontsize=10)
             a.axis("off")
-    fig.suptitle("%s: one frame each, same seed; regions = the shipped frame's worst blotches%s"
-                 % (label, " in the medium (error relative to local brightness)" if in_medium else ""), fontsize=13)
+    fig.suptitle("%s: one frame each, same seed; regions = the %s frame's worst blotches%s"
+                 % (label, name(configs[0]), " in the medium (error relative to local brightness)" if in_medium else ""),
+                 fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     out = out or os.path.join(root, "mutation_focus_%s%s.png" % (label, "_medium" if in_medium else ""))
     fig.savefig(out, dpi=70)

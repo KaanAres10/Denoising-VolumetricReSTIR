@@ -1,0 +1,9 @@
+# Stress scene (decorrelation study, spec V-B9): the plume's ground plane plus ONE point light, no sky -- the
+# unbiasedness test's lighting (VolumetricReSTIRData/plume_onelight.pyscene) with the heterogeneous plume, where
+# the coarse-grid target differs most from the exact transmittance (Ghost ReSTIR's point about Lin et al.).
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('key')
+light.intensity = float3(300, 300, 300)
+light.position = float3(2.2, 3.0, 0.2)
+sceneBuilder.addLight(light)

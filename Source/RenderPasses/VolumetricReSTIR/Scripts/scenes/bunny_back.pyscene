@@ -1,0 +1,9 @@
+# Stress scene (decorrelation study, spec V-B9): the bunny cloud under ONE white point light BEHIND it, no sky.
+# Backlit: the light reaches the camera through the medium, so transmittance and the phase function (with
+# VR_PHASE_G=0.8, strongly forward) decide the image, and the coarse-grid target is at its least faithful.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('back')
+light.intensity = float3(20000, 20000, 20000)
+light.position = float3(-17, 30, -45)
+sceneBuilder.addLight(light)

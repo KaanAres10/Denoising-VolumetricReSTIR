@@ -1,0 +1,15 @@
+# Stress scene (decorrelation study, spec V-B9): the bunny cloud under three coloured point lights and no sky.
+# With a luminance target a pixel's colour is the colour of the one light its sample chose, so reuse that
+# clumps the light choice clumps the colour. Lights from run_multilight.py (red key, green fill, blue rim).
+# The volume is added by vr_graph.load_bunnyrgb; analytic lights cannot be added at runtime, hence this file.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+def add_point(name, intensity, position):
+    light = PointLight(name)
+    light.intensity = intensity
+    light.position = position
+    sceneBuilder.addLight(light)
+
+add_point('key_red', float3(9000, 1200, 1200), float3(35, 34, 34))
+add_point('fill_green', float3(1200, 9000, 1600), float3(-38, 28, 30))
+add_point('rim_blue', float3(5000, 6000, 40000), float3(-6, 58, -14))  # 3.3x run_multilight's: it drew 4% of the samples

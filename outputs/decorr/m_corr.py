@@ -220,6 +220,43 @@ def light_ids(light, at_surface, surface_scene):
     return np.where(keep, light, -1)
 
 
+def chroma_axes(rgb):
+    """(R - B) / (R + G + B), warm vs cool, and (G - (R + B) / 2) / (R + G + B), green vs magenta, of an (..., 3)
+    RGB array; 0 where the pixel is black. With a luminance target the colour of a ReSTIR pixel comes from the
+    light its sample chose, not from the shared normalization, so these see what the luminance correlation
+    cannot (spec V-B9)."""
+    x = np.asarray(rgb, dtype=np.float64)[..., :3]
+    s = x.sum(axis=-1)
+    ok = np.isfinite(s) & (s > 1e-12)
+    inv = np.where(ok, 1.0 / np.where(ok, s, 1.0), 0.0)
+    rb = (x[..., 0] - x[..., 2]) * inv
+    gm = (x[..., 1] - 0.5 * (x[..., 0] + x[..., 2])) * inv
+    return np.where(ok, rb, 0.0), np.where(ok, gm, 0.0)
+
+
+def light_choice_excess(light, mask, lags):
+    """How much more often than chance two pixels `lag` apart (horizontally or vertically) hold samples on the
+    same light: P(same light) - sum_k p_k^2 over the pixels in `mask`. 0 for independent choices; the clumps of
+    one light that reuse spreads make it positive. One light only: 0."""
+    light = np.asarray(light)
+    mask = np.asarray(mask, bool)
+    _, cnt = np.unique(light[mask], return_counts=True)
+    if cnt.sum() == 0:
+        return {L: 0.0 for L in lags}
+    chance = float(((cnt / cnt.sum()) ** 2).sum())
+    out = {}
+    for L in lags:
+        same = n = 0
+        for dy, dx in ((0, L), (L, 0)):
+            a = light[:light.shape[0] - dy, :light.shape[1] - dx]
+            b = light[dy:, dx:]
+            mm = mask[:mask.shape[0] - dy, :mask.shape[1] - dx] & mask[dy:, dx:]
+            same += int((a == b)[mm].sum())
+            n += int(mm.sum())
+        out[L] = float(same / n - chance) if n else 0.0
+    return out
+
+
 MEDIUM_THRESHOLD = 0.5
 
 
@@ -322,6 +359,24 @@ def load_luminance(paths):
     with ThreadPoolExecutor(4) as pool:
         bad = sum(pool.map(load, range(len(paths))))
     return out, bad
+
+
+def load_chroma(paths, axis):
+    """(K, H, W) float32 of chroma_axes(...)[axis] of the captures, non-finite pixels black (neutral), and
+    each capture's mean R, G, B (K, 3), for the per-channel bias."""
+    first = read_exr(paths[0])
+    out = np.empty((len(paths),) + first.shape[:2], np.float32)
+    means = np.empty((len(paths), 3))
+
+    def load(k):
+        x = (first if k == 0 else read_exr(paths[k]))[..., :3][..., ::-1].astype(np.float64)  # BGR -> RGB
+        x = np.where(np.isfinite(x).all(axis=-1)[..., None], x, 0.0)
+        out[k] = chroma_axes(x)[axis]
+        means[k] = x.reshape(-1, 3).mean(axis=0)
+
+    with ThreadPoolExecutor(4) as pool:
+        list(pool.map(load, range(len(paths))))
+    return out, means
 
 
 def _rho_block(stack, radii, mask, n_boot, chain_of_frame, stats):
@@ -458,21 +513,28 @@ def main(argv=None):
 
     # Duplicate samples, from whatever sampleIdentity captures exist (a VR_IDS run).
     ids = sorted(glob.glob(os.path.join(a.run_dir, "%s.VolumetricReSTIR.sampleIdentity.*.exr" % a.tag)))
+    mask = None
     if ids:
         surface_scene = sched.get("scene") in SURFACE_SCENES
         def maps(p):
             sample, light, at_surface = decode_identity(read_exr(p)[..., :3][..., ::-1])
+            # Which light each pixel's sample uses, over the pixels with a real sample (not only its own ray).
+            real = (sample >= 0) & ~_primary_only(light, at_surface, surface_scene)
             return (duplicate_map(duplicate_ids(sample, light, at_surface, surface_scene)),
-                    duplicate_map(light_ids(light, at_surface, surface_scene)), in_medium(sample, at_surface))
+                    duplicate_map(light_ids(light, at_surface, surface_scene)), in_medium(sample, at_surface),
+                    light_choice_excess(light, real, radii), light_choice_excess(light, real & ~at_surface, radii))
 
         with ThreadPoolExecutor(4) as pool:
-            dmaps, lmaps, meds = zip(*pool.map(maps, ids))
+            dmaps, lmaps, meds, lexc, lexc_med = zip(*pool.map(maps, ids))
         dmean, lmean = np.mean(dmaps, axis=0), np.mean(lmaps, axis=0)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_sample.npy"), dmean)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_light.npy"), lmean)
         res["duplicates"] = {"frames": len(ids), "tile": 20,
                              "sample_mean": float(dmean.mean()), "sample_max": float(dmean.max()),
                              "light_mean": float(lmean.mean()), "light_max": float(lmean.max())}
+        # Clumps of one light: with a luminance target they are clumps of one colour.
+        res["light_choice"] = {"excess": {str(r): float(np.mean([e[r] for e in lexc])) for r in radii},
+                               "excess_medium": {str(r): float(np.mean([e[r] for e in lexc_med])) for r in radii}}
 
         # The medium region (robust), on the baseline's medium pixels when it has them, so a delta compares
         # the same pixels in both runs.
@@ -487,12 +549,26 @@ def main(argv=None):
             block, _ = _rho_block(robust, radii, rmask & mask, a.bootstrap, chain_of_frame, rstats)
             res["medium"] = {"mask": source, "pixels": int(mask.sum()), "threshold": MEDIUM_THRESHOLD, **block}
 
+    # Colour (spec V-B9): correlation of the chroma axes, in the medium when there is one. Scored last, after the
+    # luminance stack is freed, so the peak memory stays one stack.
+    del robust
+    colour_mask, colour_source = (mask, "medium") if mask is not None and mask.any() else (None, "image")
+    for axis, key in ((0, "color_rb"), (1, "color_gm")):
+        cstack, rgb_means = load_chroma([color(f) for f in frames], axis)
+        block, _ = _rho_block(cstack, radii, colour_mask, a.bootstrap, chain_of_frame, pixel_stats(cstack))
+        res[key] = {"mask": colour_source, **block}
+        del cstack
+    # Per-channel bias of the whole image: a wrong light choice is a colour bias luminance can hide.
+    if a.ref:
+        ref_rgb = read_exr(a.ref)[..., :3][..., ::-1].astype(np.float64).reshape(-1, 3).mean(axis=0)
+        res["reference"]["bias_rgb"] = (rgb_means.mean(axis=0) / np.maximum(ref_rgb, 1e-12) - 1).tolist()
+
     # Against the no-reuse baseline.
     if a.baseline:
         with open(a.baseline) as fh:
             base = json.load(fh)
         res["delta"] = {}
-        for kind in ("raw", "robust", "medium"):
+        for kind in ("raw", "robust", "medium", "color_rb", "color_gm"):
             if kind not in res or kind not in base:
                 continue
             res["delta"][kind] = {}
@@ -521,6 +597,9 @@ def main(argv=None):
         d =res.get("delta", {}).get("medium", {}).get(str(r8))
         if d:
             line += "  delta_medium(r%d)=%.4f [%.4f, %.4f]" % (r8, d["value"], d["ci"][0], d["ci"][1])
+    line += "  color r%d rb=%.4f gm=%.4f" % (r8, res["color_rb"]["rho"][str(r8)], res["color_gm"]["rho"][str(r8)])
+    if "light_choice" in res:
+        line += "  light-choice excess r%d=%.4f" % (r8, res["light_choice"]["excess"][str(r8)])
     print(line)
     return res
 

@@ -40,6 +40,10 @@ def bind(mogwai):
 
 
 REPO = r"C:\research\Denoising-VolumetricReSTIR"
+# The stress scenes' .pyscene files (their point lights: analytic lights cannot be added at runtime).
+SCENE_DIR = REPO + r"\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes"
+# Graph settings of a scene lit by its analytic (point) lights alone.
+POINT_LIGHTS_ONLY = {"mUseAnalyticLights": True, "mUseEnvironmentLights": False, "mUseEmissiveLights": False}
 DATA_DIR = REPO + r"\VolumetricReSTIRData"
 SCRIPT_DIR = REPO + r"\Source\RenderPasses\VolumetricReSTIR\Scripts"
 
@@ -162,8 +166,9 @@ def _density(scale):
     return scale * env_float("VR_DENSITY_MULT", 1.0) if os.environ.get("VR_DENSITY_MULT") else scale
 
 
-def load_plume(frame="0198"):
-    """Plume on a bare ground plane, lit by the environment only.
+def load_plume(frame="0198", pyscene=None):
+    """Plume on a bare ground plane, lit by the environment only (or, with `pyscene`, by that file's point
+    lights and no environment: the stress scene plumeone).
 
     The measurement scene: no geometry to speak of, so the medium covers essentially every pixel and
     the volumetric guides are what RR actually sees.
@@ -179,10 +184,13 @@ def load_plume(frame="0198"):
     parameter), which is what gates the velocity-advected motion vectors and ReSTIR's previous-grid
     reprojection.
     """
-    m.loadScene(DATA_DIR + r"\default.obj")
-    # VR_PLUME_ENV swaps the environment (a file in VolumetricReSTIRData), e.g. lakeside_8k.hdr for a
-    # daylight sky brighter than the smoke -- the opposite of hansaplatz's night square.
-    m.scene.setEnvMap(DATA_DIR + "\\" + env("VR_PLUME_ENV", "hansaplatz_8k.hdr"))
+    if pyscene:
+        m.loadScene(pyscene)
+    else:
+        m.loadScene(DATA_DIR + r"\default.obj")
+        # VR_PLUME_ENV swaps the environment (a file in VolumetricReSTIRData), e.g. lakeside_8k.hdr for a
+        # daylight sky brighter than the smoke -- the opposite of hansaplatz's night square.
+        m.scene.setEnvMap(DATA_DIR + "\\" + env("VR_PLUME_ENV", "hansaplatz_8k.hdr"))
     # Shared by both paths so the two cannot drift apart.
     vol = dict(sigma_a=float3(6, 6, 6), sigma_s=float3(14, 14, 14), g=env_float("VR_PHASE_G", 0.0),
                numMips=4, densityScale=_density(0.1), hasEmission=False, LeScale=0.01,
@@ -226,7 +234,7 @@ def load_plume(frame="0198"):
         "scatterAlbedo": float3(0.7, 0.7, 0.7),
         # Daylight environment map: no compensation needed.
         "exposure": 0.0,
-        "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False},
+        "params": dict(POINT_LIGHTS_ONLY) if pyscene else {"mUseEnvironmentLights": True, "mUseEmissiveLights": False},
     }
 
 
@@ -320,18 +328,22 @@ def load_emerald():
     }
 
 
-def load_bunny():
+def load_bunny(pyscene=None):
     """The Stanford-bunny cloud under a daylight sky (run_bunny_cloud.py). Lin et al. 2021 Fig. 21 renders
-    it with g = 0.8 as the highly anisotropic case (VR_PHASE_G=0.8)."""
-    m.loadScene(DATA_DIR + r"\default.obj")
-    m.scene.setEnvMap(DATA_DIR + r"\green_sanctuary_8k.hdr")
+    it with g = 0.8 as the highly anisotropic case (VR_PHASE_G=0.8). With `pyscene`: that file's point lights
+    and no sky (the stress scenes bunnyrgb / bunnyone / bunnyback)."""
+    if pyscene:
+        m.loadScene(pyscene)
+    else:
+        m.loadScene(DATA_DIR + r"\default.obj")
+        m.scene.setEnvMap(DATA_DIR + r"\green_sanctuary_8k.hdr")
     m.scene.addGVDBVolume(sigma_a=float3(1, 1, 1), sigma_s=float3(9, 9, 9), g=env_float("VR_PHASE_G", 0.0),
                           dataFile=DATA_DIR + r"\bunny_cloud", numMips=7, densityScale=_density(1.0),
                           hasVelocity=False, hasEmission=False, LeScale=1.0)
     _pin_camera((-17.290087, 23.748606, 45.495544), (-17.053705, 23.593506, 44.536343), (0.003480, 0.999892, -0.014248))
     return {"scatterAlbedo": float3(0.9, 0.9, 0.9),   # 9 / (9 + 1)
             "exposure": 0.0,
-            "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
+            "params": dict(POINT_LIGHTS_ONLY) if pyscene else {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
 
 
 def load_wdas():
@@ -354,7 +366,12 @@ def load_wdas():
 # The JangaFX EmberGen datasets (FirePlumeVDB, DustShockwaveVDB) are deliberately not here: the user
 # excluded them from the decorrelation study. run_volume_dataset.py still plays them back.
 SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion,
-          "emerald": load_emerald, "bunny": load_bunny, "wdas": load_wdas}
+          "emerald": load_emerald, "bunny": load_bunny, "wdas": load_wdas,
+          # Stress scenes (spec V-B9), point lights only; names without "_" (run_study.sh's label suffixes).
+          "bunnyrgb": lambda: load_bunny(SCENE_DIR + r"\bunny_rgb.pyscene"),
+          "bunnyone": lambda: load_bunny(SCENE_DIR + r"\bunny_one.pyscene"),
+          "bunnyback": lambda: load_bunny(SCENE_DIR + r"\bunny_back.pyscene"),
+          "plumeone": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_one.pyscene")}
 
 
 def load_scene(name):
@@ -387,7 +404,7 @@ def load_scene(name):
 # Graph pieces
 # ---------------------------------------------------------------------------------------------
 
-MUTATION_STRATEGIES = {"light": 1, "depth": 2}  # MutateSamples.cs.slang's strategy bits
+MUTATION_STRATEGIES = {"light": 1, "depth": 2, "select": 4}  # MutateSamples.cs.slang's strategy bits
 
 
 def mutation_strategy_mask(spec):

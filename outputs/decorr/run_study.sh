@@ -23,6 +23,8 @@
 # STUDY_DISPLAY=WxH (default 1920x1080), STUDY_CHAINS, STUDY_PER_CHAIN, STUDY_WARM override the harness
 # defaults; STUDY_SPACING sets the capture spacing for every label, STUDY_SPACING_<label> for one (dashes
 # and dots in the label become underscores: STUDY_SPACING_plume_g_0_9).
+# STUDY_TIMEOUT (seconds, default 14400) bounds one Mogwai run: a Falcor error dialog otherwise holds the
+# queue until the timeout.
 set -u
 R=/c/research/Denoising-VolumetricReSTIR
 cd "$R" || exit 1
@@ -79,7 +81,7 @@ render() {  # dir, then env assignments; runs correlation_pose.py into dir
         [ -n "${STUDY_CHAINS:-}" ] && export VR_CHAINS="$STUDY_CHAINS"
         [ -n "${STUDY_PER_CHAIN:-}" ] && export VR_PER_CHAIN="$STUDY_PER_CHAIN"
         [ -n "${STUDY_WARM:-}" ] && export VR_WARM="$STUDY_WARM"
-        VR_OUT_DIR="$(cygpath -am "$d")" VR_TAG=c timeout 14400 "$MOG" --script "$SCRIPT" > "$d/run.log" 2>&1
+        VR_OUT_DIR="$(cygpath -am "$d")" VR_TAG=c timeout "${STUDY_TIMEOUT:-14400}" "$MOG" --script "$SCRIPT" > "$d/run.log" 2>&1
     )
 }
 

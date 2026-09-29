@@ -153,6 +153,47 @@ class TestLoaders(StudyEnv):
                 self.assertTrue(hasattr(cam, attr), (name, attr))
 
 
+class TestStressScenes(StudyEnv):
+    """Scenes built to provoke volumetric ReSTIR's artifacts (spec V-B9): the bunny cloud under three coloured
+    point lights, one white light in front, one behind; the heterogeneous plume under one light."""
+    LIGHTS = {"bunnyrgb": 3, "bunnyone": 1, "bunnyback": 1, "plumeone": 1}
+
+    def test_registered_under_names_run_study_can_parse(self):
+        vr, _ = fresh_vr()
+        for name in self.LIGHTS:
+            self.assertIn(name, vr.SCENES)
+            self.assertNotIn("_", name)  # run_study.sh reads _g<g> / _d<mult> suffixes off the label
+
+    def test_lit_by_their_point_lights_only(self):
+        for name, count in self.LIGHTS.items():
+            vr, m = fresh_vr()
+            p = vr.SCENES[name]()["params"]
+            self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"]),
+                             (True, False, False), name)
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            self.assertTrue(path.endswith(".pyscene") and os.path.exists(path), path)
+            # Run the .pyscene against a stand-in scene builder and count the lights it adds.
+            builder = Recorder()
+            with open(path) as fh:
+                exec(fh.read(), {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+                                 "float3": lambda *a: tuple(a)})
+            lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
+            self.assertEqual(len(lights), count, name)
+            self.assertTrue(all(len(l.intensity) == 3 and len(l.position) == 3 for l in lights), name)
+
+    def test_knobs_reach_the_stress_scenes(self):
+        os.environ.update({"VR_PHASE_G": "0.8", "VR_DENSITY_MULT": "5"})
+        for name in self.LIGHTS:
+            vr, m = fresh_vr()
+            info = vr.SCENES[name]()
+            v = volume_call(m)
+            self.assertAlmostEqual(v["g"], 0.8, msg=name)
+            self.assertIn("densityScale", v, name)
+            self.assertFalse(m.scene.camera.animated, name)
+            for key in ("scatterAlbedo", "exposure", "params"):
+                self.assertIn(key, info, name)
+
+
 class TestKnobs(StudyEnv):
     def restir_params(self):
         vr, _ = fresh_vr()
@@ -186,7 +227,7 @@ class TestKnobs(StudyEnv):
 
     def test_mutation_knobs(self):
         os.environ.update({"VR_MUTATIONS": "5", "VR_MUT_STATS": "1"})
-        for strat, mask in (("light,depth", 3), ("depth", 2), ("light", 1), ("", 0)):
+        for strat, mask in (("light,depth", 3), ("depth", 2), ("light", 1), ("select", 4), ("light,depth,select", 7), ("", 0)):
             os.environ["VR_MUT_STRAT"] = strat  # set but empty = no strategy: every step a self-transition
             params = self.restir_params()
             self.assertEqual(params["mMutationStrategyMask"], mask, strat)

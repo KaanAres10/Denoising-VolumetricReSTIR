@@ -1,0 +1,8 @@
+# Stress scene (decorrelation study, spec V-B9): the bunny cloud under ONE white point light from the front
+# right, no sky: no light choice to share, so what is left is the medium's own (depth) correlation.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('key')
+light.intensity = float3(6000, 6000, 6000)
+light.position = float3(35, 34, 34)
+sceneBuilder.addLight(light)

@@ -250,6 +250,32 @@ class TestReferenceErrors(unittest.TestCase):
         self.assertGreater(eb["blur_rms"]["8"], 3 * ew["blur_rms"]["8"])
 
 
+class TestColor(unittest.TestCase):
+    def test_chroma_axes(self):
+        # (R - B) / sum: warm vs cool; (G - (R + B) / 2) / sum: green vs magenta. Black is neutral, not NaN.
+        rgb = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 0], [0.3, 0.3, 0.3], [0, 0, 0]], float)
+        rb, gm = mc.chroma_axes(rgb)
+        np.testing.assert_allclose(rb, [1, -1, 0, 0, 0], atol=1e-9)
+        np.testing.assert_allclose(gm, [-0.5, -0.5, 1, 0, 0], atol=1e-9)
+
+    def test_light_choice_excess_is_zero_for_independent_choices(self):
+        light = RNG.integers(0, 2, size=(200, 200))
+        ex = mc.light_choice_excess(light, np.ones_like(light, bool), (1, 4, 16))
+        for v in ex.values():
+            self.assertLess(abs(v), 0.02)
+
+    def test_light_choice_excess_sees_clumps(self):
+        # 10x10 blocks each lit by one of two lights: neighbours inside a block agree, across blocks by chance.
+        light = np.kron(RNG.integers(0, 2, size=(20, 20)), np.ones((10, 10), int))
+        ex = mc.light_choice_excess(light, np.ones_like(light, bool), (1, 16))
+        self.assertGreater(ex[1], 0.4)
+        self.assertLess(abs(ex[16]), 0.05)
+
+    def test_one_light_has_no_excess(self):
+        light = np.zeros((50, 50), int)
+        self.assertEqual(mc.light_choice_excess(light, np.ones_like(light, bool), (1,))[1], 0.0)
+
+
 class TestCommandLine(unittest.TestCase):
     """main() on a synthetic run directory laid out the way correlation_pose.py writes one."""
 
@@ -313,6 +339,58 @@ class TestCommandLine(unittest.TestCase):
             self.assertGreater(res["medium"]["rho"]["2"], 0.3)
             self.assertGreater(res["delta"]["medium"]["2"]["ci"][0], 0.0)
             self.assertTrue(os.path.exists(os.path.join(root, "reuse.medium.npy")))
+
+    def test_colour_blotches_are_measured_where_luminance_is_flat(self):
+        # Pixels that are either blue or orange by clumps (the light they chose), at one luminance: the
+        # luminance correlation misses it, the warm-cool colour axis does not.
+        import cv2
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            chains, f = [], 100
+            for c in range(4):
+                frames = []
+                for k in range(5):
+                    warm = np.kron(RNG.integers(0, 2, size=(6, 8)), np.ones((10, 10)))  # 10x10 colour clumps
+                    rgb = np.where(warm[..., None] > 0, [0.8, 0.15, 0.05], [0.2, 0.3, 0.5])
+                    rgb = rgb / (rgb @ mc.Y_RGB)[..., None]                               # luminance exactly 1
+                    rgb = rgb * (1 + 0.1 * RNG.standard_normal((60, 80)))[..., None]     # independent grain
+                    cv2.imwrite(os.path.join(root, "c.VolumetricReSTIR.accumulated_color.%d.exr" % f),
+                                rgb[..., ::-1].astype(np.float32).copy())
+                    frames.append(f)
+                    f += 7
+                chains.append({"seed": c, "first": frames[0], "length": 30, "frames": frames})
+            with open(os.path.join(root, "c.schedule.json"), "w") as fh:
+                json.dump({"scene": "synthetic", "chains": chains, "burst": None, "warm": 8, "spacing": 7}, fh)
+            res = mc.main([root, "--tag", "c", "--bootstrap", "50", "--radii", "1,2,4", "--half", "4"])
+            self.assertLess(abs(res["robust"]["rho"]["2"]), 0.1)
+            self.assertGreater(res["color_rb"]["rho"]["2"], 0.5)
+            self.assertEqual(res["color_rb"]["mask"], "image")
+
+    def test_per_channel_bias_against_the_reference(self):
+        # A light-choice error shows as a colour bias that luminance can hide: frames 10% greener and 10% less
+        # blue than the reference, at unchanged red.
+        import cv2
+        import json
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            ref = np.dstack([np.full((60, 80), v) for v in (0.5, 0.3, 0.2)])
+            cv2.imwrite(os.path.join(root, "ref.exr"), ref[..., ::-1].astype(np.float32).copy())
+            chains, f = [], 100
+            for c in range(4):
+                frames = []
+                for k in range(5):
+                    x = ref * [1.0, 1.1, 0.9] * (1 + 0.05 * RNG.standard_normal((60, 80)))[..., None]
+                    cv2.imwrite(os.path.join(root, "c.VolumetricReSTIR.accumulated_color.%d.exr" % f),
+                                x[..., ::-1].astype(np.float32).copy())
+                    frames.append(f)
+                    f += 7
+                chains.append({"seed": c, "first": frames[0], "length": 30, "frames": frames})
+            with open(os.path.join(root, "c.schedule.json"), "w") as fh:
+                json.dump({"scene": "synthetic", "chains": chains, "burst": None, "warm": 8, "spacing": 7}, fh)
+            res = mc.main([root, "--tag", "c", "--bootstrap", "20", "--radii", "1", "--half", "2",
+                           "--ref", os.path.join(root, "ref.exr")])
+            np.testing.assert_allclose(res["reference"]["bias_rgb"], [0.0, 0.1, -0.1], atol=0.01)
 
     def test_end_to_end_with_baseline_and_identity(self):
         import tempfile
