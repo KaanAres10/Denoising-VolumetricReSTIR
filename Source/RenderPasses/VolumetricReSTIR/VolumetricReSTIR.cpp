@@ -61,7 +61,9 @@ namespace
 
     /// MutateSamples.cs.slang's gMutationStats counters, in order.
     const char* kMutationStatNames[] = {"light proposed", "light accepted", "depth proposed", "depth accepted",
-                                        "empty or invalid (skipped)", "p_hat(x0) != p_y"};
+                                        "empty or invalid (skipped)", "p_hat(x0) != p_y", "select proposed", "select accepted",
+                                        "select: no light sample", "select: q(x) or q(z) not positive", "select: p_hat(z) = 0",
+                                        "select: env proposed", "select: point light proposed", "select: emissive proposed"};
     constexpr uint32_t kMutationStatCount = sizeof(kMutationStatNames) / sizeof(kMutationStatNames[0]);
     constexpr int kMutationStatInterval = 256; ///< frames between acceptance log lines
 
@@ -627,8 +629,11 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
         const std::vector<uint32_t> s = mMutationStatsBuffer->getElements<uint32_t>(0, kMutationStatCount);
         const auto rate = [](uint32_t accepted, uint32_t proposed) { return proposed ? double(accepted) / proposed : 0.0; };
         logInfo("VolumetricReSTIR mutations, last {} frames: light {}/{} accepted ({:.3f}), depth {}/{} accepted ({:.3f}), "
-                "{} {}, {} {}", mMutationStatFrames, s[1], s[0], rate(s[1], s[0]), s[3], s[2], rate(s[3], s[2]),
-                s[4], kMutationStatNames[4], s[5], kMutationStatNames[5]);
+                "light re-selection {}/{} accepted ({:.3f}), {} {}, {} {}", mMutationStatFrames, s[1], s[0], rate(s[1], s[0]),
+                s[3], s[2], rate(s[3], s[2]), s[7], s[6], rate(s[7], s[6]), s[4], kMutationStatNames[4], s[5], kMutationStatNames[5]);
+        if (s[6] > 0)
+            logInfo("VolumetricReSTIR light re-selection: {} {}, {} {}, {} {}; proposed kinds: env {}, point {}, emissive {}",
+                    s[8], kMutationStatNames[8], s[9], kMutationStatNames[9], s[10], kMutationStatNames[10], s[11], s[12], s[13]);
         pRenderContext->clearUAV(mMutationStatsBuffer->getUAV().get(), uint4(0));
         mMutationStatFrames = 0;
     }
@@ -2106,11 +2111,13 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
                            "(Sawhney et al. 2024). 0 = off. Runs only for single scattering without vertex reuse "
                            "and with ray-marching or analytic spatial trackers (p_hat must be deterministic).", true);
             bool light = mParams.mMutationStrategyMask & 1u, depth = mParams.mMutationStrategyMask & 2u;
+            bool select = mParams.mMutationStrategyMask & 4u;
             bool strategies = widget.checkbox("Light-vertex moves", light);
             strategies |= widget.checkbox("Scatter-depth moves", depth);
+            strategies |= widget.checkbox("Light re-selection (medium samples)", select);
             if (strategies)
             {
-                mParams.mMutationStrategyMask = (light ? 1u : 0u) | (depth ? 2u : 0u);
+                mParams.mMutationStrategyMask = (light ? 1u : 0u) | (depth ? 2u : 0u) | (select ? 4u : 0u);
                 dirty = true;
             }
             dirty |= widget.var("Light step min (u)", mParams.mMutationLightStepMin, 1e-6f, 0.5f);

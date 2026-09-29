@@ -25,10 +25,13 @@ bash outputs/mask_check.sh raw none 2>&1 | tail -1 | tee -a $LOG
 SCRIPT_CP=$(cygpath -w "$R/Source/RenderPasses/VolumetricReSTIR/Scripts/correlation_pose.py")
 mkdir -p "$S/smoke_select"
 ( for v in $(env | grep -o "^VR_[A-Z0-9_]*"); do unset "$v"; done
-  VR_SCENE=bunnyrgb VR_DISPLAY=480x270 VR_CHAINS=1 VR_PER_CHAIN=2 VR_WARM=40 VR_SPACING=5 VR_MUTATIONS=5 VR_MUT_STRAT=light,depth,select VR_MUT_STATS=1 VR_OUT_DIR="$(cygpath -m "$S/smoke_select")" VR_TAG=c timeout 300 ./build/windows-vs2022/bin/Release/Mogwai.exe --script "$SCRIPT_CP" > "$S/smoke_select/run.log" 2>&1 )
+  VR_SCENE=bunnyrgb VR_DISPLAY=480x270 VR_CHAINS=1 VR_PER_CHAIN=2 VR_WARM=280 VR_SPACING=5 VR_MUTATIONS=5 VR_MUT_STRAT=select VR_MUT_STATS=1 VR_OUT_DIR="$(cygpath -m "$S/smoke_select")" VR_TAG=c timeout 300 ./build/windows-vs2022/bin/Release/Mogwai.exe --script "$SCRIPT_CP" > "$S/smoke_select/run.log" 2>&1 )
 n=$(ls "$S/smoke_select" | grep -c "accumulated_color.*exr")
 echo "smoke select: $n frames, $(grep -c '(Error)' "$S/smoke_select/run.log") errors" | tee -a $LOG
-if [ "$n" -lt 2 ]; then taskkill //IM Mogwai.exe //F > /dev/null 2>&1; echo "[$(date +%H:%M:%S)] select ABORTED: smoke test failed" >> $LOG; exit 1; fi
+# ...and the move must actually move: a proposal bug once rejected all of 50M proposals without an error.
+acc=$(grep -o "light re-selection [0-9]*/[0-9]* accepted" "$S/smoke_select/run.log" | tail -1 | grep -o "[0-9]*/" | tr -d /)
+echo "smoke select: re-selections accepted ${acc:-none}" | tee -a $LOG
+if [ "$n" -lt 2 ] || [ "${acc:-0}" -eq 0 ]; then taskkill //IM Mogwai.exe //F > /dev/null 2>&1; echo "[$(date +%H:%M:%S)] select ABORTED: smoke test failed" >> $LOG; exit 1; fi
 M5="VR_MUTATIONS=5 VR_MUT_STRAT=select VR_MUT_STATS=1"
 MALL="VR_MUTATIONS=5 VR_MUT_STRAT=light,depth,select VR_MUT_STATS=1"
 select_matrix() {

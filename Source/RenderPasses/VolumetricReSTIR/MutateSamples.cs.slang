@@ -11,9 +11,19 @@
     the temporal pass's own target (spatial sampling options, deterministic trackers only -- the host
     guards that), and the result is written back per Eq. 16: W(z) = p_hat(x0) / p_hat(z) W(x0).
 
-    Not globally ergodic, by design: moves never change lightID or the sample type, and bounded depth steps
-    cannot cross an empty gap wider than the largest step. Unbiasedness needs only detailed balance within
-    the reachable set and an unbiased W(x0), not ergodicity.
+    Round 1.5, light re-selection (strategy bit 2, spec V-B9): an INDEPENDENCE move that draws a fresh light
+    sample at the medium sample's scatter point from the renderer's own light samplers -- a light kind
+    uniformly among the enabled ones, then the env direction by importance, a point light uniformly, or an
+    emissive triangle by the emissive sampler and a uniform point on it -- and accepts with
+    min(1, p_hat(z) q(x) / (p_hat(x) q(z))). q is a density in p_hat's own mixed measure: solid angle (env),
+    a point mass (analytic), area (emissive). With a luminance target a pixel's colour is the colour of the
+    light its sample chose, and reuse clumps that choice (emerald: sky-blue or lamp-orange pixels); only a
+    move that changes the light reaches it. Medium samples only: there the scatter point is exact, and the
+    emissive sampler's back-face test at a wrong shading point would make the proposal asymmetric.
+
+    Without it, not globally ergodic, by design: the other moves never change lightID or the sample type,
+    and bounded depth steps cannot cross an empty gap wider than the largest step. Unbiasedness needs only
+    detailed balance within the reachable set and an unbiased W(x0), not ergodicity.
 */
 __exported import ReSTIRHelper;
 #include "HostDeviceSharedDefinitions.slangh"
@@ -27,7 +37,7 @@ cbuffer CB
     int gFrameCount;
     int gNumTotalRounds;
     int gMutationCount;
-    uint gStrategyMask;                  // bit 0 light-vertex, bit 1 depth
+    uint gStrategyMask;                  // bit 0 light-vertex, bit 1 depth, bit 2 light re-selection
     float gLightStepMin, gLightStepMax;  // torus step in u, Kelemen magnitudes
     float gDirStepMin, gDirStepMax;      // radians
     float gDepthStepMin, gDepthStepMax;  // in ray-march steps (volumeDesc.tStep * volumeWorldScaling)
@@ -53,6 +63,7 @@ StructuredBuffer<VBufferItem> gVBuffer;
 
 static const uint kLight = 0;
 static const uint kDepth = 1;
+static const uint kSelect = 2;
 
 /// Records the primary-ray visibility of an evaluation (the camera ray's transmittance up to the sample's
 /// depth, which does not depend on the light), so moves that keep the depth reuse it.
@@ -66,7 +77,8 @@ struct CachingVisibilityProvider : IExternalVisibilityProvider
 
 void stat(uint i) { if (gCollectStats) InterlockedAdd(gMutationStats[i], 1u); }
 
-/// Which strategies can move this sample. Depends only on the sample's TYPE, which no move changes.
+/// Which strategies can move this sample, from its type: medium or not, and its light kind -- which only the
+/// re-selection changes, so the loop asks again for the current state (an inapplicable pick is a self-transition).
 uint applicable(Reservoir r)
 {
     const bool selfEmission = r.lightID == kSelfEmissionLightID;
@@ -82,7 +94,83 @@ uint applicable(Reservoir r)
     uint mask = 0;
     if (hasShadingPoint && !selfEmission && (env || emissiveTri)) mask |= 1u << kLight;
     if (inMedium) mask |= 1u << kDepth;
+    // Any light sample in the medium (a point light too), but not an emission path: its p_hat is the medium's
+    // own emission, a kind the proposal never draws.
+    const bool lightSample = r.lightID == -1 || r.lightID >= 0;
+    if (inMedium && lightSample && decodePathTag(r.sampledPixel) != 1) mask |= 1u << kSelect;
     return mask & gStrategyMask;
+}
+
+/// The light kinds the re-selection proposes from, each with probability 1 / count: the enabled ones the
+/// scene has.
+struct LightKinds
+{
+    bool env, analytic, emissive;
+    float pKind;
+};
+
+LightKinds lightKinds()
+{
+    const SamplingOptions o = SAMPLING_OPTIONS;
+    LightKinds k;
+    k.env = o.useEnvironmentLights;
+    k.analytic = o.useAnalyticLights && gScene.getLightCount() > 0;
+    k.emissive = o.useEmissiveLights && !gScene.lightCollection.isEmpty();
+    const uint count = uint(k.env) + uint(k.analytic) + uint(k.emissive);
+    k.pKind = count > 0 ? 1.f / float(count) : 0.f;
+    return k;
+}
+
+/// The re-selection proposal's density at light sample (lightID, lightUV) seen from the scatter point p, in the
+/// measure p_hat is a density in: solid angle (env), a point mass (analytic), area (emissive triangle).
+float selectPdf(int lightID, float2 lightUV, float3 p, LightKinds k)
+{
+    const int lightCount = (int)gScene.getLightCount();
+    if (lightID < 0) return k.env ? k.pKind * envMapSampler.evalPdf(gScene.envMap.uvToWorld(lightUV)) : 0.f;
+    if (lightID < lightCount) return k.analytic ? k.pKind / float(lightCount) : 0.f;
+    if (!k.emissive) return 0.f;
+    const uint tri = uint(lightID - lightCount);
+    return k.pKind * emissiveSampler.evalTriangleSelectionPdf(p, float3(0.f), false, tri) / gScene.lightCollection.getTriangle(tri).area;
+}
+
+/// Draws the re-selection proposal into z's light fields. False: no light sample (a back-facing emissive
+/// triangle, a NaN direction) -- a rejected proposal, which keeps the move symmetric since q never depends on
+/// the current state.
+bool proposeLight(float3 p, LightKinds k, inout SampleGenerator sg, inout Reservoir z)
+{
+    const uint count = uint(k.env) + uint(k.analytic) + uint(k.emissive);
+    const uint pick = min(uint(sampleNext1D(sg) * float(count)), count - 1);
+    // The pick-th enabled kind, in the order env, analytic, emissive. No side effects inside conditions: the
+    // shader's && does not short-circuit, so `k.env && pick-- == 0` decremented pick with env disabled too, and
+    // every proposal fell through to the (empty) emissive branch -- 0 of 50M accepted on bunnyrgb.
+    uint kind = 3, n = 0;
+    if (k.env) { if (pick == n) kind = 0; n++; }
+    if (k.analytic) { if (pick == n) kind = 1; n++; }
+    if (k.emissive) { if (pick == n) kind = 2; n++; }
+    if (kind == 0)
+    {
+        EnvMapSample es;
+        envMapSampler.sample(sampleNext2D(sg), es);
+        if (any(isnan(es.dir))) return false;
+        z.lightID = -1;
+        z.lightUV = gScene.envMap.worldToUv(es.dir);
+        return true;
+    }
+    if (kind == 1)
+    {
+        const uint lightCount = gScene.getLightCount();
+        z.lightID = (int)min(uint(sampleNext1D(sg) * float(lightCount)), lightCount - 1);
+        z.lightUV = float2(0.f);
+        return true;
+    }
+    if (kind != 2) return false;
+    // Emissive: the sampler picks the triangle (its selection pdf is what selectPdf evaluates); the point on it
+    // is drawn here, uniform in the area-uniform u the reservoir stores.
+    TriangleLightSample ls;
+    if (!emissiveSampler.sampleLight(p, float3(0.f), false, sg, ls)) return false;
+    z.lightID = (int)(ls.triangleIndex + gScene.getLightCount());
+    z.lightUV = sampleNext2D(sg);
+    return true;
 }
 
 /// Kelemen 2002 magnitude with a random sign: symmetric about 0.
@@ -140,6 +228,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float primaryVis = vis0.data;
     const float depthUnit = gScene.volumeDesc.tStep * gScene.volumeWorldScaling;
     const uint enabledCount = countbits(gStrategyMask);
+    const LightKinds kinds = lightKinds();
 
     for (int it = 0; it < gMutationCount; it++)
     {
@@ -147,11 +236,33 @@ void main(uint3 DTid : SV_DispatchThreadID)
         const uint pick = min(uint(sampleNext1D(sg) * enabledCount), enabledCount - 1);
         uint s = firstbitlow(gStrategyMask);
         for (uint k = 0; k < pick; k++) s = firstbitlow(gStrategyMask & ~((2u << s) - 1u));
-        if ((moves & (1u << s)) == 0) continue;
+        if ((applicable(x) & (1u << s)) == 0) continue;
 
         Reservoir z = x;
         CachingVisibilityProvider visz;
         visz.Initialize();
+        if (s == kSelect)
+        {
+            // Independence move: the acceptance carries q(x) / q(z), both at the same scatter point.
+            const float3 p = ray.origin + x.depth * ray.dir;
+            if (kinds.pKind == 0.f) continue;
+            stat(6);
+            if (!proposeLight(p, kinds, sg, z)) { stat(8); continue; }
+            stat(z.lightID < 0 ? 11 : (z.lightID < (int)gScene.getLightCount() ? 12 : 13));
+            const float qx = selectPdf(x.lightID, x.lightUV, p, kinds);
+            const float qz = selectPdf(z.lightID, z.lightUV, p, kinds);
+            if (!(qx > 0.f) || !(qz > 0.f) || isinf(qx) || isinf(qz)) { stat(9); continue; }
+            visz.data = primaryVis; // the depth did not move
+            const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz);
+            if (!(pz > 0.f)) stat(10);
+            if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qx)
+            {
+                x = z;
+                px = pz;
+                stat(7);
+            }
+            continue;
+        }
         if (s == kLight)
         {
             if (x.lightID < 0) // environment map: rotate on the sphere, symmetric in solid angle
@@ -192,6 +303,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     // W(z) = p_hat(x0)/p_hat(z) W(x0)  <=>  runningSum *= p_hat(x0)/p_y_old, p_y = p_hat(z).
     r.runningSum *= p0 / r.p_y;
     r.depth = x.depth;
+    r.lightID = x.lightID; // the re-selection changes the light itself
     r.lightUV = x.lightUV;
     r.p_y = px;
     gCurReservoirs[pixelId] = r;
