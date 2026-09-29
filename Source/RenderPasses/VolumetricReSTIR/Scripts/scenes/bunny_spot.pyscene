@@ -1,0 +1,13 @@
+# Stress scene (decorrelation study, spec V-B9): the bunny cloud crossed by ONE narrow white spotlight beam
+# from the front right, no sky. The beam's edge puts pixels with very different targets side by side -- the
+# mismatch of neighbouring targets (Sawhney et al. supplement, Eq. 18) that mutations remove. Aimed at the
+# centre of the cloud's bounding box (-0.9, 19.1, 0.9); a 7 degree half-angle is ~6 units wide there.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('spot')
+light.intensity = float3(30000, 30000, 30000)
+light.position = float3(35, 34, 34)
+light.direction = float3(-35.9, -14.9, -33.1)
+light.openingAngle = 0.12
+light.penumbraAngle = 0.02
+sceneBuilder.addLight(light)

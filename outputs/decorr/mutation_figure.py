@@ -43,7 +43,7 @@ def name(cfg):
         if p.startswith("mut"):
             n = p[3:]
             out.append("+ %s mutation%s" % (n, "" if n == "1" else "s"))
-        elif p in ("light", "depth", "both"):
+        elif p in ("light", "depth", "both", "select", "all"):
             out.append("(%s)" % p)
         elif p.startswith("r") and p[1:].isdigit():
             out.append(", radius %s" % p[1:])

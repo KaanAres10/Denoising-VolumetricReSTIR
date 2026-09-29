@@ -1,0 +1,9 @@
+# Stress scene (decorrelation study, spec V-B9): the plume lit by ONE point light BEHIND it (opposite the camera),
+# no sky: the heterogeneous plume's silver lining, strongest with a forward phase function (VR_PHASE_G=0.9) --
+# the coarse-grid target at its least faithful on a detailed medium.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('back')
+light.intensity = float3(300, 300, 300)
+light.position = float3(-2.0, 2.8, -2.2)
+sceneBuilder.addLight(light)

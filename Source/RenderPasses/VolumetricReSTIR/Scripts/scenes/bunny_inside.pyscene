@@ -1,0 +1,11 @@
+# Stress scene (decorrelation study, spec V-B9): the bunny cloud lit by ONE warm point light INSIDE it, no sky.
+# Near-field: the target changes steeply along each camera ray and between neighbouring pixels, which is where
+# the depth moves, and the mismatch of neighbouring targets that mutations remove, should matter most. The
+# light sits at the centre of the cloud's bounding box: bunny_cloud_mip0.vbx maps voxel v to 0.08 v +
+# (-24, -3.76, -16.64) over 577 x 572 x 438 voxels, i.e. x -24..22.2, y -3.8..42.0, z -16.6..18.4.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('inside')
+light.intensity = float3(400, 280, 160)
+light.position = float3(-0.9, 19.1, 0.9)
+sceneBuilder.addLight(light)

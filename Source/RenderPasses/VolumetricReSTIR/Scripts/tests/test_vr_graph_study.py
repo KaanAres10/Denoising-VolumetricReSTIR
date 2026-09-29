@@ -156,7 +156,8 @@ class TestLoaders(StudyEnv):
 class TestStressScenes(StudyEnv):
     """Scenes built to provoke volumetric ReSTIR's artifacts (spec V-B9): the bunny cloud under three coloured
     point lights, one white light in front, one behind; the heterogeneous plume under one light."""
-    LIGHTS = {"bunnyrgb": 3, "bunnyone": 1, "bunnyback": 1, "plumeone": 1}
+    LIGHTS = {"bunnyrgb": 3, "bunnyone": 1, "bunnyback": 1, "plumeone": 1,
+              "bunnyinside": 1, "bunnyspot": 1, "bunnyparty": 8, "plumeback": 1}
 
     def test_registered_under_names_run_study_can_parse(self):
         vr, _ = fresh_vr()

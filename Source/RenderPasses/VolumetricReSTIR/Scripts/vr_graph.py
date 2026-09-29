@@ -371,6 +371,10 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "bunnyrgb": lambda: load_bunny(SCENE_DIR + r"\bunny_rgb.pyscene"),
           "bunnyone": lambda: load_bunny(SCENE_DIR + r"\bunny_one.pyscene"),
           "bunnyback": lambda: load_bunny(SCENE_DIR + r"\bunny_back.pyscene"),
+          "bunnyinside": lambda: load_bunny(SCENE_DIR + r"\bunny_inside.pyscene"),
+          "bunnyspot": lambda: load_bunny(SCENE_DIR + r"\bunny_spot.pyscene"),
+          "bunnyparty": lambda: load_bunny(SCENE_DIR + r"\bunny_party.pyscene"),
+          "plumeback": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_back.pyscene"),
           "plumeone": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_one.pyscene")}
 
 
