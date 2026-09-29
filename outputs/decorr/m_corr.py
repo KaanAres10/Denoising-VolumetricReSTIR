@@ -234,27 +234,25 @@ def chroma_axes(rgb):
     return np.where(ok, rb, 0.0), np.where(ok, gm, 0.0)
 
 
-def light_choice_excess(light, mask, lags):
-    """How much more often than chance two pixels `lag` apart (horizontally or vertically) hold samples on the
-    same light: P(same light) - sum_k p_k^2 over the pixels in `mask`. 0 for independent choices; the clumps of
-    one light that reuse spreads make it positive. One light only: 0."""
-    light = np.asarray(light)
-    mask = np.asarray(mask, bool)
-    _, cnt = np.unique(light[mask], return_counts=True)
-    if cnt.sum() == 0:
-        return {L: 0.0 for L in lags}
-    chance = float(((cnt / cnt.sum()) ** 2).sum())
-    out = {}
-    for L in lags:
-        same = n = 0
-        for dy, dx in ((0, L), (L, 0)):
-            a = light[:light.shape[0] - dy, :light.shape[1] - dx]
-            b = light[dy:, dx:]
-            mm = mask[:mask.shape[0] - dy, :mask.shape[1] - dx] & mask[dy:, dx:]
-            same += int((a == b)[mm].sum())
-            n += int(mm.sum())
-        out[L] = float(same / n - chance) if n else 0.0
-    return out
+def _agreement(a, b, mask, L):
+    """P(a[p] == b[p + lag]) over horizontal and vertical offsets `L`, pixels in `mask` at both ends."""
+    same = n = 0
+    for dy, dx in ((0, L), (L, 0)):
+        x, y = a[:a.shape[0] - dy, :a.shape[1] - dx], b[dy:, dx:]
+        mm = mask[:mask.shape[0] - dy, :mask.shape[1] - dx] & mask[dy:, dx:]
+        same += int((x == y)[mm].sum())
+        n += int(mm.sum())
+    return same / n if n else 0.0
+
+
+def light_choice_excess(a, b, mask, lags):
+    """How much more often two pixels `lag` apart use the same light within a frame than across two independent
+    frames `a`, `b` (e.g. from different seeded chains) -- the independent-choice level at those very positions,
+    so a scene lit differently in different places does not count as clumping. 0 for independent choices; the
+    clumps of one light that reuse spreads make it positive. One light only: 0."""
+    a, b, mask = np.asarray(a), np.asarray(b), np.asarray(mask, bool)
+    return {L: float(0.5 * (_agreement(a, a, mask, L) + _agreement(b, b, mask, L))
+                     - 0.5 * (_agreement(a, b, mask, L) + _agreement(b, a, mask, L))) for L in lags}
 
 
 MEDIUM_THRESHOLD = 0.5
@@ -516,16 +514,26 @@ def main(argv=None):
     mask = None
     if ids:
         surface_scene = sched.get("scene") in SURFACE_SCENES
-        def maps(p):
+        # In frame order: chains own consecutive frame ranges, so frame k + per_chain is from another chain.
+        ids.sort(key=lambda p: int(p.split(".")[-2]))
+        per_chain = len(sched["chains"][0]["frames"])
+
+        def decoded(p):
             sample, light, at_surface = decode_identity(read_exr(p)[..., :3][..., ::-1])
-            # Which light each pixel's sample uses, over the pixels with a real sample (not only its own ray).
-            real = (sample >= 0) & ~_primary_only(light, at_surface, surface_scene)
+            # Pixels with a real sample (not only their own camera ray), for the light choice.
+            return sample, light, at_surface, (sample >= 0) & ~_primary_only(light, at_surface, surface_scene)
+
+        def maps(k):
+            sample, light, at_surface, real = decoded(ids[k])
+            _, light2, at_surface2, real2 = decoded(ids[(k + per_chain) % len(ids)])  # an independent frame
+            both = real & real2
             return (duplicate_map(duplicate_ids(sample, light, at_surface, surface_scene)),
                     duplicate_map(light_ids(light, at_surface, surface_scene)), in_medium(sample, at_surface),
-                    light_choice_excess(light, real, radii), light_choice_excess(light, real & ~at_surface, radii))
+                    light_choice_excess(light, light2, both, radii),
+                    light_choice_excess(light, light2, both & ~at_surface & ~at_surface2, radii))
 
         with ThreadPoolExecutor(4) as pool:
-            dmaps, lmaps, meds, lexc, lexc_med = zip(*pool.map(maps, ids))
+            dmaps, lmaps, meds, lexc, lexc_med = zip(*pool.map(maps, range(len(ids))))
         dmean, lmean = np.mean(dmaps, axis=0), np.mean(lmaps, axis=0)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_sample.npy"), dmean)
         np.save(os.path.join(a.run_dir, a.tag + ".dup_light.npy"), lmean)

@@ -259,21 +259,26 @@ class TestColor(unittest.TestCase):
         np.testing.assert_allclose(gm, [-0.5, -0.5, 1, 0, 0], atol=1e-9)
 
     def test_light_choice_excess_is_zero_for_independent_choices(self):
-        light = RNG.integers(0, 2, size=(200, 200))
-        ex = mc.light_choice_excess(light, np.ones_like(light, bool), (1, 4, 16))
+        # Independent choices whose odds vary across the image (left mostly light 0, right mostly light 1, as a
+        # scene lit differently on each side): neighbours agree more often than the global shares say, but no
+        # more often within a frame than across two independent frames.
+        yy, xx = np.mgrid[0:200, 0:200]
+        p1 = np.where(xx < 100, 0.1, 0.9)
+        a, b = (RNG.random((200, 200)) < p1).astype(int), (RNG.random((200, 200)) < p1).astype(int)
+        ex = mc.light_choice_excess(a, b, np.ones_like(a, bool), (1, 4, 16))
         for v in ex.values():
             self.assertLess(abs(v), 0.02)
 
     def test_light_choice_excess_sees_clumps(self):
         # 10x10 blocks each lit by one of two lights: neighbours inside a block agree, across blocks by chance.
-        light = np.kron(RNG.integers(0, 2, size=(20, 20)), np.ones((10, 10), int))
-        ex = mc.light_choice_excess(light, np.ones_like(light, bool), (1, 16))
+        clumps = lambda: np.kron(RNG.integers(0, 2, size=(20, 20)), np.ones((10, 10), int))
+        ex = mc.light_choice_excess(clumps(), clumps(), np.ones((200, 200), bool), (1, 16))
         self.assertGreater(ex[1], 0.4)
         self.assertLess(abs(ex[16]), 0.05)
 
     def test_one_light_has_no_excess(self):
         light = np.zeros((50, 50), int)
-        self.assertEqual(mc.light_choice_excess(light, np.ones_like(light, bool), (1,))[1], 0.0)
+        self.assertEqual(mc.light_choice_excess(light, light, np.ones_like(light, bool), (1,))[1], 0.0)
 
 
 class TestCommandLine(unittest.TestCase):
