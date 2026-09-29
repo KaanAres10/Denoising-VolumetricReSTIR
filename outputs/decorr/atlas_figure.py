@@ -26,7 +26,10 @@ from mutation_figure import name
 SCENES = {"bunnyrgb": "bunny, 3 coloured lights", "bunnyone": "bunny, 1 light (front)",
           "bunnyback_g0.8": "bunny, 1 light behind, g = 0.8", "plumeone": "plume, 1 light",
           "bunnyone_d5": "bunny 5x density, 1 light", "plume_g-0.9": "plume g = -0.9, sky",
-          "emerald": "Emerald Square fog", "bistro": "Bistro"}
+          "emerald": "Emerald Square fog", "bistro": "Bistro",
+          "bunnyinside": "bunny, lamp inside", "bunnyinside_g0.8": "bunny, lamp inside, g = 0.8",
+          "bunnyspot": "bunny, spotlight beam", "bunnyspot_g0.8": "bunny, spotlight beam, g = 0.8",
+          "bunnyparty": "bunny, 8 coloured lights", "plumeback_g0.9": "plume backlit, g = 0.9"}
 CONFIGS = ["shipped", "mcap_50", "mcap_50_mut5", "dec_mcap_200"]
 
 
