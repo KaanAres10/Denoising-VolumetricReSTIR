@@ -606,7 +606,17 @@ The 8-light bunny (bunnyparty) agrees: colour 0.0108 shipped → 0.0048 re-selec
 0.0011 after spatial (after temporal: 0.0018, nothing). Depth moves take the luminance blotches, re-selection the
 colour ones; placed after spatial reuse both act on what is shaded. No bias beyond each scene's run-to-run scatter
 (bunnyparty's shipped-cap runs share +1.7% R with and without mutations). The sky-lit plume g = −0.9 has colour
-clumping too (0.0061 shipped: the colour of the env direction chosen); all moves halve it (0.0031).
+clumping too (0.0061 shipped: the colour of the env direction chosen).
+
+**Env re-selection was biased, now fixed (30163b8).** On the plume the move lost −0.44% R / −0.33% G / −0.15% B
+(low-res isolation, 200 frames: no mutation and the rotation move ±0.02%). Counting on the GPU showed q(x) through
+Falcor's `EnvMapSampler::evalPdf` disagreeing with `sample()`'s own pdf for 99.5% of lower-hemisphere directions
+(upper: texel edges only; lat-long round trip exact); a captured case gave uv (0.9975, 0.0020) from the texel walk
+and (0.5020, 0.0020) back from `ndir_to_oct_equal_area_unorm`, whose in-place `p = 1.f - p.yx` compiled as
+p.y = 1 − p.x, then p.x = 1 − p.y with the new p.y. The move now reads the density itself (`envPdf`,
+`octEqualAreaUnorm`): bias −0.02/−0.02/−0.01%. Context-dependent (Falcor's evalPdf compiled correctly after unrelated
+edits); Falcor's shared function is left for a separate fix. The point-light scenes never used the env branch;
+the plume's re-selection runs are re-rendered.
 
 **Stress atlas** (`atlas_figure.py`, `run_stress.sh`, `run_select.sh`; scenes in `Scripts/scenes/`): mutations
 cut the medium's ρ̄(8) at Mcap 50 by 51–78% on every stress scene — bunny front-lit −72%, 3 lights −72%, dense −65%,
