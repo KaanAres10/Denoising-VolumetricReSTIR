@@ -62,6 +62,8 @@ def main(argv=None):
     ap.add_argument("--scenes", default=",".join(SCENES))
     ap.add_argument("--configs", default=",".join(CONFIGS))
     ap.add_argument("--size", type=int, default=260)
+    ap.add_argument("--scale-pct", type=float, default=99.5,
+                    help="percentile of the blurred errors that sets the colour scale (lower: bright spots saturate, dim blotches show)")
     ap.add_argument("--colour", action="store_true",
                     help="bottom row: the COLOUR error (chromaticity vs the reference's), blurred, in false colour")
     a = ap.parse_args(argv)
@@ -96,7 +98,7 @@ def main(argv=None):
             blurs = [None if c is None or ref is None else
                      cv2.GaussianBlur((c[0] - ref)[crop].astype(np.float32) @ mc.Y_RGB.astype(np.float32), (0, 0), 4)
                      for c in cells]
-        scale = max((np.percentile(np.abs(b), 99.5) for b in blurs if b is not None), default=1.0)
+        scale = max((np.percentile(np.abs(b), a.scale_pct) for b in blurs if b is not None), default=1.0)
         level = float((ref[crop] @ mc.Y_RGB).mean()) if ref is not None else 1.0
         top, bot = ax[2 * i], ax[2 * i + 1]
         if ref is not None:
