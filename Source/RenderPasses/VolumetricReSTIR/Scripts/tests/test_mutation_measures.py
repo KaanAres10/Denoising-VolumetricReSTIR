@@ -214,5 +214,94 @@ class TestLightSelect(unittest.TestCase):
         self.assertGreater(abs(n0 / 50000 - 0.5), 0.2)
 
 
+def free_flight_sample(sigma, edges, u):
+    """VolumeTrackingAdapterGVDB.slang's SampleMediumAnalyticAdapterGVDB, nearest sampler, on a 1D ray: voxel k spans
+    [edges[k], edges[k+1]) with extinction sigma[k]; each voxel draws dT = -log(1 - u) / sigma with a fresh u, and the
+    first with edges[k] + dT < its exit holds the hit. Returns (t, sigma_t(t) T(0, t)), or (None, T(0, end)) on escape."""
+    tau = 0.0
+    for k, s in enumerate(sigma):
+        uk = u()
+        if s > 0:
+            dT = -np.log(1 - uk) / s
+            if edges[k] + dT < edges[k + 1]:
+                return edges[k] + dT, s * np.exp(-(dT * s + tau))
+        tau += (edges[k + 1] - edges[k]) * s
+    return None, np.exp(-tau)
+
+
+def free_flight_pdf(sigma, edges, t):
+    """MutateSamples.cs.slang's FreeFlightPdfAdapterGVDB: the same march stopped at t, sigma_t(t) T(0, t); 0 outside."""
+    tau = 0.0
+    for k, s in enumerate(sigma):
+        if edges[k] <= t < edges[k + 1]:
+            return s * np.exp(-(tau + (t - edges[k]) * s))
+        tau += (edges[k + 1] - edges[k]) * s
+    return 0.0
+
+
+def flight_step(x, target, sigma, edges, u, use_q=True):
+    """MutateSamples.cs.slang's free-flight depth move: an INDEPENDENCE proposal from the renderer's own distance
+    sampler (on its coarse grid), accepted with min(1, p_hat(z) q(x) / (p_hat(x) q(z))); an escape proposes nothing."""
+    z, qz = free_flight_sample(sigma, edges, lambda: RNG.random())
+    if z is None:
+        return x
+    qx = free_flight_pdf(sigma, edges, x) if use_q else 1.0
+    if not use_q:
+        qz = 1.0
+    pz = target(z)
+    return z if pz > 0 and qz > 0 and u * target(x) * qz < pz * qx else x
+
+
+class TestFreeFlight(unittest.TestCase):
+    # The proposal's grid: coarse voxels of width 1, the fourth empty -- a gap no bounded depth step crosses.
+    coarse = np.array([0.3, 0.5, 0.2, 0.0, 0.25, 0.15])   # T(0, 6) = exp(-1.4): 1/4 escape
+    edges = np.arange(7, dtype=float)
+    # p_hat's own grid: twice as fine, zero only where the coarse grid is (the conservative grid covers it).
+    fine = np.array([0.2, 0.4, 0.9, 0.1, 0.1, 0.3, 0.0, 0.0, 0.4, 0.1, 0.05, 0.25])
+    fine_edges = np.arange(13, dtype=float) / 2
+
+    def target(self, t):
+        """sigma_s(t) T(0, t) L(t) on the fine grid, with a light term that varies along the ray."""
+        return free_flight_pdf(self.fine, self.fine_edges, t) * 0.8 * (1.0 + 3.0 * np.sin(t) ** 2)
+
+    def test_the_evaluator_is_the_sampler_density(self):
+        samples, pdfs = [], []
+        for i in range(100000):
+            t, p = free_flight_sample(self.coarse, self.edges, lambda: RNG.random())
+            if t is not None:
+                samples.append(t)
+                pdfs.append(p)
+                if i < 1000:
+                    self.assertAlmostEqual(p, free_flight_pdf(self.coarse, self.edges, t), places=12)
+        # Mass per half-voxel against the evaluator's integral (midpoint rule on a fine grid).
+        hist = np.histogram(samples, bins=self.fine_edges)[0] / 100000
+        grid = np.linspace(0, 6, 60001)[:-1] + 0.5e-4
+        dens = np.array([free_flight_pdf(self.coarse, self.edges, t) for t in grid]) * 1e-4
+        expected = np.add.reduceat(dens, np.arange(0, 60000, 5000))
+        np.testing.assert_allclose(hist, expected, atol=0.004)
+
+    def run_chain(self, use_q, n=120000):
+        x, out = 0.3, np.empty(n)
+        for i in range(n):
+            x = flight_step(x, self.target, self.coarse, self.edges, RNG.random(), use_q)
+            out[i] = x
+        return np.histogram(out, bins=self.fine_edges)[0] / n
+
+    def expected_shares(self):
+        grid = np.linspace(0, 6, 60001)[:-1] + 0.5e-4
+        dens = np.array([self.target(t) for t in grid])
+        share = np.add.reduceat(dens, np.arange(0, 60000, 5000))
+        return share / share.sum()
+
+    def test_independence_depth_move_keeps_the_target(self):
+        # The chain crosses the empty voxel (a jump no random walk with bounded steps makes) and spends on each
+        # half-voxel its share of p_hat, although p_hat and q live on different grids and 1/4 of proposals escape.
+        np.testing.assert_allclose(self.run_chain(True), self.expected_shares(), atol=0.01)
+
+    def test_without_the_proposal_ratio_it_converges_elsewhere(self):
+        # Accepting with p_hat(z) / p_hat(x) alone samples p_hat q instead: the test above can fail.
+        self.assertGreater(np.abs(self.run_chain(False, 40000) - self.expected_shares()).max(), 0.05)
+
+
 if __name__ == "__main__":
     unittest.main()

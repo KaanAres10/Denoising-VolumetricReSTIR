@@ -21,11 +21,21 @@
     move that changes the light reaches it. Medium samples only: there the scatter point is exact, and the
     emissive sampler's back-face test at a wrong shading point would make the proposal asymmetric.
 
-    Without it, not globally ergodic, by design: the other moves never change lightID or the sample type,
-    and bounded depth steps cannot cross an empty gap wider than the largest step. Unbiasedness needs only
+    Free-flight depth (strategy bit 3, spec V-B10): an INDEPENDENCE move on the scatter depth alone. It draws a
+    fresh distance along the camera ray from the renderer's own initial distance sampler (analytic free flight on
+    the initial candidates' grid, up to the surface), so it jumps across empty gaps and back to the front of the
+    medium, which the bounded depth steps cannot. q(t) = sigma_t(t) T(0, t) on that grid, evaluated at the current
+    depth by the same march stopped there (FreeFlightPdfAdapterGVDB). Accepts with min(1, p_hat(z) q(x) /
+    (p_hat(x) q(z))), whose sigma T factors nearly cancel: what is left is how the light's contribution changes
+    along the ray. A proposal that escapes (no scatter before the surface) proposes nothing; its probability does
+    not depend on the state, so the step is a self-transition.
+
+    Without the last two, not globally ergodic, by design: the other moves never change lightID or the sample
+    type, and bounded depth steps cannot cross an empty gap wider than the largest step. Unbiasedness needs only
     detailed balance within the reachable set and an unbiased W(x0), not ergodicity.
 */
 __exported import ReSTIRHelper;
+import VolumeTrackingAdapterGVDB; // IVolumeTrackingAdapterGVDB, for the free-flight density
 #include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
 import Utils.Math.MathHelpers;
@@ -37,10 +47,11 @@ cbuffer CB
     int gFrameCount;
     int gNumTotalRounds;
     int gMutationCount;
-    uint gStrategyMask;                  // bit 0 light-vertex, bit 1 depth, bit 2 light re-selection
+    uint gStrategyMask;                  // bit 0 light-vertex, bit 1 depth, bit 2 light re-selection, bit 3 free flight
     float gLightStepMin, gLightStepMax;  // torus step in u, Kelemen magnitudes
     float gDirStepMin, gDirStepMax;      // radians
     float gDepthStepMin, gDepthStepMax;  // in ray-march steps (volumeDesc.tStep * volumeWorldScaling)
+    int gFlightMipLevel;                 // the initial distance sampler's grid (initialOptions.visibilityMipLevel)
     bool gCollectStats;
     SamplingOptions gSamplingOptions;
     EnvMapSampler envMapSampler;
@@ -64,6 +75,8 @@ StructuredBuffer<VBufferItem> gVBuffer;
 static const uint kLight = 0;
 static const uint kDepth = 1;
 static const uint kSelect = 2;
+static const uint kFlight = 3;
+static const int kMaxBrickSteps = 128; // VolumeTrackingAdapterGVDB.slang's MAX_BRICK_STEPS (a define, so not imported)
 
 /// Records the primary-ray visibility of an evaluation (the camera ray's transmittance up to the sample's
 /// depth, which does not depend on the light), so moves that keep the depth reuse it.
@@ -93,7 +106,7 @@ uint applicable(Reservoir r)
     const bool emissiveTri = r.lightID >= lightCount;
     uint mask = 0;
     if (hasShadingPoint && !selfEmission && (env || emissiveTri)) mask |= 1u << kLight;
-    if (inMedium) mask |= 1u << kDepth;
+    if (inMedium) mask |= (1u << kDepth) | (1u << kFlight);
     // Any light sample in the medium (a point light too), but not an emission path: its p_hat is the medium's
     // own emission, a kind the proposal never draws.
     const bool lightSample = r.lightID == -1 || r.lightID >= 0;
@@ -212,6 +225,111 @@ bool proposeLight(float3 p, LightKinds k, inout SampleGenerator sg, inout Reserv
     return true;
 }
 
+/// The density of the renderer's initial distance sampler (VolumeTrackingAdapterGVDB.slang's
+/// SampleMediumAnalyticAdapterGVDB, nearest sampler) at tTarget: sigma_t(t) T(0, t), by the same traversal, voxel
+/// lookups and optical-thickness sums, stopped at the point instead of at a sampled distance. 0 where the sampler
+/// never lands: outside the volume, or in an empty node the traversal skips.
+///
+/// It marches the sampler's own ray to its own end and stops itself at the point. Cutting the ray at the point
+/// instead (tMax = t) changes the traversal: VolumeTrackingGVDB advances dda.t.x by epsilon (0.01, in t) after each
+/// brick and ends the march once that passes tMax, so a point within epsilon after a brick's entry was never reached
+/// -- q = 0 for 7.4% of the plume's proposals and 11% of its current states (VR_MUT_STATS), while the sampler lands
+/// there. On the full ray: 20 of 30M proposals differ, by float rounding next to a voxel boundary.
+struct FreeFlightPdfAdapterGVDB : IVolumeTrackingAdapterGVDB
+{
+    float pdf;
+    float opticalThickness;
+    float tFar;
+    float tTarget; // the point, set before the march (the march runs the sampler's own ray, to its own end)
+    uint reason;   // diagnostics: 0 found in a voxel, 1 beyond the volume, 2 march ended before it, 3 never reached a brick
+    float sigmaFound, tauBefore, tEntry, tExit; // diagnostics: the voxel the point is in
+
+    [mutating] void InitializeValues()
+    {
+        pdf = 0.f;
+        opticalThickness = 0.f;
+        tFar = 0.f;
+        tTarget = 0.f;
+        reason = 3;
+        sigmaFound = tauBefore = tEntry = tExit = 0.f;
+    }
+
+    [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
+    {
+        tFar = tFar_;
+    }
+
+    [mutating] void ExecuteStartStep() {}
+
+    [mutating] bool ExecuteMainStep(in HDDAState dda, float3 vmin_leaf, float3 o, float4 brickDensityBounds, int mipLevel, inout float t, inout SampleGenerator sg)
+    {
+        if (tTarget > tFar) { reason = 1; return true; } // beyond the volume
+        HDDAState dda_leaf = dda;
+        dda_leaf.PrepareLeaf(vmin_leaf);
+        const AtlasMip atlasMip = loadAtlasMip(mipLevel);
+        for (int iter = 0; iter < kMaxBrickSteps && all(dda_leaf.p >= 0 && dda_leaf.p < atlasMip.resolution()); iter++)
+        {
+            dda_leaf.Next();
+            const float maxDeltaT = min(tFar - t, dda_leaf.t.y - t);
+            const float currentTMax = min(tFar, dda_leaf.t.y);
+            const float sigma_t = DensityInAtlas(dda_leaf.p + o + 0.5f, mipLevel, false, atlasMip) * gScene.volumeDesc.sigma_t;
+            // The sampler lands in this voxel at t + dT < its exit: the point is in it if it lies before the exit.
+            if (tTarget < dda_leaf.t.y)
+            {
+                pdf = sigma_t * exp(-(opticalThickness + (tTarget - t) * sigma_t));
+                reason = 0;
+                sigmaFound = sigma_t;
+                tauBefore = opticalThickness;
+                tEntry = t;
+                tExit = dda_leaf.t.y;
+                return true;
+            }
+            opticalThickness += maxDeltaT * sigma_t;
+            t = currentTMax;
+            if (t >= tFar) { reason = 2; return true; }
+            dda_leaf.Step();
+        }
+        return false;
+    }
+
+    [mutating] void ExecuteEndStep() {}
+};
+
+/// q(t) of the free-flight move: the initial distance sampler's density at depth t along ray, on its grid, up to
+/// ray.tMax (the surface, or none).
+float flightPdf(VolRay ray, float t, inout SampleGenerator sg, out FreeFlightPdfAdapterGVDB e)
+{
+    FreeFlightPdfAdapterGVDB a;
+    a.InitializeValues();
+    a.reason = 1;
+    if (t > 0.f && t < ray.tMax)
+    {
+        a.tTarget = t;
+        a.reason = 3;
+        VolumeTrackingGVDB(ray, gFlightMipLevel, sg, a, false); // the adapter draws no random numbers
+    }
+    e = a;
+    return a.pdf;
+}
+
+/// Diagnostics (VR_MUT_STATS): the first proposal whose evaluated density disagrees with the sampler's beyond float
+/// rounding, as float bits in stats 40-48 (stat 39 = taken).
+void captureFlight(float z, float qz, float trz, FreeFlightPdfAdapterGVDB e)
+{
+    uint old;
+    InterlockedCompareExchange(gMutationStats[39], 0u, 1u, old);
+    if (old != 0u) return;
+    gMutationStats[40] = asuint(z);
+    gMutationStats[41] = asuint(qz);
+    gMutationStats[42] = asuint(trz);
+    gMutationStats[43] = asuint(e.pdf);
+    gMutationStats[44] = asuint(e.sigmaFound);
+    gMutationStats[45] = asuint(e.tauBefore);
+    gMutationStats[46] = asuint(e.tEntry);
+    gMutationStats[47] = asuint(e.tExit);
+    gMutationStats[48] = e.reason;
+}
+
 /// Kelemen 2002 magnitude with a random sign: symmetric about 0.
 float kelemenStep(float lo, float hi, float2 u)
 {
@@ -252,6 +370,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     const VolRay ray = { cameraRay.origin, cameraRay.dir, 0, kRayTMax };
 #ifdef SURFACE_SCENE
     VBufferItem vItem = gVBuffer[pixelId];
+    const VolRay flightRay = { cameraRay.origin, cameraRay.dir, 0, vItem.rayT }; // as Generate Samples' candidates
+#else
+    const VolRay flightRay = ray;
 #endif
     StructuredBufferArrayDataProvider dp;
     dp.data = gCurExtraBounceReservoirs;
@@ -268,6 +389,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     const float depthUnit = gScene.volumeDesc.tStep * gScene.volumeWorldScaling;
     const uint enabledCount = countbits(gStrategyMask);
     const LightKinds kinds = lightKinds();
+    float qFlight = -1.f; // q(x) of the free-flight move while x's depth stays; -1 = not evaluated yet
 
     for (int it = 0; it < gMutationCount; it++)
     {
@@ -308,6 +430,54 @@ void main(uint3 DTid : SV_DispatchThreadID)
             }
             continue;
         }
+        if (s == kFlight)
+        {
+            // Independence move on the depth: the acceptance carries q(x) / q(z), both on the same ray.
+            stat(20);
+            float hit[MaxInitialSampleCount];
+            float qs[MaxInitialSampleCount];
+            float trs[MaxInitialSampleCount];
+            SampleMediumAnalyticGeneric(flightRay, sg, false, hit, gFlightMipLevel, qs, trs, 1);
+            if (!(hit[0] > 0.f) || !(hit[0] < kRayTMax)) { stat(22); continue; } // escaped: no proposal
+            z.depth = hit[0];
+            const float qz = qs[0];
+            if (qFlight < 0.f)
+            {
+                FreeFlightPdfAdapterGVDB ex;
+                qFlight = flightPdf(flightRay, x.depth, sg, ex);
+                // Diagnostics (VR_MUT_STATS): why q(x) is 0 -- beyond the volume, the march ended first, an empty
+                // node, a voxel of zero density.
+                if (gCollectStats && !(qFlight > 0.f)) stat(ex.reason == 0 ? 31 : 27 + ex.reason);
+            }
+            // Diagnostics (VR_MUT_STATS): the evaluator at the proposal vs the sampler's own density; beyond what
+            // float rounding of z = t + dT explains (the exponent's error ~ sigma ulp(z)), the first case captured.
+            if (gCollectStats)
+            {
+                FreeFlightPdfAdapterGVDB ez;
+                const float qe = flightPdf(flightRay, z.depth, sg, ez);
+                const float rel = abs(qe - qz) / qz;
+                if (rel > 1e-3f)
+                {
+                    stat(23);
+                    if (!(qe > 0.f)) stat(25);
+                    const float sigma = qz / max(trs[0], 1e-30f);
+                    const float ulp = asfloat(asuint(z.depth) + 1u) - z.depth;
+                    if (rel > 4.f * sigma * ulp + 1e-4f) { stat(26); captureFlight(z.depth, qz, trs[0], ez); }
+                }
+            }
+            if (!(qz > 0.f) || isinf(qz)) { stat(27); continue; }
+            if (!(qFlight > 0.f)) { stat(24); continue; }
+            const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz);
+            if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qFlight)
+            {
+                x = z;
+                px = pz;
+                primaryVis = visz.data;
+                qFlight = qz;
+                stat(21);
+            }
+            continue;
+        }
         if (s == kLight)
         {
             if (x.lightID < 0) // environment map: rotate on the sphere, symmetric in solid angle
@@ -340,6 +510,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             x = z;
             px = pz;
             primaryVis = visz.data;
+            if (s == kDepth) qFlight = -1.f; // the depth moved
             stat(s == kLight ? 1 : 3);
         }
     }

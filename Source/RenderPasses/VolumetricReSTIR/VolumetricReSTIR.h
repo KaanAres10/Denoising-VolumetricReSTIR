@@ -237,7 +237,7 @@ private:
         /// created nor dispatched. See MutateSamples.cs.slang.
         /////////////////////
         int mMutationCount = 0;
-        uint32_t mMutationStrategyMask = 3;         ///< bit 0 light vertex, bit 1 scatter depth, bit 2 light re-selection
+        uint32_t mMutationStrategyMask = 3;         ///< bit 0 light vertex, bit 1 scatter depth, bit 2 light re-selection, bit 3 free flight
         float mMutationLightStepMin = 1.f / 1024.f; ///< torus step in the emitter's area-uniform u
         float mMutationLightStepMax = 0.25f;        ///< up to a quarter of the triangle (bistro accepts 95%)
         float mMutationDirStepMinDeg = 0.1f;        ///< env-map rotation angle

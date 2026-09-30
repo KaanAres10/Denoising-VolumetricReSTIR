@@ -32,6 +32,7 @@
 #include "Utils/SampleGenerators/StratifiedSamplePattern.h"
 #include "Utils/SampleGenerators/DxSamplePattern.h"
 #include "Utils.h"
+#include <cstring>
 #include <random>
 
 #ifndef M_PI
@@ -66,7 +67,16 @@ namespace
                                         "select: env proposed", "select: point light proposed", "select: emissive proposed",
                                         "select: env q != sampler pdf", "select: env q checked",
                                         "select: env q mismatch, upper hemisphere", "select: env q mismatch, lower hemisphere",
-                                        "select: env proposals in the lower hemisphere", "select: Falcor evalPdf mismatch"};
+                                        "select: env proposals in the lower hemisphere", "select: Falcor evalPdf mismatch",
+                                        "flight proposed", "flight accepted", "flight: escaped (no proposal)",
+                                        "flight: q evaluator != sampler pdf", "flight: q(x) not positive",
+                                        "flight: mismatch, evaluator 0", "flight: mismatch beyond float rounding",
+                                        "flight: q(z) not positive", "flight: q(x) = 0 beyond the volume",
+                                        "flight: q(x) = 0 march ended first", "flight: q(x) = 0 in an empty node",
+                                        "flight: q(x) = 0 zero-density voxel", "", "", "", "", "", "", "",
+                                        "flight capture taken", "capture z", "capture q(z) sampler", "capture T(z) sampler",
+                                        "capture q(z) evaluator", "capture sigma evaluator", "capture tau before",
+                                        "capture voxel entry", "capture voxel exit", "capture reason"};
     constexpr uint32_t kMutationStatCount = sizeof(kMutationStatNames) / sizeof(kMutationStatNames[0]);
     constexpr int kMutationStatInterval = 256; ///< frames between acceptance log lines
 
@@ -614,6 +624,9 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
     vars["CB"]["gDirStepMax"] = math::radians(mParams.mMutationDirStepMaxDeg);
     vars["CB"]["gDepthStepMin"] = mParams.mMutationDepthStepMin;
     vars["CB"]["gDepthStepMax"] = mParams.mMutationDepthStepMax;
+    // The free-flight move proposes from the initial candidates' distance sampler: initialOptions.visibilityMipLevel.
+    vars["CB"]["gFlightMipLevel"] =
+        mParams.mInitialVisibilityUseLinearSampler ? mParams.mInitialBaseMipLevel : mParams.mInitialBaseMipLevel + kNumMaxMips;
     vars["CB"]["gCollectStats"] = mParams.mMutationStats;
     options.setShaderData(vars["CB"]["gSamplingOptions"]);
 
@@ -639,6 +652,19 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
                     "env q != sampler pdf {} of {}; env q mismatch upper {} lower {}; lower-hemisphere proposals {}; Falcor evalPdf mismatch {}",
                     s[8], kMutationStatNames[8], s[9], kMutationStatNames[9], s[10], kMutationStatNames[10], s[11], s[12], s[13],
                     s[14], s[15], s[16], s[17], s[18], s[19]);
+        if (s[20] > 0)
+        {
+            logInfo("VolumetricReSTIR free flight: {}/{} accepted ({:.3f}); {} {}, {} {}, {} {}", s[21], s[20], rate(s[21], s[20]),
+                    s[22], kMutationStatNames[22], s[23], kMutationStatNames[23], s[24], kMutationStatNames[24]);
+            logInfo("VolumetricReSTIR free flight diagnostics: {} {}, {} {}, {} {}; q(x) = 0: beyond the volume {}, march ended "
+                    "first {}, empty node {}, zero-density voxel {}", s[25], kMutationStatNames[25], s[26], kMutationStatNames[26],
+                    s[27], kMutationStatNames[27], s[28], s[29], s[30], s[31]);
+            const auto f = [&](int i) { float v; std::memcpy(&v, &s[i], sizeof(v)); return v; };
+            if (s[39])
+                logInfo("VolumetricReSTIR free flight capture: z {:.9g}, q(z) sampler {:.9g}, T(z) sampler {:.9g}, q(z) evaluator "
+                        "{:.9g}, sigma {:.9g}, tau before {:.9g}, voxel [{:.9g}, {:.9g}), reason {}",
+                        f(40), f(41), f(42), f(43), f(44), f(45), f(46), f(47), s[48]);
+        }
         pRenderContext->clearUAV(mMutationStatsBuffer->getUAV().get(), uint4(0));
         mMutationStatFrames = 0;
     }
@@ -2124,13 +2150,14 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
                            "(Sawhney et al. 2024). 0 = off. Runs only for single scattering without vertex reuse "
                            "and with ray-marching or analytic spatial trackers (p_hat must be deterministic).", true);
             bool light = mParams.mMutationStrategyMask & 1u, depth = mParams.mMutationStrategyMask & 2u;
-            bool select = mParams.mMutationStrategyMask & 4u;
+            bool select = mParams.mMutationStrategyMask & 4u, flight = mParams.mMutationStrategyMask & 8u;
             bool strategies = widget.checkbox("Light-vertex moves", light);
             strategies |= widget.checkbox("Scatter-depth moves", depth);
             strategies |= widget.checkbox("Light re-selection (medium samples)", select);
+            strategies |= widget.checkbox("Free-flight depth (medium samples)", flight);
             if (strategies)
             {
-                mParams.mMutationStrategyMask = (light ? 1u : 0u) | (depth ? 2u : 0u) | (select ? 4u : 0u);
+                mParams.mMutationStrategyMask = (light ? 1u : 0u) | (depth ? 2u : 0u) | (select ? 4u : 0u) | (flight ? 8u : 0u);
                 dirty = true;
             }
             dirty |= widget.var("Light step min (u)", mParams.mMutationLightStepMin, 1e-6f, 0.5f);
