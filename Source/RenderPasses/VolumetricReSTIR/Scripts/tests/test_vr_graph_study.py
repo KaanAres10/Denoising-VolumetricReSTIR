@@ -210,6 +210,27 @@ class TestStressScenes(StudyEnv):
             lights, meshes = self.run_pyscene(path)
             self.assertEqual(len(lights), n_lights, name)
             self.assertEqual(len(meshes), n_meshes, name)
+        # Film-style shots (spec V-B10): concert beams through stage smoke, god rays in a stone room.
+        for name, n_lights, n_meshes, flags in (("plumeconcert", 6, 0, (True, False, False, False)),
+                                                ("bunnycathedral", 1, 11, (True, False, False, True))):
+            vr, m = fresh_vr()
+            p = vr.SCENES[name]()["params"]
+            self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"],
+                              p.get("mUseSurfaceScene", False)), flags, name)
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            lights, meshes = self.run_pyscene(path)
+            self.assertEqual((len(lights), len(meshes)), (n_lights, n_meshes), name)
+        lights, _ = self.run_pyscene(vr.SCENE_DIR + r"\plume_concert.pyscene")
+        self.assertTrue(all(0.0 < l.openingAngle < 0.2 for l in lights))  # narrow beams
+        self.assertEqual(len({tuple(round(c / max(l.intensity), 2) for c in l.intensity) for l in lights}), 6)
+        # The sunset: the Disney cloud with the dawn sun yawed behind it; the night street: Emerald's fog, lamps only.
+        vr, m = fresh_vr()
+        vr.SCENES["wdassunset"]()
+        self.assertEqual(m.scene.envMap.rotation, (0, 165, 0))
+        vr, m = fresh_vr()
+        info = vr.SCENES["emeraldnight"]()
+        self.assertLess(m.scene.envMap.intensity, 0.003)
+        self.assertTrue(info["params"]["mUseEmissiveLights"])
         # The softbox panels glow in two different colours.
         _, meshes = self.run_pyscene(vr.SCENE_DIR + r"\bunny_softbox.pyscene")
         colours = {tuple(mat.emissiveColor) for _, mat in meshes}

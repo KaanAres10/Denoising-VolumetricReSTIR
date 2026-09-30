@@ -1,0 +1,31 @@
+# Film-style shot (decorrelation study, spec V-B10): god rays -- the bunny cloud as dust in a stone hall, lit only by
+# a low sun through four tall windows in the left wall (run thinned, label bunnycathedral_d0.3). The hall is open on
+# the camera's side (a set's missing fourth wall). Each window casts a slanted shaft through the dust: sharp shaft
+# edges between neighbouring pixels, lit and dark stretches along each view ray, sunlit patches on the floor.
+# The cloud spans x -24..22.2, y -3.8..42.0, z -16.6..18.4; the hall's inside x -27..25, y -6..46, z -20..(open).
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+stone = Material('Stone')
+stone.baseColor = float4(0.35, 0.33, 0.3, 1)
+stone.roughness = 0.9
+
+def block(name, centre, size):
+    node = sceneBuilder.addNode(name, Transform(scaling=float3(*size), translation=float3(*centre)))
+    sceneBuilder.addMeshInstance(node, sceneBuilder.addTriangleMesh(TriangleMesh.createCube(), stone))
+
+block('Floor', (-1, -6.5, 1), (54, 1, 44))
+block('Ceiling', (-1, 46.5, 1), (54, 1, 44))
+block('BackWall', (-1, 20, -20.5), (54, 54, 1))
+block('RightWall', (25.5, 20, 1), (1, 54, 44))
+# Left wall: sill below the windows (y -6..12), lintel above (38..46), five piers between four 4-unit windows.
+block('Sill', (-27.5, 3, 1), (1, 18, 44))
+block('Lintel', (-27.5, 42, 1), (1, 8, 44))
+for k in range(5):
+    block('Pier%d' % k, (-27.5, 20, -18.2 + 9.6 * k), (1, 54, 5.6))
+
+# The sun: a point light ~500 units away up, left and behind, so shafts fall down and right, slightly toward the
+# camera. Irradiance ~20 at the hall.
+sun = PointLight('sun')
+sun.intensity = float3(5.4e6, 4.9e6, 4.2e6)
+sun.position = float3(-400, 300, -120)
+sceneBuilder.addLight(sun)

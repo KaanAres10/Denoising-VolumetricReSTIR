@@ -367,6 +367,24 @@ def load_wdas():
             "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
 
 
+def load_wdas_sunset():
+    """Film-style shot (spec V-B10): the Disney cloud at sunset, BACKLIT -- the dawn sky yawed so its sun (3.7
+    degrees up, at uv (0.631, 0.480) of kiara_1_dawn) sits ~9 degrees off the camera's view axis, behind the cloud
+    (EnvMap::toWorld is R_y(yaw) for a pure yaw; 173.75 would put it dead centre). Run with a forward phase
+    function (label wdassunset_g0.85) for the silver lining; the sun's colour and the sky's compete per pixel."""
+    info = load_wdas()
+    m.scene.envMap.rotation = float3(0, 165, 0)
+    return info
+
+
+def load_emerald_night():
+    """Film-style shot (spec V-B10): Emerald Square at night in fog -- the sky ten times dimmer than at dusk, so the
+    street lamps light the fog (halos, light cones); run with the fog thickened (label emeraldnight_d3)."""
+    info = load_emerald()
+    m.scene.envMap.intensity = 0.0003
+    return info
+
+
 # The JangaFX EmberGen datasets (FirePlumeVDB, DustShockwaveVDB) are deliberately not here: the user
 # excluded them from the decorrelation study. run_volume_dataset.py still plays them back.
 SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion,
@@ -385,7 +403,13 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "bunnyslabs": lambda: load_bunny(SCENE_DIR + r"\bunny_slabs.pyscene", POINT_LIGHTS_OCCLUDED),
           "bunnystripes": lambda: load_bunny(SCENE_DIR + r"\bunny_stripes.pyscene", POINT_LIGHTS_OCCLUDED),
           "bunnysoftbox": lambda: load_bunny(SCENE_DIR + r"\bunny_softbox.pyscene", EMISSIVE_ONLY),
-          "bunnylanterns": lambda: load_bunny(SCENE_DIR + r"\bunny_lanterns.pyscene")}
+          "bunnylanterns": lambda: load_bunny(SCENE_DIR + r"\bunny_lanterns.pyscene"),
+          # Film-style shots: concert beams through stage smoke, god rays in a stone hall, a backlit sunset
+          # cloudscape, a foggy street at night.
+          "plumeconcert": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_concert.pyscene"),
+          "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
+          "wdassunset": load_wdas_sunset,
+          "emeraldnight": load_emerald_night}
 
 
 def load_scene(name):
