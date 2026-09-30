@@ -1,0 +1,18 @@
+# Stress scene (decorrelation study, spec V-B10): bunny_slabs.pyscene's light and slats turned 90 degrees -- the
+# slats run ALONG the view direction, so the shadows cut the cloud into lit and dark stripes side by side across
+# the image. Every stripe edge puts neighbouring pixels with very different targets next to each other (the
+# mismatch of neighbouring targets, Sawhney et al. supplement Eq. 18), which spatial reuse spreads across the edge.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('top')
+light.intensity = float3(30000, 30000, 30000)
+light.position = float3(-0.9, 75, 0.9)
+sceneBuilder.addLight(light)
+
+slat = Material('Slat')
+slat.baseColor = float4(0.05, 0.05, 0.05, 1)
+slat.roughness = 1.0
+for k in range(9):
+    x = -0.9 + 3.5 * (k - 4)
+    node = sceneBuilder.addNode('Slat%d' % k, Transform(scaling=float3(1.75, 0.3, 80), translation=float3(x, 47, 0.9)))
+    sceneBuilder.addMeshInstance(node, sceneBuilder.addTriangleMesh(TriangleMesh.createCube(), slat))

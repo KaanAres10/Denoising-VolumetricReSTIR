@@ -18,6 +18,10 @@ S="$TEMP/claude/C--research-Denoising-VolumetricReSTIR/a147ce95-9ebe-4c07-baad-4
 [ "${FLIGHT_NOWAIT:-0}" = 1 ] || until grep -q "den2 done" $O/select.log; do sleep 120; done
 while tasklist 2>/dev/null | grep -qi mogwai; do sleep 60; done
 echo "[$(date +%H:%M:%S)] flight start" >> $LOG
+FL="VR_MUTATIONS=5 VR_MUT_STRAT=flight VR_MUT_STATS=1"
+ALL4="VR_MUTATIONS=5 VR_MUT_STRAT=light,depth,select,flight VR_MUT_STATS=1"
+# FLIGHT_STUDY_ONLY=1: skip the build and the checks (they passed: 9f552f6) and run the study alone.
+if [ "${FLIGHT_STUDY_ONLY:-0}" != 1 ]; then
 ./tools/.packman/cmake/bin/cmake.exe --build build/windows-vs2022 --config Release --target VolumetricReSTIR > "$S/build_flight.log" 2>&1
 echo "build $?" | tee -a $LOG
 bash outputs/mask_check.sh raw none 2>&1 | tail -1 | tee -a $LOG
@@ -49,8 +53,6 @@ bias() {
       env VR_DISPLAY=480x270 VR_CHAINS=4 VR_PER_CHAIN=50 VR_SPACING=2 VR_WARM=256 VR_OUT_DIR="$(cygpath -m "$d")" VR_TAG=c "$@" \
           timeout 2400 $MOG --script "$SCRIPT_CP" > "$d/run.log" 2>&1 )
 }
-FL="VR_MUTATIONS=5 VR_MUT_STRAT=flight VR_MUT_STATS=1"
-ALL4="VR_MUTATIONS=5 VR_MUT_STRAT=light,depth,select,flight VR_MUT_STATS=1"
 for spec in plume:VR_PHASE_G=-0.9 bistro:; do
     L=${spec%%:*}; G=${spec#*:}
     # shellcheck disable=SC2086
@@ -63,6 +65,7 @@ for spec in plume:VR_PHASE_G=-0.9 bistro:; do
     bias $L cap50_all4_post VR_SCENE=$L $G VR_MTHRESH=50 $ALL4 VR_MUT_AFTER_SPATIAL=1
     python $O/bias_check.py "$S/biasflight/$L" noreuse cap50 cap50_flight cap50_all4_post 2>&1 | sed "s/^/bias $L: /" | tee -a $LOG
 done
+fi
 export STUDY_SPACING=5 STUDY_TIMEOUT=2400
 run() { bash $O/run_study.sh one "$@" 2>&1 | tee -a $LOG; }
 DEPTH="VR_MUTATIONS=5 VR_MUT_STRAT=depth VR_MUT_STATS=1"

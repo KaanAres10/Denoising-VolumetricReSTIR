@@ -1,0 +1,22 @@
+# Stress scene (decorrelation study, spec V-B10): the bunny cloud between two large emissive panels close to its
+# sides, warm on the left and cool on the right, no other light. Two clumpings at once: WHICH panel a pixel's sample
+# chose (its colour -- the light re-selection move) and WHERE on the panel (near a large close emitter the target
+# changes steeply across it -- the light-vertex move, which steps the point's area-uniform u). Emissive triangles
+# need the surface scene. Panels 10 x 10, 7 units outside the cloud's x extent (-24..22.2), facing it.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+warm = Material('Warm')
+warm.emissiveColor = float3(1.0, 0.55, 0.2)
+warm.emissiveFactor = 30
+cool = Material('Cool')
+cool.emissiveColor = float3(0.25, 0.5, 1.0)
+cool.emissiveFactor = 30
+
+# createQuad: unit square in xz facing +y. Rotating -90 degrees about z turns +y into +x (the left panel faces the
+# cloud); +90 turns it into -x (the right one).
+left = sceneBuilder.addNode('WarmPanel', Transform(scaling=float3(10, 1, 10), translation=float3(-31, 19, 0.9),
+                                                   rotationEulerDeg=float3(0, 0, -90)))
+sceneBuilder.addMeshInstance(left, sceneBuilder.addTriangleMesh(TriangleMesh.createQuad(), warm))
+right = sceneBuilder.addNode('CoolPanel', Transform(scaling=float3(10, 1, 10), translation=float3(29, 19, 0.9),
+                                                    rotationEulerDeg=float3(0, 0, 90)))
+sceneBuilder.addMeshInstance(right, sceneBuilder.addTriangleMesh(TriangleMesh.createQuad(), cool))

@@ -1,0 +1,22 @@
+# Stress scene (decorrelation study, spec V-B10): the bunny cloud lit from straight above by ONE white point light
+# through nine horizontal slats laid ACROSS the view direction, no sky. The slats' shadows cut the cloud into lit
+# and dark slabs stacked along z, so every camera ray (the camera looks down -z) crosses several lit slabs with dark
+# gaps between them: the target along a ray is multimodal in depth. Lin's shift copies a neighbour's scatter depth
+# verbatim, which lands in this pixel's lit slab or its shadow; the bounded depth walk cannot cross a dark gap, the
+# free-flight move can. Needs the surface scene (the slats occlude the light).
+# Cloud: x -24..22.2, y -3.8..42.0, z -16.6..18.4 (see bunny_inside.pyscene). Light at y 75, slats at y 47: the
+# shadows magnify 2x at the cloud's centre, a 3.5-unit slat pitch there becomes 7 units, ~5 slabs along a ray.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('top')
+light.intensity = float3(30000, 30000, 30000)
+light.position = float3(-0.9, 75, 0.9)
+sceneBuilder.addLight(light)
+
+slat = Material('Slat')
+slat.baseColor = float4(0.05, 0.05, 0.05, 1)
+slat.roughness = 1.0
+for k in range(9):
+    z = 0.9 + 3.5 * (k - 4)
+    node = sceneBuilder.addNode('Slat%d' % k, Transform(scaling=float3(80, 0.3, 1.75), translation=float3(-0.9, 47, z)))
+    sceneBuilder.addMeshInstance(node, sceneBuilder.addTriangleMesh(TriangleMesh.createCube(), slat))

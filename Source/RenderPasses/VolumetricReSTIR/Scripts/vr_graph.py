@@ -44,6 +44,10 @@ REPO = r"C:\research\Denoising-VolumetricReSTIR"
 SCENE_DIR = REPO + r"\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes"
 # Graph settings of a scene lit by its analytic (point) lights alone.
 POINT_LIGHTS_ONLY = {"mUseAnalyticLights": True, "mUseEnvironmentLights": False, "mUseEmissiveLights": False}
+# ...with the file's geometry occluding them (the slatted scenes), and lit by its emissive geometry alone.
+POINT_LIGHTS_OCCLUDED = dict(POINT_LIGHTS_ONLY, mUseSurfaceScene=True)
+EMISSIVE_ONLY = {"mUseAnalyticLights": False, "mUseEnvironmentLights": False, "mUseEmissiveLights": True,
+                 "mUseSurfaceScene": True}
 DATA_DIR = REPO + r"\VolumetricReSTIRData"
 SCRIPT_DIR = REPO + r"\Source\RenderPasses\VolumetricReSTIR\Scripts"
 
@@ -328,10 +332,10 @@ def load_emerald():
     }
 
 
-def load_bunny(pyscene=None):
+def load_bunny(pyscene=None, params=None):
     """The Stanford-bunny cloud under a daylight sky (run_bunny_cloud.py). Lin et al. 2021 Fig. 21 renders
     it with g = 0.8 as the highly anisotropic case (VR_PHASE_G=0.8). With `pyscene`: that file's point lights
-    and no sky (the stress scenes bunnyrgb / bunnyone / bunnyback)."""
+    and no sky (the stress scenes bunnyrgb / bunnyone / bunnyback), or its lights as `params` says."""
     if pyscene:
         m.loadScene(pyscene)
     else:
@@ -343,7 +347,7 @@ def load_bunny(pyscene=None):
     _pin_camera((-17.290087, 23.748606, 45.495544), (-17.053705, 23.593506, 44.536343), (0.003480, 0.999892, -0.014248))
     return {"scatterAlbedo": float3(0.9, 0.9, 0.9),   # 9 / (9 + 1)
             "exposure": 0.0,
-            "params": dict(POINT_LIGHTS_ONLY) if pyscene else {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
+            "params": dict(params or POINT_LIGHTS_ONLY) if pyscene else {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
 
 
 def load_wdas():
@@ -375,7 +379,13 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "bunnyspot": lambda: load_bunny(SCENE_DIR + r"\bunny_spot.pyscene"),
           "bunnyparty": lambda: load_bunny(SCENE_DIR + r"\bunny_party.pyscene"),
           "plumeback": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_back.pyscene"),
-          "plumeone": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_one.pyscene")}
+          "plumeone": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_one.pyscene"),
+          # Spec V-B10: light through slats (lit slabs along the view ray / stripes across it), two emissive
+          # panels (warm and cool), 48 coloured lanterns inside the cloud.
+          "bunnyslabs": lambda: load_bunny(SCENE_DIR + r"\bunny_slabs.pyscene", POINT_LIGHTS_OCCLUDED),
+          "bunnystripes": lambda: load_bunny(SCENE_DIR + r"\bunny_stripes.pyscene", POINT_LIGHTS_OCCLUDED),
+          "bunnysoftbox": lambda: load_bunny(SCENE_DIR + r"\bunny_softbox.pyscene", EMISSIVE_ONLY),
+          "bunnylanterns": lambda: load_bunny(SCENE_DIR + r"\bunny_lanterns.pyscene")}
 
 
 def load_scene(name):
@@ -408,7 +418,7 @@ def load_scene(name):
 # Graph pieces
 # ---------------------------------------------------------------------------------------------
 
-MUTATION_STRATEGIES = {"light": 1, "depth": 2, "select": 4}  # MutateSamples.cs.slang's strategy bits
+MUTATION_STRATEGIES = {"light": 1, "depth": 2, "select": 4, "flight": 8}  # MutateSamples.cs.slang's strategy bits
 
 
 def mutation_strategy_mask(spec):
@@ -508,7 +518,12 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
                               ("mSampleRadius", "VR_SR_RADIUS", float),
                               ("mSpatialSampleCount", "VR_SR_COUNT", int),
                               ("mSpatialReuseRounds", "VR_SR_ROUNDS", int),
-                              ("mInitialM", "VR_INITIAL_M", int)):
+                              ("mInitialM", "VR_INITIAL_M", int),
+                              # A cheaper, coarser target (spec V-B10): p_hat's light and camera-ray transmittance
+                              # on this mip (shipped: 1); final shading stays on mip 0, so f / p_hat -- what a
+                              # shared sample carries into every pixel that shares it -- varies more.
+                              ("mSpatialLightingMipLevel", "VR_TARGET_MIP", int),
+                              ("mSpatialVisibilityMipLevel", "VR_TARGET_MIP", int)):
         if os.environ.get(_var):
             props["mParams"][_key] = _conv(os.environ[_var])
     # Metropolis-Hastings mutations after temporal reuse (Sawhney et al. 2024): VR_MUTATIONS steps per

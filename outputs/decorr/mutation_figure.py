@@ -33,7 +33,10 @@ def name(cfg):
         return NAMES[cfg]
     parts = cfg.split("_")
     out = []
-    if parts[0] == "dec":
+    if parts[0].startswith("tmip"):
+        out.append("target on mip %s," % parts[0][4:])
+        parts = parts[1:]
+    if parts and parts[0] == "dec":
         out.append("decoupled history,")
         parts = parts[1:]
     if parts and parts[0] == "mcap":
@@ -45,6 +48,8 @@ def name(cfg):
             out.append("+ %s mutation%s" % (n, "" if n == "1" else "s"))
         elif p in ("light", "depth", "both", "select", "all"):
             out.append("(%s)" % p)
+        elif p in ("flight", "all4"):
+            out.append("(free flight)" if p == "flight" else "(all four)")
         elif p == "post":
             out.append("after spatial reuse")
         elif p.startswith("r") and p[1:].isdigit():

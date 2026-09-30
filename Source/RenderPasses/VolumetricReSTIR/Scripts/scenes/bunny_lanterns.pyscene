@@ -1,0 +1,17 @@
+# Stress scene (decorrelation study, spec V-B10): 48 small point lights of 48 hues scattered through the bunny
+# cloud, no sky -- a near-field many-light scene. Each pixel's colour is the colour of the one lantern its sample
+# chose; with 48 nearby lanterns whose contributions change steeply (1/r^2) from pixel to pixel, reuse clumps both
+# the choice (colour blotches) and the winner's brightness. Tests the light re-selection move at many lights (its
+# point-light proposal is uniform over the lanterns). Deterministic positions (fixed seed) in the cloud's core.
+import colorsys
+import random
+
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+rng = random.Random(11)
+for k in range(48):
+    r, g, b = colorsys.hsv_to_rgb(k / 48.0, 0.8, 1.0)
+    light = PointLight('lantern%d' % k)
+    light.intensity = float3(60 * r, 60 * g, 60 * b)
+    light.position = float3(rng.uniform(-15, 13), rng.uniform(5, 35), rng.uniform(-10, 12))
+    sceneBuilder.addLight(light)

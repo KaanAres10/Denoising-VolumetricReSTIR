@@ -3,7 +3,9 @@ medium of one frame (same seed everywhere) above its error against the reference
 averages out and the blotches reuse makes remain. A shared colour scale per row; titles give the medium's
 neighbour correlation rho(8), the colour correlation and the blurred error.
 
-    python atlas_figure.py outputs/decorr [--out atlas.png] [--scenes a,b,..] [--configs a,b,..]
+    python atlas_figure.py outputs/decorr [--out atlas.png] [--scenes a,b,..] [--configs a,b|c,..]
+
+A config "b|c" is the first of b, c that was run for the scene.
 """
 import argparse
 import json
@@ -29,15 +31,24 @@ SCENES = {"bunnyrgb": "bunny, 3 coloured lights", "bunnyone": "bunny, 1 light (f
           "emerald": "Emerald Square fog", "bistro": "Bistro",
           "bunnyinside": "bunny, lamp inside", "bunnyinside_g0.8": "bunny, lamp inside, g = 0.8",
           "bunnyspot": "bunny, spotlight beam", "bunnyspot_g0.8": "bunny, spotlight beam, g = 0.8",
-          "bunnyparty": "bunny, 8 coloured lights", "plumeback_g0.9": "plume backlit, g = 0.9"}
+          "bunnyparty": "bunny, 8 coloured lights", "plumeback_g0.9": "plume backlit, g = 0.9",
+          "bunnyslabs": "bunny, light through slats (slabs in depth)",
+          "bunnystripes": "bunny, light through slats (stripes)",
+          "bunnysoftbox": "bunny, warm + cool panel lights", "bunnylanterns": "bunny, 48 coloured lanterns",
+          "bunnyback_g0.95": "bunny, 1 light behind, g = 0.95"}
 CONFIGS = ["shipped", "mcap_50", "mcap_50_mut5", "dec_mcap_200"]
 BRIGHT_CROP = ("bunnyspot", "bunnyinside")  # crop where the light is, not the medium's centre
 
 
+def resolve(root, label, spec):
+    """The first of spec's "|"-separated configs that was run and scored for this scene, or None."""
+    return next((c for c in spec.split("|") if os.path.exists(os.path.join(root, label, c, "c.corr.json"))), None)
+
+
 def cell(root, label, cfg):
-    d = os.path.join(root, label, cfg)
-    if not os.path.exists(os.path.join(d, "c.corr.json")):
+    if cfg is None:
         return None
+    d = os.path.join(root, label, cfg)
     color, ident = art.kept(d)
     with open(os.path.join(d, "c.corr.json")) as fh:
         corr = json.load(fh)
@@ -60,7 +71,8 @@ def main(argv=None):
     fig, ax = plt.subplots(2 * len(scenes), ncol, figsize=(3.3 * ncol, 3.5 * 2 * len(scenes)), squeeze=False)
     for i, label in enumerate(scenes):
         ref = art.reference(a.root, label)
-        cells = [cell(a.root, label, c) for c in configs]
+        found = [resolve(a.root, label, spec) for spec in configs]
+        cells = [cell(a.root, label, c) for c in found]
         first = next(c for c in cells if c is not None)
         crop = art.medium_crop(first[1], a.size)
         if ref is not None and label.split("_")[0] in BRIGHT_CROP:
@@ -94,7 +106,7 @@ def main(argv=None):
                   "tint = the blotch's colour cast") if a.colour else \
                  "error vs reference,\nblurred (sigma 4):\nblotches only\n\nred brighter,\nblue darker"
         bot[0].text(0.5, 0.5, legend, ha="center", va="center", fontsize=10, transform=bot[0].transAxes)
-        for j, (cfg, c, b) in enumerate(zip(configs, cells, blurs), start=1):
+        for j, (cfg, c, b) in enumerate(zip(found, cells, blurs), start=1):
             if c is None:
                 top[j].text(0.5, 0.5, "not run", ha="center", va="center", transform=top[j].transAxes)
                 continue

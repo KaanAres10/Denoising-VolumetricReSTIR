@@ -134,5 +134,29 @@ class TestSheet(unittest.TestCase):
             self.assertGreater(os.path.getsize(out), 10000)
 
 
+class TestAtlasConfigs(unittest.TestCase):
+    def test_first_scored_alternative(self):
+        import atlas_figure
+        with tempfile.TemporaryDirectory() as root:
+            for cfg in ("mcap_50_mut5", "shipped"):
+                os.makedirs(os.path.join(root, "bunnyone", cfg))
+                write(os.path.join(root, "bunnyone", cfg, "c.corr.json"), "{}")
+            os.makedirs(os.path.join(root, "bunnyone", "mcap_50_mut5_all"))  # rendered, never scored
+            self.assertEqual(atlas_figure.resolve(root, "bunnyone", "mcap_50_mut5_all|mcap_50_mut5"), "mcap_50_mut5")
+            self.assertEqual(atlas_figure.resolve(root, "bunnyone", "shipped"), "shipped")
+            self.assertIsNone(atlas_figure.resolve(root, "bunnyone", "dec_mcap_200"))
+
+
+class TestConfigNames(unittest.TestCase):
+    def test_mutation_configs(self):
+        import mutation_figure
+        self.assertEqual(mutation_figure.name("mcap_50_mut5_flight"), "M cap 50 + 5 mutations (free flight)")
+        self.assertEqual(mutation_figure.name("dec_mcap_200_mut5_all4_post"),
+                         "decoupled history, M cap 200 + 5 mutations (all four) after spatial reuse")
+        self.assertEqual(mutation_figure.name("mcap_50_mut5_all"), "M cap 50 + 5 mutations (all)")
+        self.assertEqual(mutation_figure.name("tmip3_mcap_50_mut5_all4_post"),
+                         "target on mip 3, M cap 50 + 5 mutations (all four) after spatial reuse")
+
+
 if __name__ == "__main__":
     unittest.main()

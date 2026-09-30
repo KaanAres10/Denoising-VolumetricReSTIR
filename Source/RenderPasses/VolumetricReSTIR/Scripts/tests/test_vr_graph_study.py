@@ -17,7 +17,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS",
               "VR_MUTATIONS", "VR_MUT_STRAT", "VR_MUT_STATS", "VR_INITIAL_M",
-              "VR_DECOUPLED", "VR_DUP_CAP", "VR_MUT_AFTER_SPATIAL",
+              "VR_DECOUPLED", "VR_DUP_CAP", "VR_MUT_AFTER_SPATIAL", "VR_TARGET_MIP",
               "VR_PARAMS")
 
 
@@ -182,6 +182,39 @@ class TestStressScenes(StudyEnv):
             self.assertEqual(len(lights), count, name)
             self.assertTrue(all(len(l.intensity) == 3 and len(l.position) == 3 for l in lights), name)
 
+    def run_pyscene(self, path):
+        """Runs a .pyscene against a stand-in scene builder: (lights, mesh instances with their materials)."""
+        builder = Recorder()
+        env = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+               "Material": lambda n: types.SimpleNamespace(name=n), "Transform": lambda **k: k,
+               "TriangleMesh": types.SimpleNamespace(createCube=lambda *a, **k: "cube", createQuad=lambda *a, **k: "quad"),
+               "float3": lambda *a: tuple(a), "float4": lambda *a: tuple(a)}
+        with open(path) as fh:
+            exec(fh.read(), env)
+        lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
+        meshes = [c[1] for c in builder.calls if c[0] == "addTriangleMesh"]
+        return lights, meshes
+
+    def test_new_scenes(self):
+        # (name, lights, occluder or emitter meshes, (analytic, env, emissive, surfaces))
+        for name, n_lights, n_meshes, flags in (("bunnyslabs", 1, 9, (True, False, False, True)),
+                                                ("bunnystripes", 1, 9, (True, False, False, True)),
+                                                ("bunnysoftbox", 0, 2, (False, False, True, True)),
+                                                ("bunnylanterns", 48, 0, (True, False, False, False))):
+            vr, m = fresh_vr()
+            self.assertNotIn("_", name)
+            p = vr.SCENES[name]()["params"]
+            self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"],
+                              p.get("mUseSurfaceScene", False)), flags, name)
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            lights, meshes = self.run_pyscene(path)
+            self.assertEqual(len(lights), n_lights, name)
+            self.assertEqual(len(meshes), n_meshes, name)
+        # The softbox panels glow in two different colours.
+        _, meshes = self.run_pyscene(vr.SCENE_DIR + r"\bunny_softbox.pyscene")
+        colours = {tuple(mat.emissiveColor) for _, mat in meshes}
+        self.assertEqual(len(colours), 2)
+
     def test_knobs_reach_the_stress_scenes(self):
         os.environ.update({"VR_PHASE_G": "0.8", "VR_DENSITY_MULT": "5"})
         for name in self.LIGHTS:
@@ -219,6 +252,10 @@ class TestKnobs(StudyEnv):
         self.assertIsInstance(params["mSpatialSampleCount"], int)
         self.assertEqual(params["mSpatialReuseRounds"], 3)
         self.assertEqual(params["mInitialM"], 8)  # initial candidates: the equal-time rival of mutations
+        self.assertNotIn("mSpatialLightingMipLevel", params)
+        os.environ["VR_TARGET_MIP"] = "3"  # a cheaper, coarser target: both of p_hat's transmittances on mip 3
+        params = self.restir_params()
+        self.assertEqual((params["mSpatialLightingMipLevel"], params["mSpatialVisibilityMipLevel"]), (3, 3))
         self.assertIsInstance(params["mInitialM"], int)
 
     def test_mutation_knobs_absent_when_unset(self):
@@ -228,7 +265,7 @@ class TestKnobs(StudyEnv):
 
     def test_mutation_knobs(self):
         os.environ.update({"VR_MUTATIONS": "5", "VR_MUT_STATS": "1"})
-        for strat, mask in (("light,depth", 3), ("depth", 2), ("light", 1), ("select", 4), ("light,depth,select", 7), ("", 0)):
+        for strat, mask in (("light,depth", 3), ("depth", 2), ("light", 1), ("select", 4), ("light,depth,select", 7), ("flight", 8), ("depth,flight", 10), ("", 0)):
             os.environ["VR_MUT_STRAT"] = strat  # set but empty = no strategy: every step a self-transition
             params = self.restir_params()
             self.assertEqual(params["mMutationStrategyMask"], mask, strat)
