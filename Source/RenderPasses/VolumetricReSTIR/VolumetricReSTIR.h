@@ -245,6 +245,7 @@ private:
         float mMutationDepthStepMin = 0.5f;         ///< scatter-depth step, in ray-march steps
         float mMutationDepthStepMax = 16.f;
         bool mMutationStats = false;                ///< log acceptance per strategy every 256 frames
+        bool mMutateAfterSpatial = false;           ///< mutate spatial reuse's output (the shaded reservoir) instead
 
         /////////////////////
         /// Sharing less. When p_hat is close to the integrand a pixel's estimate is close to its reservoir's
@@ -320,6 +321,7 @@ private:
             ar("mMutationDepthStepMin", mMutationDepthStepMin);
             ar("mMutationDepthStepMax", mMutationDepthStepMax);
             ar("mMutationStats", mMutationStats);
+            ar("mMutateAfterSpatial", mMutateAfterSpatial);
             ar("mDecoupledHistory", mDecoupledHistory);
             ar("mDuplicationCapStrength", mDuplicationCapStrength);
         }

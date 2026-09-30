@@ -937,6 +937,10 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
     bool specializeFeatures = false; // Generate Features' switches, set in its own block below
 
     const bool mutate = mutationsActive();
+    // Mutate the reservoir that is shaded -- spatial reuse's output -- rather than the temporal one (spec V-B9):
+    // what spatial reuse shares within the frame, e.g. the light (the colour) a neighbour's sample chose, is
+    // then diversified too. Unbiased the same way: the spatial output's W is valid for this pixel's p_hat.
+    const bool mutateAfterSpatial = mutate && mParams.mMutateAfterSpatial && mParams.mEnableSpatialReuse;
     if (mutate && !mMutateSamplesPass) createMutateSamplesPass();
 
     // Compile into each pass only the transmittance trackers its sampling options can select
@@ -1340,7 +1344,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
 
             // Mutations act on the temporal output before anything copies it: the history then carries
             // the mutated samples, as in Sawhney et al.'s pipeline.
-            if (mutate) runMutations(pRenderContext, totalRoundId, numTotalRounds, spatialOptions, renderDims);
+            if (mutate && !mutateAfterSpatial) runMutations(pRenderContext, totalRoundId, numTotalRounds, spatialOptions, renderDims);
 
             // Without spatial reuse, or with a decoupled history, the history is this (mutated) temporal output.
             if (!mParams.mEnableSpatialReuse || mParams.mDecoupledHistory)
@@ -1356,7 +1360,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         }
 
     // Without temporal reuse the mutations act on the initial samples (mutate implies !mUseReference).
-    if (!mFreezeFrame && mutate && !mParams.mEnableTemporalReuse)
+    if (!mFreezeFrame && mutate && !mutateAfterSpatial && !mParams.mEnableTemporalReuse)
         runMutations(pRenderContext, totalRoundId, numTotalRounds, spatialOptions, renderDims);
 
     if (!mFreezeFrame)
@@ -1417,6 +1421,10 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
                 totalRoundId++;
             }
         }
+
+    // After spatial reuse, before the (coupled) history copy and final shading: see mutateAfterSpatial.
+    if (!mFreezeFrame && mutateAfterSpatial)
+        runMutations(pRenderContext, totalRoundId % 2, numTotalRounds, spatialOptions, renderDims);
 
     // A decoupled history was copied right after temporal reuse: spatial reuse's output only shades.
     if (!mFreezeFrame)
@@ -2127,6 +2135,9 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
             dirty |= widget.var("Depth step min (march steps)", mParams.mMutationDepthStepMin, 1e-3f, 1e3f);
             dirty |= widget.var("Depth step max (march steps)", mParams.mMutationDepthStepMax, 1e-3f, 1e3f);
             widget.checkbox("Log acceptance rates", mParams.mMutationStats);
+            dirty |= widget.checkbox("Mutate after spatial reuse", mParams.mMutateAfterSpatial);
+            widget.tooltip("Mutate the reservoir that is shaded (spatial reuse's output) instead of the temporal one, "
+                           "so what spatial reuse shares within the frame is diversified too.", true);
             dirty |= widget.checkbox("Decoupled history", mParams.mDecoupledHistory);
             widget.tooltip("History = the temporal (and mutated) reservoir; spatial reuse's output only shades "
                            "(Zhou 2025, sec. 5.5.5).", true);

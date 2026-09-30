@@ -17,7 +17,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS",
               "VR_MUTATIONS", "VR_MUT_STRAT", "VR_MUT_STATS", "VR_INITIAL_M",
-              "VR_DECOUPLED", "VR_DUP_CAP",
+              "VR_DECOUPLED", "VR_DUP_CAP", "VR_MUT_AFTER_SPATIAL",
               "VR_PARAMS")
 
 
@@ -235,6 +235,9 @@ class TestKnobs(StudyEnv):
         self.assertEqual(params["mMutationCount"], 5)
         self.assertIsInstance(params["mMutationCount"], int)
         self.assertIs(params["mMutationStats"], True)
+        self.assertNotIn("mMutateAfterSpatial", params)
+        os.environ["VR_MUT_AFTER_SPATIAL"] = "1"  # mutate spatial reuse's output instead of the temporal one
+        self.assertIs(self.restir_params()["mMutateAfterSpatial"], True)
 
     def test_sharing_knobs(self):
         params = self.restir_params()

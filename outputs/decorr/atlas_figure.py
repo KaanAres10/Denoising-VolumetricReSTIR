@@ -31,6 +31,7 @@ SCENES = {"bunnyrgb": "bunny, 3 coloured lights", "bunnyone": "bunny, 1 light (f
           "bunnyspot": "bunny, spotlight beam", "bunnyspot_g0.8": "bunny, spotlight beam, g = 0.8",
           "bunnyparty": "bunny, 8 coloured lights", "plumeback_g0.9": "plume backlit, g = 0.9"}
 CONFIGS = ["shipped", "mcap_50", "mcap_50_mut5", "dec_mcap_200"]
+BRIGHT_CROP = ("bunnyspot", "bunnyinside")  # crop where the light is, not the medium's centre
 
 
 def cell(root, label, cfg):
@@ -50,6 +51,8 @@ def main(argv=None):
     ap.add_argument("--scenes", default=",".join(SCENES))
     ap.add_argument("--configs", default=",".join(CONFIGS))
     ap.add_argument("--size", type=int, default=260)
+    ap.add_argument("--colour", action="store_true",
+                    help="bottom row: the COLOUR error (chromaticity vs the reference's), blurred, in false colour")
     a = ap.parse_args(argv)
     scenes = [s for s in a.scenes.split(",") if os.path.exists(os.path.join(a.root, s, "shipped", "c.corr.json"))]
     configs = a.configs.split(",")
@@ -60,18 +63,37 @@ def main(argv=None):
         cells = [cell(a.root, label, c) for c in configs]
         first = next(c for c in cells if c is not None)
         crop = art.medium_crop(first[1], a.size)
+        if ref is not None and label.split("_")[0] in BRIGHT_CROP:
+            # Mostly unlit scenes (a spotlight's patch, a lamp's pockets): the window with the most light.
+            h = a.size // 2
+            box = cv2.blur((ref @ mc.Y_RGB).astype(np.float32), (a.size, a.size))
+            box[:h, :] = box[-h:, :] = 0
+            box[:, :h] = box[:, -h:] = 0
+            y, x = np.unravel_index(np.argmax(box), box.shape)
+            crop = np.s_[y - h:y + h, x - h:x + h]
         k = np.percentile((ref[crop] if ref is not None else first[0][crop]) @ mc.Y_RGB, 99) + 1e-9
-        blurs = [None if c is None or ref is None else
-                 cv2.GaussianBlur((c[0] - ref)[crop].astype(np.float32) @ mc.Y_RGB.astype(np.float32), (0, 0), 4)
-                 for c in cells]
+        def chroma(x):
+            return x / (x.sum(axis=-1, keepdims=True) + 1e-6)
+        blur = lambda x: cv2.GaussianBlur(x.astype(np.float32), (0, 0), 4)
+        if a.colour:  # chromaticity of the blurred frame vs the blurred reference's: the colour blotches alone.
+            # Blur first: each pixel holds ONE light's colour, and the chromaticities of a red and a green pixel
+            # of equal luminance average to the wrong colour; their energies average to the right one.
+            blurs = [None if c is None or ref is None else chroma(blur(c[0][crop])) - chroma(blur(ref[crop]))
+                     for c in cells]
+        else:
+            blurs = [None if c is None or ref is None else
+                     cv2.GaussianBlur((c[0] - ref)[crop].astype(np.float32) @ mc.Y_RGB.astype(np.float32), (0, 0), 4)
+                     for c in cells]
         scale = max((np.percentile(np.abs(b), 99.5) for b in blurs if b is not None), default=1.0)
         level = float((ref[crop] @ mc.Y_RGB).mean()) if ref is not None else 1.0
         top, bot = ax[2 * i], ax[2 * i + 1]
         if ref is not None:
             top[0].imshow(art.tonemap(ref[crop], k))
         top[0].set_title("%s\npath-traced reference" % SCENES.get(label, label), fontsize=10)
-        bot[0].text(0.5, 0.5, "error vs reference,\nblurred (sigma 4):\nblotches only\n\nred brighter,\nblue darker",
-                    ha="center", va="center", fontsize=10, transform=bot[0].transAxes)
+        legend = ("colour error vs reference,\nblurred (sigma 4):\ncolour blotches only\n\ngrey = right colour,\n"
+                  "tint = the blotch's colour cast") if a.colour else \
+                 "error vs reference,\nblurred (sigma 4):\nblotches only\n\nred brighter,\nblue darker"
+        bot[0].text(0.5, 0.5, legend, ha="center", va="center", fontsize=10, transform=bot[0].transAxes)
         for j, (cfg, c, b) in enumerate(zip(configs, cells, blurs), start=1):
             if c is None:
                 top[j].text(0.5, 0.5, "not run", ha="center", va="center", transform=top[j].transAxes)
@@ -82,7 +104,11 @@ def main(argv=None):
             top[j].imshow(art.tonemap(color[crop], k), interpolation="nearest")
             top[j].set_title("%s\nrho(8) %.4f%s" % (name(cfg), m["rho"]["8"],
                              ", colour %.4f" % colour if colour is not None else ""), fontsize=10)
-            if b is not None:
+            if b is not None and a.colour:
+                bot[j].imshow(np.clip(0.5 + 0.5 * b / scale, 0, 1))
+                bot[j].set_title("blurred colour error %.2f%%" % (100 * float(np.sqrt(np.mean(np.sum(b ** 2, axis=-1))))),
+                                 fontsize=9)
+            elif b is not None:
                 bot[j].imshow(b, cmap="RdBu_r", vmin=-scale, vmax=scale)
                 bot[j].set_title("blurred error %.1f%% of mean, relMSE %.4f"
                                  % (100 * float(np.sqrt(np.mean(b ** 2))) / level, corr["reference"]["relmse"]),
