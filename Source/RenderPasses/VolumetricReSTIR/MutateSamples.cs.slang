@@ -121,12 +121,40 @@ LightKinds lightKinds()
     return k;
 }
 
+/// Falcor's ndir_to_oct_equal_area_unorm (MathHelpers.slang), written without its in-place swizzle
+/// `p = 1.f - p.yx`: in this compile path that statement aliases (p.y = 1 - p.x, then p.x = 1 - p.y with the NEW
+/// p.y), which sends every lower-hemisphere direction to the wrong texel -- measured: walk uv (0.9975, 0.0020),
+/// inverse (0.5020, 0.0020). The exact inverse of oct_to_ndir_equal_area_unorm, which EnvMapSampler::sample() uses.
+float2 octEqualAreaUnorm(float3 n)
+{
+    const float r = sqrt(1.f - abs(n.z));
+    const float phi = atan2(abs(n.y), abs(n.x));
+    const float py = r * phi * M_2_PI;
+    const float px = r - py;
+    float2 p = n.z < 0.f ? float2(1.f - py, 1.f - px) : float2(px, py); // reflect over the diagonal below
+    p *= sign(n.xy);
+    return p * 0.5f + 0.5f;
+}
+
+/// The env sampler's density at world direction dir, per steradian, read the way EnvMapSampler::sample() reads its
+/// own: the importance texel that holds the direction's equal-area octahedral coordinates, by index.
+/// EnvMapSampler::evalPdf goes through Falcor's inverse map (see octEqualAreaUnorm) and, measured on the plume's
+/// sky, disagreed with sample()'s pdf for 99.5% of lower-hemisphere directions, biasing this move by -0.4%.
+float envPdf(float3 dir)
+{
+    const float2 uv = octEqualAreaUnorm(gScene.envMap.toLocal(dir));
+    const uint2 dim = uint2(1.f / envMapSampler.importanceInvDim + 0.5f);
+    const uint2 texel = min(uint2(uv * float2(dim)), dim - 1u);
+    const float average = envMapSampler.importanceMap.Load(int3(0, 0, envMapSampler.importanceBaseMip));
+    return envMapSampler.importanceMap.Load(int3(texel, 0)) / average * M_1_4PI;
+}
+
 /// The re-selection proposal's density at light sample (lightID, lightUV) seen from the scatter point p, in the
 /// measure p_hat is a density in: solid angle (env), a point mass (analytic), area (emissive triangle).
 float selectPdf(int lightID, float2 lightUV, float3 p, LightKinds k)
 {
     const int lightCount = (int)gScene.getLightCount();
-    if (lightID < 0) return k.env ? k.pKind * envMapSampler.evalPdf(gScene.envMap.uvToWorld(lightUV)) : 0.f;
+    if (lightID < 0) return k.env ? k.pKind * envPdf(gScene.envMap.uvToWorld(lightUV)) : 0.f;
     if (lightID < lightCount) return k.analytic ? k.pKind / float(lightCount) : 0.f;
     if (!k.emissive) return 0.f;
     const uint tri = uint(lightID - lightCount);
@@ -136,8 +164,9 @@ float selectPdf(int lightID, float2 lightUV, float3 p, LightKinds k)
 /// Draws the re-selection proposal into z's light fields. False: no light sample (a back-facing emissive
 /// triangle, a NaN direction) -- a rejected proposal, which keeps the move symmetric since q never depends on
 /// the current state.
-bool proposeLight(float3 p, LightKinds k, inout SampleGenerator sg, inout Reservoir z)
+bool proposeLight(float3 p, LightKinds k, inout SampleGenerator sg, inout Reservoir z, out float envSamplerPdf)
 {
+    envSamplerPdf = -1.f; // the env sampler's own density for an env proposal (diagnostic: vs selectPdf)
     const uint count = uint(k.env) + uint(k.analytic) + uint(k.emissive);
     const uint pick = min(uint(sampleNext1D(sg) * float(count)), count - 1);
     // The pick-th enabled kind, in the order env, analytic, emissive. No side effects inside conditions: the
@@ -151,6 +180,16 @@ bool proposeLight(float3 p, LightKinds k, inout SampleGenerator sg, inout Reserv
     {
         EnvMapSample es;
         envMapSampler.sample(sampleNext2D(sg), es);
+        envSamplerPdf = k.pKind * es.pdf;
+        // Diagnostics (VR_MUT_STATS): envPdf and Falcor's evalPdf at the sampled direction vs sample()'s own pdf,
+        // split by hemisphere -- how the octahedral-inverse miscompile (see octEqualAreaUnorm) was found.
+        if (gCollectStats)
+        {
+            const float3 local = gScene.envMap.toLocal(es.dir);
+            if (abs(envPdf(es.dir) / es.pdf - 1.f) > 1e-3f) stat(local.z >= 0.f ? 16 : 17);
+            if (local.z < 0.f) stat(18);
+            if (abs(envMapSampler.evalPdf(es.dir) / es.pdf - 1.f) > 1e-3f) stat(19);
+        }
         if (any(isnan(es.dir))) return false;
         z.lightID = -1;
         z.lightUV = gScene.envMap.worldToUv(es.dir);
@@ -247,10 +286,16 @@ void main(uint3 DTid : SV_DispatchThreadID)
             const float3 p = ray.origin + x.depth * ray.dir;
             if (kinds.pKind == 0.f) continue;
             stat(6);
-            if (!proposeLight(p, kinds, sg, z)) { stat(8); continue; }
+            float envSamplerPdf;
+            if (!proposeLight(p, kinds, sg, z, envSamplerPdf)) { stat(8); continue; }
             stat(z.lightID < 0 ? 11 : (z.lightID < (int)gScene.getLightCount() ? 12 : 13));
             const float qx = selectPdf(x.lightID, x.lightUV, p, kinds);
             const float qz = selectPdf(z.lightID, z.lightUV, p, kinds);
+            if (gCollectStats && envSamplerPdf >= 0.f)
+            {
+                stat(15);
+                if (abs(qz - envSamplerPdf) > 1e-3f * envSamplerPdf) stat(14);
+            }
             if (!(qx > 0.f) || !(qz > 0.f) || isinf(qx) || isinf(qz)) { stat(9); continue; }
             visz.data = primaryVis; // the depth did not move
             const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz);

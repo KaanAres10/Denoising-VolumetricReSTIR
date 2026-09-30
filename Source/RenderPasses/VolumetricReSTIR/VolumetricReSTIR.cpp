@@ -63,7 +63,10 @@ namespace
     const char* kMutationStatNames[] = {"light proposed", "light accepted", "depth proposed", "depth accepted",
                                         "empty or invalid (skipped)", "p_hat(x0) != p_y", "select proposed", "select accepted",
                                         "select: no light sample", "select: q(x) or q(z) not positive", "select: p_hat(z) = 0",
-                                        "select: env proposed", "select: point light proposed", "select: emissive proposed"};
+                                        "select: env proposed", "select: point light proposed", "select: emissive proposed",
+                                        "select: env q != sampler pdf", "select: env q checked",
+                                        "select: env q mismatch, upper hemisphere", "select: env q mismatch, lower hemisphere",
+                                        "select: env proposals in the lower hemisphere", "select: Falcor evalPdf mismatch"};
     constexpr uint32_t kMutationStatCount = sizeof(kMutationStatNames) / sizeof(kMutationStatNames[0]);
     constexpr int kMutationStatInterval = 256; ///< frames between acceptance log lines
 
@@ -632,8 +635,10 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
                 "light re-selection {}/{} accepted ({:.3f}), {} {}, {} {}", mMutationStatFrames, s[1], s[0], rate(s[1], s[0]),
                 s[3], s[2], rate(s[3], s[2]), s[7], s[6], rate(s[7], s[6]), s[4], kMutationStatNames[4], s[5], kMutationStatNames[5]);
         if (s[6] > 0)
-            logInfo("VolumetricReSTIR light re-selection: {} {}, {} {}, {} {}; proposed kinds: env {}, point {}, emissive {}",
-                    s[8], kMutationStatNames[8], s[9], kMutationStatNames[9], s[10], kMutationStatNames[10], s[11], s[12], s[13]);
+            logInfo("VolumetricReSTIR light re-selection: {} {}, {} {}, {} {}; proposed kinds: env {}, point {}, emissive {}; "
+                    "env q != sampler pdf {} of {}; env q mismatch upper {} lower {}; lower-hemisphere proposals {}; Falcor evalPdf mismatch {}",
+                    s[8], kMutationStatNames[8], s[9], kMutationStatNames[9], s[10], kMutationStatNames[10], s[11], s[12], s[13],
+                    s[14], s[15], s[16], s[17], s[18], s[19]);
         pRenderContext->clearUAV(mMutationStatsBuffer->getUAV().get(), uint4(0));
         mMutationStatFrames = 0;
     }
