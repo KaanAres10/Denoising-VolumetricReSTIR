@@ -45,6 +45,8 @@ def name(cfg):
             out.append("+ %s mutation%s" % (n, "" if n == "1" else "s"))
         elif p in ("light", "depth", "both", "select", "all"):
             out.append("(%s)" % p)
+        elif p == "post":
+            out.append("after spatial reuse")
         elif p.startswith("r") and p[1:].isdigit():
             out.append(", radius %s" % p[1:])
         elif p.startswith("dup"):

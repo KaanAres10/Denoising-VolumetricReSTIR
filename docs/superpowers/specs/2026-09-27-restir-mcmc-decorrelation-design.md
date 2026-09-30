@@ -566,6 +566,57 @@ reuse radius (Junkins et al. 2026 §6). Correlation in the medium, ρ̄(8); bias
   it was duplicated), which breaks GRIS's unbiasedness. The emerald runs failed on a pass-creation bug (surface
   scenes need the scene's shader modules; fixed) and are being re-run.
 
+### V-B9 — the artifacts mutations can reach: colour (light re-selection), after spatial reuse; the stress atlas
+
+**What a mutation can fix.** A pixel's estimate is (f/p̂)(y)·runningSum/M. Mutations keep the normalization
+(V-B7), so they reach only what the *sample* carries. With a luminance target that includes the pixel's colour:
+f_rgb/p̂ is the colour of the light the sample chose, so each pixel is the colour of ONE light (emerald's fog:
+sky-blue (0.21, 0.33, 0.46) or lamp-orange (0.83, 0.15, 0.02) against a reference of (0.44, 0.28, 0.28)), and reuse
+that clumps the choice clumps the colour (RGB ReSTIR, GRIVAPP 2026, names this for ReSTIR PT). Round-1 moves never
+change the light. New instruments (m_corr.py): ρ̄ of two chroma axes (warm–cool `color_rb`, green–magenta
+`color_gm`), light-choice clumping (same-light agreement within a frame minus across two independent chains'
+frames, i.e. against the independent-choice level at the same pixels; a global chance level read 0.12 without
+reuse on a scene lit differently in different places), per-channel bias.
+
+**Light re-selection** (strategy `select`, 1c174d3): an independence Metropolis–Hastings move for medium
+samples — a fresh light from the renderer's own samplers (kind uniformly among the enabled ones; env by
+importance, point light uniformly, emissive triangle by the emissive sampler plus a uniform point), accepted with
+min(1, p̂(z)q(x) / p̂(x)q(z)), q in p̂'s mixed measure (solid angle / point mass / area). The first build accepted
+0 of 50M proposals: `k.env && pick-- == 0` decremented `pick` with env disabled — this shader path's && does not
+short-circuit — found by counting rejection reasons (now logged with VR_MUT_STATS). Acceptance 45% (3 lights),
+16% (8 lights, all moves), 47% depth.
+
+**Placement.** Mutating spatial reuse's output instead of the temporal one (`mMutateAfterSpatial`, 2e8367e)
+reaches what spatial reuse shares within the frame, which a decoupled history leaves as its only correlation.
+
+| bunny, 3 coloured point lights (bunnyrgb) | lum ρ̄(8) | colour ρ̄(8) | light clumping | relMSE | bias R/G/B % |
+|---|---|---|---|---|---|
+| shipped | 0.0059 | 0.0028 | 0.0013 | 0.0374 | +0.12/+0.13/+0.15 |
+| + 5 re-selections, after temporal | 0.0058 | 0.0015 | 0.0008 | 0.0373 | +0.14/+0.13/+0.14 |
+| + 5 re-selections, **after spatial** | 0.0058 | **0.0002** | **0.0001** | 0.0372 | +0.15/+0.12/+0.11 |
+| Mcap 50 | 0.0477 | 0.0113 | 0.0044 | 0.0390 | −0.24/+0.21/−0.48 |
+| Mcap 50 + 5 depth (round 1) | 0.0133 | 0.0079 | 0.0033 | 0.0356 | |
+| Mcap 50 + 5 re-selections | 0.0444 | 0.0020 | 0.0010 | 0.0387 | |
+| Mcap 50 + 5 all moves, **after spatial** | **0.0121** | **0.0006** | **0.0003** | 0.0359 | +0.08/+0.11/−0.08 |
+| decoupled Mcap 200 | 0.0002 | 0.0011 | 0.0008 | 0.0221 | +0.22/+0.12/+0.07 |
+| decoupled Mcap 200 + 5 all moves, **after spatial** | **0.0001** | **0.0003** | **0.0002** | 0.0223 | +0.14/+0.14/+0.07 |
+
+The 8-light bunny (bunnyparty) agrees: colour 0.0108 shipped → 0.0048 re-selecting after spatial reuse (−56%;
+−44% after temporal with all moves); Mcap 50 0.0236 → 0.0052 with all moves after spatial; decoupled 0.0017 →
+0.0011 after spatial (after temporal: 0.0018, nothing). Depth moves take the luminance blotches, re-selection the
+colour ones; placed after spatial reuse both act on what is shaded. No bias beyond each scene's run-to-run scatter
+(bunnyparty's shipped-cap runs share +1.7% R with and without mutations). The sky-lit plume g = −0.9 has colour
+clumping too (0.0061 shipped: the colour of the env direction chosen); all moves halve it (0.0031).
+
+**Stress atlas** (`atlas_figure.py`, `run_stress.sh`, `run_select.sh`; scenes in `Scripts/scenes/`): mutations
+cut the medium's ρ̄(8) at Mcap 50 by 51–78% on every stress scene — bunny front-lit −72%, 3 lights −72%, dense −65%,
+backlit g = 0.8 −36% (thin bright rim: the one weak case), plume one light −78%, lamp inside the cloud −51% (g = 0.8
+−58%), spotlight beam −73%, backlit plume g = 0.9 −66% — and at the shipped cap by 14–28% on the new scenes (a few
+percent on Phase A's). Worst artifacts at shipped settings: the backlit bunny with g = 0.8 (ρ̄ 0.051, 8× front-lit)
+and the lamp inside the cloud (0.026). A decoupled history at Mcap 200 is the lowest-correlation configuration on
+every scene (ρ̄ 0.0005–0.0024) with the lowest relMSE; mutations after temporal reuse add nothing to it, after
+spatial reuse they do.
+
 ### Found while checking the plume's look: temporal reuse brightened the env background (fixed, 924506c)
 
 `ReSTIRHelper.slang` looked background samples up with `envMapSampler.eval(ray.dir, isLastFrame)`; Falcor 9's
