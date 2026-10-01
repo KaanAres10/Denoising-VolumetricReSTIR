@@ -73,7 +73,8 @@ namespace
                                         "flight: mismatch, evaluator 0", "flight: mismatch beyond float rounding",
                                         "flight: q(z) not positive", "flight: q(x) = 0 beyond the volume",
                                         "flight: q(x) = 0 march ended first", "flight: q(x) = 0 in an empty node",
-                                        "flight: q(x) = 0 zero-density voxel", "", "", "", "", "", "", "",
+                                        "flight: q(x) = 0 zero-density voxel", "select accepted: env", "select accepted: analytic",
+                                        "select accepted: emissive", "", "", "", "",
                                         "flight capture taken", "capture z", "capture q(z) sampler", "capture T(z) sampler",
                                         "capture q(z) evaluator", "capture sigma evaluator", "capture tau before",
                                         "capture voxel entry", "capture voxel exit", "capture reason"};
@@ -627,6 +628,7 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
     // The free-flight move proposes from the initial candidates' distance sampler: initialOptions.visibilityMipLevel.
     vars["CB"]["gFlightMipLevel"] =
         mParams.mInitialVisibilityUseLinearSampler ? mParams.mInitialBaseMipLevel : mParams.mInitialBaseMipLevel + kNumMaxMips;
+    vars["CB"]["gSelectWeightedAnalytic"] = mParams.mMutationSelectWeighted;
     vars["CB"]["gCollectStats"] = mParams.mMutationStats;
     options.setShaderData(vars["CB"]["gSamplingOptions"]);
 
@@ -652,6 +654,9 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
                     "env q != sampler pdf {} of {}; env q mismatch upper {} lower {}; lower-hemisphere proposals {}; Falcor evalPdf mismatch {}",
                     s[8], kMutationStatNames[8], s[9], kMutationStatNames[9], s[10], kMutationStatNames[10], s[11], s[12], s[13],
                     s[14], s[15], s[16], s[17], s[18], s[19]);
+        if (s[6] > 0)
+            logInfo("VolumetricReSTIR light re-selection by kind: env {}/{} accepted ({:.3f}), analytic {}/{} ({:.3f}), emissive {}/{} ({:.3f})",
+                    s[32], s[11], rate(s[32], s[11]), s[33], s[12], rate(s[33], s[12]), s[34], s[13], rate(s[34], s[13]));
         if (s[20] > 0)
         {
             logInfo("VolumetricReSTIR free flight: {}/{} accepted ({:.3f}); {} {}, {} {}, {} {}", s[21], s[20], rate(s[21], s[20]),
@@ -2168,6 +2173,9 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
             dirty |= widget.var("Depth step max (march steps)", mParams.mMutationDepthStepMax, 1e-3f, 1e3f);
             widget.checkbox("Log acceptance rates", mParams.mMutationStats);
             dirty |= widget.checkbox("Mutate after spatial reuse", mParams.mMutateAfterSpatial);
+            dirty |= widget.checkbox("Re-selection: point lights by contribution", mParams.mMutationSelectWeighted);
+            widget.tooltip("Propose a point light by its unshadowed contribution at the scatter point (plus a 5% uniform "
+                           "share) instead of uniformly; with many lights most uniform proposals are far away and rejected.", true);
             widget.tooltip("Mutate the reservoir that is shaded (spatial reuse's output) instead of the temporal one, "
                            "so what spatial reuse shares within the frame is diversified too.", true);
             dirty |= widget.checkbox("Decoupled history", mParams.mDecoupledHistory);

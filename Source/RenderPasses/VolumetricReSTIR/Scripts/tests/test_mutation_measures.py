@@ -214,6 +214,66 @@ class TestLightSelect(unittest.TestCase):
         self.assertGreater(abs(n0 / 50000 - 0.5), 0.2)
 
 
+ANALYTIC_UNIFORM_MIX = 0.05  # MutateSamples.cs.slang's kAnalyticUniformMix
+
+
+def analytic_pmf(w, i, eps=ANALYTIC_UNIFORM_MIX):
+    """MutateSamples.cs.slang's analyticPmf: q(i) = (1 - eps) w_i / sum(w) + eps / N (uniform if sum(w) = 0)."""
+    s = float(np.sum(w))
+    return 1.0 / len(w) if not s > 0 else (1 - eps) * w[i] / s + eps / len(w)
+
+
+def sample_analytic(w, u, eps=ANALYTIC_UNIFORM_MIX):
+    """MutateSamples.cs.slang's sampleAnalytic: one u, split between the uniform share and an inverse-CDF walk over
+    the weights; a rounding overshoot lands on the last light with a positive weight."""
+    n, s = len(w), float(np.sum(w))
+    if not s > 0:
+        return min(int(u * n), n - 1)
+    if u < eps:
+        return min(int(u / eps * n), n - 1)
+    target, last = (u - eps) / (1 - eps) * s, n - 1
+    for i in range(n):
+        if w[i] > 0:
+            last = i
+        target -= w[i]
+        if target < 0:
+            return i
+    return last
+
+
+class TestWeightedAnalyticProposal(unittest.TestCase):
+    """The re-selection move's position-aware proposal for point lights: light i with probability
+    (1 - eps) w_i / sum(w) + eps / N, w_i its unshadowed contribution at the scatter point."""
+    # 12 lights: contributions over three orders of magnitude, two outside their spot cones (w = 0).
+    w = np.array([5.0, 0.2, 0.0, 1.5, 0.01, 3.0, 0.0, 0.4, 8.0, 0.05, 0.7, 2.2])
+
+    def test_draws_follow_the_pmf_the_move_evaluates(self):
+        n = 200000
+        counts = np.bincount([sample_analytic(self.w, RNG.random()) for _ in range(n)], minlength=len(self.w))
+        pmf = np.array([analytic_pmf(self.w, i) for i in range(len(self.w))])
+        self.assertAlmostEqual(pmf.sum(), 1.0, places=12)
+        self.assertTrue(np.all(pmf > 0))                    # the uniform share: every light can be proposed
+        np.testing.assert_allclose(counts / n, pmf, atol=0.003)
+
+    def test_independence_move_keeps_the_target_and_accepts_more(self):
+        # p_hat = w times a per-light transmittance the proposal does not know.
+        T = np.array([0.9, 0.3, 1.0, 0.5, 0.8, 0.05, 0.7, 1.0, 0.6, 0.2, 0.9, 0.4])
+        target = self.w * T
+        def chain(weighted, n=150000):
+            x, counts, acc = 8, np.zeros(len(self.w)), 0
+            q = (lambda i: analytic_pmf(self.w, i)) if weighted else (lambda i: 1.0 / len(self.w))
+            for _ in range(n):
+                z = sample_analytic(self.w, RNG.random()) if weighted else int(RNG.integers(len(self.w)))
+                if target[z] > 0 and RNG.random() * target[x] * q(z) < target[z] * q(x):
+                    x, acc = z, acc + 1
+                counts[x] += 1
+            return counts / n, acc / n
+        shares, acc_w = chain(True)
+        np.testing.assert_allclose(shares, target / target.sum(), atol=0.01)
+        _, acc_u = chain(False)
+        self.assertGreater(acc_w, 2 * acc_u)
+
+
 def free_flight_sample(sigma, edges, u):
     """VolumeTrackingAdapterGVDB.slang's SampleMediumAnalyticAdapterGVDB, nearest sampler, on a 1D ray: voxel k spans
     [edges[k], edges[k+1]) with extinction sigma[k]; each voxel draws dT = -log(1 - u) / sigma with a fresh u, and the

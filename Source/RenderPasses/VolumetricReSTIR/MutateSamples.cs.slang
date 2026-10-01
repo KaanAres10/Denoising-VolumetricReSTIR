@@ -13,7 +13,8 @@
 
     Round 1.5, light re-selection (strategy bit 2, spec V-B9): an INDEPENDENCE move that draws a fresh light
     sample at the medium sample's scatter point from the renderer's own light samplers -- a light kind
-    uniformly among the enabled ones, then the env direction by importance, a point light uniformly, or an
+    uniformly among the enabled ones, then the env direction by importance, a point light by its unshadowed
+    contribution at the scatter point (spec V-B10; uniformly with gSelectWeightedAnalytic off), or an
     emissive triangle by the emissive sampler and a uniform point on it -- and accepts with
     min(1, p_hat(z) q(x) / (p_hat(x) q(z))). q is a density in p_hat's own mixed measure: solid angle (env),
     a point mass (analytic), area (emissive). With a luminance target a pixel's colour is the colour of the
@@ -39,6 +40,7 @@ import VolumeTrackingAdapterGVDB; // IVolumeTrackingAdapterGVDB, for the free-fl
 #include "HostDeviceSharedDefinitions.slangh"
 import Utils.Debug.PixelDebug;
 import Utils.Math.MathHelpers;
+import Rendering.Lights.LightHelpers; // samplePointLight / sampleDirectionalLight: the weighted analytic proposal
 #include "Utils/Math/MathConstants.slangh"
 
 cbuffer CB
@@ -52,6 +54,7 @@ cbuffer CB
     float gDirStepMin, gDirStepMax;      // radians
     float gDepthStepMin, gDepthStepMax;  // in ray-march steps (volumeDesc.tStep * volumeWorldScaling)
     int gFlightMipLevel;                 // the initial distance sampler's grid (initialOptions.visibilityMipLevel)
+    bool gSelectWeightedAnalytic;        // re-selection: point lights by their contribution here (else uniformly)
     bool gCollectStats;
     SamplingOptions gSamplingOptions;
     EnvMapSampler envMapSampler;
@@ -162,13 +165,88 @@ float envPdf(float3 dir)
     return envMapSampler.importanceMap.Load(int3(texel, 0)) / average * M_1_4PI;
 }
 
+static const float kAnalyticUniformMix = 0.05f; // share of the analytic proposal kept uniform: q > 0 for every light
+static const uint kWeightedMaxLights = 256;      // beyond this many analytic lights, propose uniformly (O(N) per step)
+
+/// A point or directional light's weight in the re-selection proposal at scatter point p seen along wo: its
+/// unshadowed contribution there (Falcor's samplePointLight: intensity x spot falloff / distance^2) times the phase
+/// function -- p_hat without the light's transmittance and the factors every light shares. Deterministic, so the
+/// move can evaluate q for the current light and the proposed one alike. Other analytic types: their luminance.
+float analyticWeight(uint i, float3 p, float3 wo)
+{
+    const LightData light = gScene.getLight(i);
+    AnalyticLightSample ls;
+    bool valid = false;
+    if (light.type == (uint)LightType::Point) valid = samplePointLight(p, light, ls);
+    else if (light.type == (uint)LightType::Directional) valid = sampleDirectionalLight(p, light, ls);
+    else return luminance(light.intensity);
+    if (!valid) return 0.f;
+    MediumInteraction mi = { p, wo, gScene.volumeDesc.PhaseFunctionConstantG, true };
+    const float w = luminance(ls.Li) * mi.phaseFunction(mi.wo, ls.dir);
+    return (isnan(w) || isinf(w)) ? 0.f : max(w, 0.f);
+}
+
+/// The analytic part of the re-selection proposal at one scatter point: light i with probability
+/// (1 - kAnalyticUniformMix) w_i / sum(w) + kAnalyticUniformMix / N (Scripts/tests/test_mutation_measures.py,
+/// TestWeightedAnalyticProposal) -- or uniformly (gSelectWeightedAnalytic off, too many lights, sum(w) = 0).
+/// Uniform proposals were accepted 6% of the time among 48 lanterns: most lights are far from a given point.
+struct AnalyticProposal
+{
+    float3 p, wo;
+    uint count;
+    float sum;
+    bool weighted;
+};
+
+AnalyticProposal analyticProposal(float3 p, float3 wo, bool enabled)
+{
+    AnalyticProposal a;
+    a.p = p;
+    a.wo = wo;
+    a.count = gScene.getLightCount();
+    a.sum = 0.f;
+    a.weighted = enabled && gSelectWeightedAnalytic && a.count > 0 && a.count <= kWeightedMaxLights;
+    if (a.weighted)
+        for (uint i = 0; i < a.count; i++) a.sum += analyticWeight(i, p, wo);
+    if (!(a.sum > 0.f) || isinf(a.sum)) a.weighted = false;
+    return a;
+}
+
+float analyticPmf(AnalyticProposal a, uint i)
+{
+    const float uniform = 1.f / float(a.count);
+    if (!a.weighted) return uniform;
+    return (1.f - kAnalyticUniformMix) * analyticWeight(i, a.p, a.wo) / a.sum + kAnalyticUniformMix * uniform;
+}
+
+/// One u, split between the uniform share and an inverse-CDF walk over the weights; a rounding overshoot lands on
+/// the last light with a positive weight.
+uint sampleAnalytic(AnalyticProposal a, float u)
+{
+    if (!a.weighted || u < kAnalyticUniformMix)
+    {
+        const float v = a.weighted ? u / kAnalyticUniformMix : u;
+        return min(uint(v * float(a.count)), a.count - 1);
+    }
+    float target = (u - kAnalyticUniformMix) / (1.f - kAnalyticUniformMix) * a.sum;
+    uint last = a.count - 1;
+    for (uint i = 0; i < a.count; i++)
+    {
+        const float w = analyticWeight(i, a.p, a.wo);
+        if (w > 0.f) last = i;
+        target -= w;
+        if (target < 0.f) return i;
+    }
+    return last;
+}
+
 /// The re-selection proposal's density at light sample (lightID, lightUV) seen from the scatter point p, in the
 /// measure p_hat is a density in: solid angle (env), a point mass (analytic), area (emissive triangle).
-float selectPdf(int lightID, float2 lightUV, float3 p, LightKinds k)
+float selectPdf(int lightID, float2 lightUV, float3 p, LightKinds k, AnalyticProposal ap)
 {
     const int lightCount = (int)gScene.getLightCount();
     if (lightID < 0) return k.env ? k.pKind * envPdf(gScene.envMap.uvToWorld(lightUV)) : 0.f;
-    if (lightID < lightCount) return k.analytic ? k.pKind / float(lightCount) : 0.f;
+    if (lightID < lightCount) return k.analytic ? k.pKind * analyticPmf(ap, uint(lightID)) : 0.f;
     if (!k.emissive) return 0.f;
     const uint tri = uint(lightID - lightCount);
     return k.pKind * emissiveSampler.evalTriangleSelectionPdf(p, float3(0.f), false, tri) / gScene.lightCollection.getTriangle(tri).area;
@@ -177,7 +255,7 @@ float selectPdf(int lightID, float2 lightUV, float3 p, LightKinds k)
 /// Draws the re-selection proposal into z's light fields. False: no light sample (a back-facing emissive
 /// triangle, a NaN direction) -- a rejected proposal, which keeps the move symmetric since q never depends on
 /// the current state.
-bool proposeLight(float3 p, LightKinds k, inout SampleGenerator sg, inout Reservoir z, out float envSamplerPdf)
+bool proposeLight(float3 p, LightKinds k, AnalyticProposal ap, inout SampleGenerator sg, inout Reservoir z, out float envSamplerPdf)
 {
     envSamplerPdf = -1.f; // the env sampler's own density for an env proposal (diagnostic: vs selectPdf)
     const uint count = uint(k.env) + uint(k.analytic) + uint(k.emissive);
@@ -210,8 +288,7 @@ bool proposeLight(float3 p, LightKinds k, inout SampleGenerator sg, inout Reserv
     }
     if (kind == 1)
     {
-        const uint lightCount = gScene.getLightCount();
-        z.lightID = (int)min(uint(sampleNext1D(sg) * float(lightCount)), lightCount - 1);
+        z.lightID = (int)sampleAnalytic(ap, sampleNext1D(sg));
         z.lightUV = float2(0.f);
         return true;
     }
@@ -409,10 +486,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
             if (kinds.pKind == 0.f) continue;
             stat(6);
             float envSamplerPdf;
-            if (!proposeLight(p, kinds, sg, z, envSamplerPdf)) { stat(8); continue; }
-            stat(z.lightID < 0 ? 11 : (z.lightID < (int)gScene.getLightCount() ? 12 : 13));
-            const float qx = selectPdf(x.lightID, x.lightUV, p, kinds);
-            const float qz = selectPdf(z.lightID, z.lightUV, p, kinds);
+            const AnalyticProposal ap = analyticProposal(p, -ray.dir, kinds.analytic);
+            if (!proposeLight(p, kinds, ap, sg, z, envSamplerPdf)) { stat(8); continue; }
+            const uint zKind = z.lightID < 0 ? 0 : (z.lightID < (int)gScene.getLightCount() ? 1 : 2);
+            stat(11 + zKind);
+            const float qx = selectPdf(x.lightID, x.lightUV, p, kinds, ap);
+            const float qz = selectPdf(z.lightID, z.lightUV, p, kinds, ap);
             if (gCollectStats && envSamplerPdf >= 0.f)
             {
                 stat(15);
@@ -427,6 +506,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 x = z;
                 px = pz;
                 stat(7);
+                stat(32 + zKind); // accepted, by the proposed light's kind: env, analytic, emissive
             }
             continue;
         }

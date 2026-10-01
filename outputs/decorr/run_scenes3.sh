@@ -91,6 +91,8 @@ case $STAGE in colour|all)
     scene bunnysoftbox ;;
 esac
 case $STAGE in film|all)
+    # The weighted point-light proposal's sharper bias test first (once): the film shots use the proposal.
+    bash $O/run_weighted_bias2.sh
     smoke plumeconcert bunnycathedral wdassunset emeraldnight
     scene plumeconcert_g0.6
     scene bunnycathedral_d0.3

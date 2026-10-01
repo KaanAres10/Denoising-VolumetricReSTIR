@@ -154,6 +154,8 @@ class TestConfigNames(unittest.TestCase):
         self.assertEqual(mutation_figure.name("dec_mcap_200_mut5_all4_post"),
                          "decoupled history, M cap 200 + 5 mutations (all four) after spatial reuse")
         self.assertEqual(mutation_figure.name("mcap_50_mut5_all"), "M cap 50 + 5 mutations (all)")
+        self.assertEqual(mutation_figure.name("mcap_200_mut5_all4w_post"),
+                         "M cap 200 + 5 mutations (all four, weighted re-selection) after spatial reuse")
         self.assertEqual(mutation_figure.name("tmip3_mcap_50_mut5_all4_post"),
                          "target on mip 3, M cap 50 + 5 mutations (all four) after spatial reuse")
 

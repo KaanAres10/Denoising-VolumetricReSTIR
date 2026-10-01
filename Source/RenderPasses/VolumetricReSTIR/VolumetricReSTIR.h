@@ -246,6 +246,7 @@ private:
         float mMutationDepthStepMax = 16.f;
         bool mMutationStats = false;                ///< log acceptance per strategy every 256 frames
         bool mMutateAfterSpatial = false;           ///< mutate spatial reuse's output (the shaded reservoir) instead
+        bool mMutationSelectWeighted = true;        ///< re-selection proposes point lights by their contribution (else uniformly)
 
         /////////////////////
         /// Sharing less. When p_hat is close to the integrand a pixel's estimate is close to its reservoir's
@@ -322,6 +323,7 @@ private:
             ar("mMutationDepthStepMax", mMutationDepthStepMax);
             ar("mMutationStats", mMutationStats);
             ar("mMutateAfterSpatial", mMutateAfterSpatial);
+            ar("mMutationSelectWeighted", mMutationSelectWeighted);
             ar("mDecoupledHistory", mDecoupledHistory);
             ar("mDuplicationCapStrength", mDuplicationCapStrength);
         }

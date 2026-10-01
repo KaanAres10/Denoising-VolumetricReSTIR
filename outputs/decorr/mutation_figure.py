@@ -48,8 +48,8 @@ def name(cfg):
             out.append("+ %s mutation%s" % (n, "" if n == "1" else "s"))
         elif p in ("light", "depth", "both", "select", "all"):
             out.append("(%s)" % p)
-        elif p in ("flight", "all4"):
-            out.append("(free flight)" if p == "flight" else "(all four)")
+        elif p in ("flight", "all4", "all4w"):
+            out.append({"flight": "(free flight)", "all4": "(all four)", "all4w": "(all four, weighted re-selection)"}[p])
         elif p == "post":
             out.append("after spatial reuse")
         elif p.startswith("r") and p[1:].isdigit():

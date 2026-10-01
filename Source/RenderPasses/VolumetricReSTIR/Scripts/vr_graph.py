@@ -562,6 +562,10 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
     # VR_MUT_AFTER_SPATIAL=1: mutate spatial reuse's output (the shaded reservoir) instead of the temporal one.
     if os.environ.get("VR_MUT_AFTER_SPATIAL"):
         props["mParams"]["mMutateAfterSpatial"] = env_bool("VR_MUT_AFTER_SPATIAL", False)
+    # VR_SELECT_UNIFORM=1: the light re-selection's original point-light proposal (uniform), to reproduce runs made
+    # before the position-aware one (by each light's contribution at the scatter point, the pass's default).
+    if os.environ.get("VR_SELECT_UNIFORM"):
+        props["mParams"]["mMutationSelectWeighted"] = not env_bool("VR_SELECT_UNIFORM", False)
     # Sharing less: VR_DECOUPLED=1 keeps spatial reuse's output out of the history (Zhou 2025);
     # VR_DUP_CAP=<strength in (0, 1]> lowers each pixel's M cap with duplication (Lin et al. 2026).
     if os.environ.get("VR_DECOUPLED"):

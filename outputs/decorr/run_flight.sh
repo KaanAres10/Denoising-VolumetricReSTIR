@@ -66,6 +66,8 @@ for spec in plume:VR_PHASE_G=-0.9 bistro:; do
     python $O/bias_check.py "$S/biasflight/$L" noreuse cap50 cap50_flight cap50_all4_post 2>&1 | sed "s/^/bias $L: /" | tee -a $LOG
 done
 fi
+# The weighted point-light proposal's resolving bias test (run_weighted_bias3.sh), once, before the study.
+bash $O/run_weighted_bias3.sh
 export STUDY_SPACING=5 STUDY_TIMEOUT=2400
 run() { bash $O/run_study.sh one "$@" 2>&1 | tee -a $LOG; }
 DEPTH="VR_MUTATIONS=5 VR_MUT_STRAT=depth VR_MUT_STATS=1"
