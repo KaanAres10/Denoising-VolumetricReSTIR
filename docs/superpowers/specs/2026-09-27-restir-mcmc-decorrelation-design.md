@@ -627,6 +627,45 @@ and the lamp inside the cloud (0.026). A decoupled history at Mcap 200 is the lo
 every scene (ρ̄ 0.0005–0.0024) with the lowest relMSE; mutations after temporal reuse add nothing to it, after
 spatial reuse they do.
 
+### V-B10 — where mutations have a large effect: scenes whose SAMPLE carries the artifact (in progress)
+
+**Design rule.** The estimate is (f/p̂)(y)·runningSum/M and a mutation keeps runningSum/M (V-B7), so it changes a
+pixel only through what the sample carries: the light it chose (its colour), the depth it sits at (with
+self-emission, the temperature colour there), and f/p̂ where the target is cheaper than the shading (coarse-mip
+transmittance). Scenes are built around those, and run in the long-history regime too (M cap 200 with the spatial
+output as history), where reuse's blotches are worst (Sawhney et al. Fig. 11).
+
+**New moves and fixes.**
+- *Free-flight depth* (`flight`, 9f552f6): an independence move on the scatter depth from the renderer's own distance
+  sampler; it crosses gaps the depth walk cannot. Its own smoke test found its pdf evaluator returning 0 for 7.4% of
+  the plume's proposals: marching a ray **cut** at the point skips bricks, because `VolumeTrackingGVDB` advances
+  `dda.t.x` by ε = 0.01 after each brick and stops once that passes tMax. Evaluated on the sampler's full ray: 20 of
+  30M proposals differ (float rounding at a voxel edge). Unbiased on plume and bistro (bias_check.py, chain-level
+  s.e.). The renderer's own transmittance-to-an-endpoint has the same cut-ray pattern (a separate task).
+- *Position-aware re-selection* (V-B10, uncommitted until its bias test): a point light by its unshadowed contribution
+  at the scatter point (intensity × spot falloff / d² × phase) plus a 5% uniform share, instead of uniformly.
+  Acceptance among 48 lanterns 6% → 18.5% (select only), 8 lights 15.8% → 30.5%. `VR_SELECT_UNIFORM=1` = the old one.
+
+**Stress scenes** (`Scripts/scenes/`, run_scenes3.sh; 100 frames per point; 5 moves of all four kinds after spatial
+reuse, uniform re-selection):
+
+| medium ρ̄(8) / colour ρ̄(8) | shipped | + mut | M cap 50 | + mut | M cap 200 | + mut | decoupled 200 | + mut |
+|---|---|---|---|---|---|---|---|---|
+| 48 coloured lanterns in the cloud | 0.0121 / 0.0060 | 0.0102 / **0.0040** | 0.0599 / 0.0206 | **0.0186 / 0.0056** | 0.1664 / 0.0512 | **0.0262 / 0.0062** | 0.0009 / 0.0015 | 0.0007 / 0.0013 |
+| warm + cool emissive panels | 0.0262 / 0.0261 | 0.0226 / **0.0145** | 0.0779 / 0.0295 | **0.0331 / 0.0128** | 0.1647 / 0.0473 | **0.0437 / 0.0150** | 0.0010 / 0.0018 | 0.0009 / 0.0016 |
+
+Mutations remove 69–84% of the luminance blotches and 57–88% of the colour blotches with a long history, and 33–44%
+of the colour clumping at the shipped cap (the panels: the strongest shipped-cap colour artifact of any scene,
+9× the 3-light bunny). On top of a decoupled history the gain is small (−10 to −30%): decoupling removes nearly all
+of it first. Cost: a run with the five moves took 1.9–2.2× as long (the select and flight moves are the dear ones).
+
+Film-style shots (run_scenes3.sh `film`): concert beams through stage smoke (plumeconcert, g 0.6), god rays in a
+stone hall (bunnycathedral, dust 0.3×), the Disney cloud backlit at sunset (wdassunset, g 0.85), Emerald Square at
+night in thick fog (emeraldnight, fog 3×). The concert's first truss missed the plume (all pixels 0 in the smoke
+test): the plume is placed from its .vbx transform, model = (vx, vz, −vy) + (−63.5, −127.5, 63.5), world = (0, 1.686,
+0) + 0.013 model. Then the explosion (colour from the sample's depth), the dense bunny with the target on mip 3
+(`VR_TARGET_MIP`), the slatted lights, the backlit bunny at g = 0.95.
+
 ### Found while checking the plume's look: temporal reuse brightened the env background (fixed, 924506c)
 
 `ReSTIRHelper.slang` looked background samples up with `envMapSampler.eval(ray.dir, isLastFrame)`; Falcor 9's
