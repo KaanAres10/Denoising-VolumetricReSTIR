@@ -44,13 +44,11 @@ def main(argv=None):
         if not all(scored(a.root, label, c) for c in PAIR):
             continue
         out = os.path.join(a.root, "figs", "variety_%s.png" % label)
-        rel = [json.load(open(os.path.join(a.root, label, c, "c.corr.json"))).get("reference", {}).get("relmse") for c in PAIR]
         if a.force or not os.path.exists(out):
-            paper_figure.main([a.root, label, PAIR[0], PAIR[1], "--errors", "--out", out,
-                               "--names", "ReSTIR + OptiX denoiser,ReSTIR + 5 mutations + OptiX denoiser",
-                               "--title", "%s (M cap 200, one frame, same denoiser)" % title])
-        if None not in rel:
-            print("%-22s relMSE %.4f -> %.4f (%+.0f%%)" % (label, rel[0], rel[1], 100 * (rel[1] / rel[0] - 1)))
+            rel = paper_figure.main([a.root, label, PAIR[0], PAIR[1], "--errors", "--out", out,
+                                     "--names", "ReSTIR + OptiX denoiser,ReSTIR + 5 mutations + OptiX denoiser",
+                                     "--title", "%s (M cap 200, one frame, same denoiser)" % title])
+            print("%-22s relMSE in the medium %.4f -> %.4f (%+.0f%%)" % (label, rel[0], rel[1], 100 * (rel[1] / rel[0] - 1)))
 
 
 if __name__ == "__main__":
