@@ -2,7 +2,7 @@
 # Making the mutations' effect plain to the eye (spec V-B10). Reuse's blotches grow with how far and how long a
 # sample is shared: spatial radius 30 (shipped 10) and M cap 200, plain ReSTIR vs the same with 5 and with 16 moves
 # of all four kinds after spatial reuse (no decoupled history), through OptiX. First short VIDEOS -- 72 consecutive
-# denoised frames at 960x540 after the warm-up (blotches crawl and boil from frame to frame, the plainest form of
+# denoised frames at 1280x720 after the warm-up (one chain captured at spacing 1) (blotches crawl and boil from frame to frame, the plainest form of
 # the artifact) -- written to outputs/decorr/video/<label>/<config>/ for make_video.py; then the full-resolution
 # study runs for paper_figure.py. Scenes in order of how much mutations helped: cathedral, concert, sunset.
 # Log: apparent.log.
@@ -26,13 +26,13 @@ while tasklist 2>/dev/null | grep -qi mogwai; do sleep 30; done
 echo "[$(date +%H:%M:%S)] apparent start" >> $LOG
 video() {  # label name [VAR=value...]
     local L=$1 name=$2; shift 2
-    local d="$O/video/$L/$name"
+    local d="$R/$O/video/$L/$name"  # absolute: frame capture writes nothing (or crashes) with a relative dir
     if ls "$d" 2>/dev/null | grep -q "Denoiser.output"; then echo "video $L/$name: exists" | tee -a $LOG; return 0; fi
     mkdir -p "$d"
     local t0=$SECONDS
     # shellcheck disable=SC2046,SC2086
     ( for v in $(env | grep -o "^VR_[A-Z0-9_]*"); do unset "$v"; done
-      env $(scene_env $L) VR_DISPLAY=960x540 VR_CHAINS=1 VR_PER_CHAIN=1 VR_WARM=800 VR_SPACING=1 VR_BURST=72 \
+      env $(scene_env $L) VR_DISPLAY=1280x720 VR_CHAINS=1 VR_PER_CHAIN=72 VR_WARM=800 VR_SPACING=1 \
           VR_DENOISER=optix $LOOK $WIDE "$@" VR_OUT_DIR="$(cygpath -m "$d")" VR_TAG=c \
           timeout 3600 $MOG --script "$SCRIPT_CP" > "$d/run.log" 2>&1 )
     echo "video $L/$name: $(ls "$d" | grep -c 'Denoiser.output.*exr') frames, $(grep -c '(Error)' "$d/run.log") errors, $((SECONDS - t0))s" | tee -a $LOG
