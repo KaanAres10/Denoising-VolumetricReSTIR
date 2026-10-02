@@ -1,4 +1,4 @@
-"""Side-by-side video of consecutive denoised frames (run_apparent.sh's bursts): plain ReSTIR next to the same ReSTIR
+"""Side-by-side video of consecutive denoised frames (run_apparent.sh's spacing-1 chains): plain ReSTIR next to the same ReSTIR
 with mutations, same exposure, cropped to the lit part of the frame. Reuse's blotches crawl and boil from frame to
 frame; with mutations what is left is fine noise the denoiser removes.
 
@@ -27,7 +27,8 @@ NAMES = {"restir": "ReSTIR + denoiser", "mut5": "+ 5 mutations", "mut16": "+ 16 
 def burst_frames(d):
     s = json.load(open(os.path.join(d, "c.schedule.json")))
     out = []
-    for f in s["burst"]["frames"]:
+    run = s["burst"] or s["chains"][0]  # consecutive frames: a burst, or one chain captured at spacing 1
+    for f in run["frames"]:
         p = os.path.join(d, "c.%s.%d.exr" % (s["channel"], f))
         if os.path.exists(p):
             out.append(np.nan_to_num(mc.read_exr(p)[..., :3][..., ::-1].astype(np.float64), posinf=0.0))
