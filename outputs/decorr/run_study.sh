@@ -96,6 +96,8 @@ cap() {  # label config [env assignments...]
     shift 2
     local d="$O/$label/$cfg"
     if [ -f "$d/c.corr.json" ]; then echo "[study] skip $label/$cfg"; return 0; fi
+    # STUDY_SKIP_DEC=1: leave out the decoupled-history configs (dec_*, den_*dec*): mutations alone are compared.
+    case "$cfg" in dec_*|den_*dec*) [ "${STUDY_SKIP_DEC:-0}" = 1 ] && { echo "[study] skip $label/$cfg (STUDY_SKIP_DEC)"; return 0; } ;; esac
     local t0=$SECONDS
     # shellcheck disable=SC2046
     render "$d" $(scene_env "$label") VR_SPACING="$(spacing_for "$label")" VR_IDS=1 "$@"

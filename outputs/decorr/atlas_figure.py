@@ -35,7 +35,11 @@ SCENES = {"bunnyrgb": "bunny, 3 coloured lights", "bunnyone": "bunny, 1 light (f
           "bunnyslabs": "bunny, light through slats (slabs in depth)",
           "bunnystripes": "bunny, light through slats (stripes)",
           "bunnysoftbox": "bunny, warm + cool panel lights", "bunnylanterns": "bunny, 48 coloured lanterns",
-          "bunnyback_g0.95": "bunny, 1 light behind, g = 0.95"}
+          "bunnyback_g0.95": "bunny, 1 light behind, g = 0.95",
+          "plumeconcert_g0.6": "concert: 6 coloured beams in stage smoke",
+          "bunnycathedral_d0.3": "cathedral: sun through 4 windows, dust",
+          "wdassunset_g0.85": "Disney cloud at sunset, backlit",
+          "emeraldnight_d3": "Emerald Square at night in fog"}
 CONFIGS = ["shipped", "mcap_50", "mcap_50_mut5", "dec_mcap_200"]
 BRIGHT_CROP = ("bunnyspot", "bunnyinside")  # crop where the light is, not the medium's centre
 
