@@ -72,6 +72,7 @@ def main(argv=None):
     ap.add_argument("--title", default="")
     ap.add_argument("--names", default="ReSTIR,ReSTIR + 5 mutations")
     ap.add_argument("--out")
+    ap.add_argument("--errors", action="store_true", help="a row of signed error maps vs the reference")
     a = ap.parse_args(argv)
     ref = art.reference(a.root, a.label)
     imgs = [art.kept(os.path.join(a.root, a.label, c))[0] for c in (a.without, a.with_)]
@@ -82,8 +83,25 @@ def main(argv=None):
     size = max(64, min(ref.shape[:2]) // 4)
     boxes = pick_boxes(imgs[0], ref, size)
     k = np.percentile(ref @ mc.Y_RGB, 99) + 1e-9
-    fig = plt.figure(figsize=(18, 13.2), facecolor="white")
-    gs = fig.add_gridspec(3, 6, height_ratios=[1.0, 0.62, 0.62], hspace=0.12, wspace=0.04)
+    fig = plt.figure(figsize=(18, 13.2 + (5.6 if a.errors else 0)), facecolor="white")
+    rows = 4 if a.errors else 3
+    gs = fig.add_gridspec(rows, 6, height_ratios=[1.0, 0.62, 0.62] + ([1.0] if a.errors else []), hspace=0.12, wspace=0.04)
+    if a.errors:
+        # Signed error vs the reference, lightly blurred (sigma 2), luminance: the blotches a denoiser leaves.
+        errs = [cv2.GaussianBlur(((img - ref) @ mc.Y_RGB).astype(np.float32), (0, 0), 2) for img in imgs]
+        lim = max(np.percentile(np.abs(e), 99) for e in errs)
+        for j, e in enumerate(errs):
+            ax = fig.add_subplot(gs[3, 2 * j:2 * j + 2])
+            ax.imshow(e, cmap="RdBu_r", vmin=-lim, vmax=lim)
+            ax.set_title("error vs reference (red too bright, blue too dark)\nRMS %.4f" % float(np.sqrt(np.mean(e ** 2))),
+                         fontsize=11)
+            ax.axis("off")
+        ax = fig.add_subplot(gs[3, 4:6])
+        ax.text(0.5, 0.5, "Same colour scale in both maps.\nThe red and blue patches in the first map are\n"
+                "reuse's blotches, which the denoiser keeps\n(it cannot tell correlated error from detail).\n"
+                "The second map is what is left with mutations.",
+                ha="center", va="center", fontsize=12, transform=ax.transAxes)
+        ax.axis("off")
     for j, (img, name) in enumerate(zip(imgs + [ref], names)):
         ax = fig.add_subplot(gs[0, 2 * j:2 * j + 2])
         ax.imshow(art.tonemap(img, k))
