@@ -666,6 +666,44 @@ test): the plume is placed from its .vbx transform, model = (vx, vz, −vy) + (�
 0) + 0.013 model. Then the explosion (colour from the sample's depth), the dense bunny with the target on mip 3
 (`VR_TARGET_MIP`), the slatted lights, the backlit bunny at g = 0.95.
 
+**What a viewer sees: through a denoiser** (run_showcase.sh, run_variety.sh, paper_figure.py, gallery_figure.py).
+At 1 spp the blotches hide under per-pixel noise; a denoiser removes that noise but keeps reuse's correlated error
+(it reads as signal), so plain ReSTIR + OptiX shows smeared patches where ReSTIR + mutations is clean -- the form of
+Sawhney et al.'s figures. Mutations alone (no decoupled history; the user's request), M cap 200, 5 moves of all four
+kinds after spatial reuse, same OptiX settings; relMSE of one frame inside the medium (the no-reuse run's mask),
+luminance clipped at the medium's brightest 0.5%:
+
+| effect | scene | relMSE in the medium, ReSTIR -> + mutations |
+|---|---|---|
+| god rays, shadow edges | cathedral (dust 0.3x) | 0.0151 -> 0.0024 (−84%) |
+| one spotlight beam | bunnyspot | 0.0336 -> 0.0060 (−82%) |
+| large area lights, warm / cool | bunnysoftbox | 0.0497 -> 0.0090 (−82%) |
+| a lamp inside the medium | bunnyinside | 0.0514 -> 0.0115 (−78%) |
+| shadow stripes through slats | bunnystripes | 0.0468 -> 0.0107 (−77%) * |
+| silver-lining rim, backlit g 0.8 | bunnyback_g0.8 | 0.0627 -> 0.0155 (−75%) |
+| self-emission, colour set by depth | explosion | 0.0292 -> 0.0077 (−74%; 100 frames 0.0324 -> 0.0120) |
+| colour among 48 lights | bunnylanterns | 0.0603 -> 0.0188 (−69%) |
+| sun vs sky colour, backlit g 0.85 | wdassunset | 0.0543 -> 0.0184 (−66%) |
+| backlit smoke, g 0.9 | plumeback_g0.9 | 0.0234 -> 0.0080 (−66%) |
+| coloured beams in stage smoke | plumeconcert_g0.6 | 0.0243 -> 0.0159 (−35%) |
+| fog lit by emissive street lamps | emeraldnight_d3 | 0.0761 -> 0.0656 (−14%) |
+
+Weak: the night street (emissive lamps: re-selection proposes by power, mostly back-facing or occluded lamps; the
+point-light weighting does not reach emissive triangles; its reference is still noisy). Left out: the sky-lit plume
+(g −0.9), whose kept frame catches a transient bright burst at a thin edge in front of the bright street in the
+mutated run (100 frames: relMSE 0.0082 -> 0.0076, mean bias +0.03 vs +0.02%) -- a mutation can land on a sample whose
+coarse target badly underestimates it. * Stripes: next to the slats the mutated frame has a few larger patches and the
+whole-image error blurred at sigma 32 is worse (+46%) while the 100-frame mean is closer to the reference (−0.19 vs
+−1.22%): unexplained, possibly the moves next to occluding surfaces. The study's own `relmse` is a per-pixel RELATIVE
+error (dark pixels dominate) and is not quoted for scenes with deep shadow.
+
+**Video** (run_apparent.sh, make_video.py, persistence_figure.py): spatial radius 30 + M cap 200, 72 consecutive
+denoised frames at 1280x720 (one chain at spacing 1; the capture needs an absolute output directory). At a long
+history the blotches drift rather than boil (per-pixel flicker equal with and without mutations), so the telling
+view is the 72-frame AVERAGE: independent error averages away, reuse's persists. Error of the average vs reference:
+cathedral 0.0147 -> 0.0061 (−58%), concert 0.0522 -> 0.0162 (−69%), sunset 0.0021 -> 0.0016 (16 moves: 0.0008); per
+frame −41 / −51 / −15%. 16 moves add nothing over 5 on the cathedral and concert.
+
 ### Found while checking the plume's look: temporal reuse brightened the env background (fixed, 924506c)
 
 `ReSTIRHelper.slang` looked background samples up with `envMapSampler.eval(ray.dir, isLastFrame)`; Falcor 9's
