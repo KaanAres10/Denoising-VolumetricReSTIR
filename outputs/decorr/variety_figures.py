@@ -13,7 +13,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paper_figure
 
-PAIR = ("den_optix_mut0cap200", "den_optix_mut5cap200")
+DENOISERS = {"optix": "OptiX denoiser", "rr": "DLSS Ray Reconstruction"}
+
+
+def pair(denoiser="optix"):
+    """The configs compared: plain ReSTIR and ReSTIR + 5 mutations, M cap 200, through `denoiser`."""
+    return ("den_%s_mut0cap200" % denoiser, "den_%s_mut5cap200" % denoiser)
+
+
+PAIR = pair()
 # Scenes whose lit part is a small bright patch of the medium: a higher exposure percentile keeps its texture.
 EXPOSURE = {"bunnyspot": 99.9, "bunnyinside": 99.9, "plumeback_g0.9": 99.8, "bunnystripes": 99.8, "explosion": 99.95}
 TITLES = {
@@ -43,15 +51,17 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--denoiser", default="optix", choices=sorted(DENOISERS))
     a = ap.parse_args(argv)
+    configs, den = pair(a.denoiser), DENOISERS[a.denoiser]
     for label, title in TITLES.items():
-        if not all(scored(a.root, label, c) for c in PAIR):
+        if not all(scored(a.root, label, c) for c in configs):
             continue
-        out = os.path.join(a.root, "figs", "variety_%s.png" % label)
+        out = os.path.join(a.root, "figs", "variety_%s%s.png" % ("" if a.denoiser == "optix" else a.denoiser + "_", label))
         if a.force or not os.path.exists(out):
-            rel = paper_figure.main([a.root, label, PAIR[0], PAIR[1], "--errors", "--out", out,
-                                     "--names", "ReSTIR + OptiX denoiser,ReSTIR + 5 mutations + OptiX denoiser",
-                                     "--title", "%s (M cap 200, one frame, same denoiser)" % title,
+            rel = paper_figure.main([a.root, label, configs[0], configs[1], "--errors", "--out", out,
+                                     "--names", "ReSTIR + %s,ReSTIR + 5 mutations + %s" % (den, den),
+                                     "--title", "%s (M cap 200, one frame, both through %s)" % (title, den),
                                      "--exposure-pct", str(EXPOSURE.get(label, 99.0))])
             print("%-22s relMSE in the medium %.4f -> %.4f (%+.0f%%)" % (label, rel[0], rel[1], 100 * (rel[1] / rel[0] - 1)))
 
