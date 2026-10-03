@@ -72,8 +72,8 @@ public:
 
 private:
     void updateSceneDefines(ref<ComputePass>& pPass, const ref<Scene>& pScene);
-    /// Whether this frame runs the mutation pass: a mutation count, reuse on, single scattering without
-    /// vertex reuse (the moves cover the primary scatter depth and the light vertex only), and a
+    /// Whether this frame runs the mutation pass: a mutation count, reuse on, one or two bounces without
+    /// vertex reuse (BounceMoves.slang moves the extra bounce; the stored vertex must be (omega, d)), and a
     /// deterministic p_hat -- the acceptance ratio needs p_hat itself, and ratio tracking would make it
     /// a random estimate of it.
     bool mutationsActive() const;
@@ -237,7 +237,7 @@ private:
         /// created nor dispatched. See MutateSamples.cs.slang.
         /////////////////////
         int mMutationCount = 0;
-        uint32_t mMutationStrategyMask = 3;         ///< bit 0 light vertex, bit 1 scatter depth, bit 2 light re-selection, bit 3 free flight
+        uint32_t mMutationStrategyMask = 3;         ///< bit 0 light vertex, bit 1 scatter depth, bit 2 light re-selection, bit 3 free flight; two bounces: bit 4 direction, bit 5 distance, bit 6 rebounce
         float mMutationLightStepMin = 1.f / 1024.f; ///< torus step in the emitter's area-uniform u
         float mMutationLightStepMax = 0.25f;        ///< up to a quarter of the triangle (bistro accepts 95%)
         float mMutationDirStepMinDeg = 0.1f;        ///< env-map rotation angle

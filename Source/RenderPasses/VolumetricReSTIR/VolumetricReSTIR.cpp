@@ -77,7 +77,10 @@ namespace
                                         "select accepted: emissive", "", "", "", "",
                                         "flight capture taken", "capture z", "capture q(z) sampler", "capture T(z) sampler",
                                         "capture q(z) evaluator", "capture sigma evaluator", "capture tau before",
-                                        "capture voxel entry", "capture voxel exit", "capture reason"};
+                                        "capture voxel entry", "capture voxel exit", "capture reason",
+                                        "direction proposed", "direction accepted", "distance proposed", "distance accepted",
+                                        "rebounce proposed", "rebounce accepted", "rebounce escaped or hit a surface",
+                                        "rebounce q = 0", "bounce move not applicable", "distance <= 0"};
     constexpr uint32_t kMutationStatCount = sizeof(kMutationStatNames) / sizeof(kMutationStatNames[0]);
     constexpr int kMutationStatInterval = 256; ///< frames between acceptance log lines
 
@@ -569,7 +572,7 @@ bool VolumetricReSTIR::mutationsActive() const
 {
     const auto deterministic = [](uint32_t method) { return method == kRayMarching || method == kAnalyticTracking; };
     return mParams.mMutationCount > 0 && !mParams.mUseReference && (mParams.mEnableTemporalReuse || mParams.mEnableSpatialReuse) &&
-           mParams.mMaxBounces == 1 && !mParams.mVertexReuse && deterministic(mParams.mSpatialVisibilityTrackingMethod) &&
+           mParams.mMaxBounces <= 2 && !mParams.mVertexReuse && deterministic(mParams.mSpatialVisibilityTrackingMethod) &&
            deterministic(mParams.mSpatialLightingTrackingMethod);
 }
 
@@ -670,6 +673,11 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
                         "{:.9g}, sigma {:.9g}, tau before {:.9g}, voxel [{:.9g}, {:.9g}), reason {}",
                         f(40), f(41), f(42), f(43), f(44), f(45), f(46), f(47), s[48]);
         }
+        if (s[49] + s[51] + s[53] > 0)
+            logInfo("VolumetricReSTIR bounce moves: direction {}/{} accepted ({:.3f}), distance {}/{} ({:.3f}), "
+                    "rebounce {}/{} ({:.3f}); {} {}, {} {}, {} {}, {} {}", s[50], s[49], rate(s[50], s[49]), s[52], s[51],
+                    rate(s[52], s[51]), s[54], s[53], rate(s[54], s[53]), s[55], kMutationStatNames[55], s[56],
+                    kMutationStatNames[56], s[57], kMutationStatNames[57], s[58], kMutationStatNames[58]);
         pRenderContext->clearUAV(mMutationStatsBuffer->getUAV().get(), uint4(0));
         mMutationStatFrames = 0;
     }
@@ -838,6 +846,7 @@ void VolumetricReSTIR::execute(RenderContext* pRenderContext, const RenderData& 
         mCopyReservoirPass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
         mFinalShadingPass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
         mpTraceRaysPass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
+        if (mMutateSamplesPass) mMutateSamplesPass->getProgram()->addDefine("MAX_BOUNCES", std::to_string(mParams.mMaxBounces));
 		mLastMaxBounces = mParams.mMaxBounces;
     }
 
@@ -2152,17 +2161,23 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
         {
             dirty |= widget.var("Mutations per pixel", mParams.mMutationCount, 0, 64);
             widget.tooltip("Metropolis-Hastings steps on each pixel's reservoir sample after temporal reuse "
-                           "(Sawhney et al. 2024). 0 = off. Runs only for single scattering without vertex reuse "
+                           "(Sawhney et al. 2024). 0 = off. Runs for one or two bounces without vertex reuse "
                            "and with ray-marching or analytic spatial trackers (p_hat must be deterministic).", true);
             bool light = mParams.mMutationStrategyMask & 1u, depth = mParams.mMutationStrategyMask & 2u;
             bool select = mParams.mMutationStrategyMask & 4u, flight = mParams.mMutationStrategyMask & 8u;
+            bool direction = mParams.mMutationStrategyMask & 16u, distance = mParams.mMutationStrategyMask & 32u;
+            bool rebounce = mParams.mMutationStrategyMask & 64u;
             bool strategies = widget.checkbox("Light-vertex moves", light);
             strategies |= widget.checkbox("Scatter-depth moves", depth);
             strategies |= widget.checkbox("Light re-selection (medium samples)", select);
             strategies |= widget.checkbox("Free-flight depth (medium samples)", flight);
+            strategies |= widget.checkbox("Extra bounce: direction (2 bounces)", direction);
+            strategies |= widget.checkbox("Extra bounce: distance (2 bounces)", distance);
+            strategies |= widget.checkbox("Extra bounce: rebounce (2 bounces)", rebounce);
             if (strategies)
             {
-                mParams.mMutationStrategyMask = (light ? 1u : 0u) | (depth ? 2u : 0u) | (select ? 4u : 0u) | (flight ? 8u : 0u);
+                mParams.mMutationStrategyMask = (light ? 1u : 0u) | (depth ? 2u : 0u) | (select ? 4u : 0u) | (flight ? 8u : 0u) |
+                                                (direction ? 16u : 0u) | (distance ? 32u : 0u) | (rebounce ? 64u : 0u);
                 dirty = true;
             }
             dirty |= widget.var("Light step min (u)", mParams.mMutationLightStepMin, 1e-6f, 0.5f);

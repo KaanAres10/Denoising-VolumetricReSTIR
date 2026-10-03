@@ -34,6 +34,10 @@
     Without the last two, not globally ergodic, by design: the other moves never change lightID or the sample
     type, and bounded depth steps cannot cross an empty gap wider than the largest step. Unbiasedness needs only
     detailed balance within the reachable set and an unbiased W(x0), not ergodicity.
+
+    Two bounces (spec 2026-10-03-two-bounce-mutations-design.md): with MAX_BOUNCES > 1 the light moves act at the
+    vertex the light connects from (x2 after an extra bounce), and BounceMoves.slang adds direction, distance and
+    rebounce moves on the extra bounce; the pass writes the accepted extra bounce back to the pixel's own entry.
 */
 __exported import ReSTIRHelper;
 import VolumeTrackingAdapterGVDB; // IVolumeTrackingAdapterGVDB, for the free-flight density
@@ -69,7 +73,11 @@ static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
 #endif
 
 RWStructuredBuffer<Reservoir> gCurReservoirs;
+#if MAX_BOUNCES > 1
+RWStructuredBuffer<ExtraBounceReservoir> gCurExtraBounceReservoirs; // the bounce moves write the pixel's entry back
+#else
 StructuredBuffer<ExtraBounceReservoir> gCurExtraBounceReservoirs;
+#endif
 RWStructuredBuffer<uint> gMutationStats;
 #ifdef SURFACE_SCENE
 StructuredBuffer<VBufferItem> gVBuffer;
@@ -85,37 +93,14 @@ static const int kMaxBrickSteps = 128; // VolumeTrackingAdapterGVDB.slang's MAX_
 /// depth, which does not depend on the light), so moves that keep the depth reuse it.
 struct CachingVisibilityProvider : IExternalVisibilityProvider
 {
-    float data = -1.f;
-    float getVisibility(int bounce) { return bounce == 0 ? data : -1.f; }
-    [mutating] void putVisibility(int bounce, float visibility) { if (bounce == 0) data = visibility; }
-    [mutating] void Initialize() { data = -1.f; }
+    float data = -1.f;  // segment 0: camera -> x1
+    float data1 = -1.f; // segment 1: x1 -> x2 (two bounces)
+    float getVisibility(int bounce) { return bounce == 0 ? data : (bounce == 1 ? data1 : -1.f); }
+    [mutating] void putVisibility(int bounce, float visibility) { if (bounce == 0) data = visibility; else if (bounce == 1) data1 = visibility; }
+    [mutating] void Initialize() { data = -1.f; data1 = -1.f; }
 };
 
 void stat(uint i) { if (gCollectStats) InterlockedAdd(gMutationStats[i], 1u); }
-
-/// Which strategies can move this sample, from its type: medium or not, and its light kind -- which only the
-/// re-selection changes, so the loop asks again for the current state (an inapplicable pick is a self-transition).
-uint applicable(Reservoir r)
-{
-    const bool selfEmission = r.lightID == kSelfEmissionLightID;
-    const bool inMedium = r.depth != kRayTMax;
-#ifdef SURFACE_SCENE
-    const bool hasShadingPoint = true;     // kRayTMax = surface hit; an invalid hit gives p_hat = 0
-#else
-    const bool hasShadingPoint = inMedium; // kRayTMax = background, no light sample
-#endif
-    const int lightCount = (int)gScene.getLightCount();
-    const bool env = r.lightID < 0 && !selfEmission; // -1; delta (analytic) lights are never moved
-    const bool emissiveTri = r.lightID >= lightCount;
-    uint mask = 0;
-    if (hasShadingPoint && !selfEmission && (env || emissiveTri)) mask |= 1u << kLight;
-    if (inMedium) mask |= (1u << kDepth) | (1u << kFlight);
-    // Any light sample in the medium (a point light too), but not an emission path: its p_hat is the medium's
-    // own emission, a kind the proposal never draws.
-    const bool lightSample = r.lightID == -1 || r.lightID >= 0;
-    if (inMedium && lightSample && decodePathTag(r.sampledPixel) != 1) mask |= 1u << kSelect;
-    return mask & gStrategyMask;
-}
 
 /// The light kinds the re-selection proposes from, each with probability 1 / count: the enabled ones the
 /// scene has.
@@ -414,7 +399,48 @@ float kelemenStep(float lo, float hi, float2 u)
     return u.y < 0.5f ? s : -s;
 }
 
-float pHat(Reservoir r, VolRay ray, inout SampleGenerator sg, StructuredBufferArrayDataProvider dp,
+#if MAX_BOUNCES > 1
+#include "BounceMoves.slang"
+typedef OverrideArrayDataProvider MutationDataProvider;
+#else
+typedef StructuredBufferArrayDataProvider MutationDataProvider;
+#endif
+
+/// Which strategies can move this sample, from its type: medium or not, and its light kind -- which only the
+/// re-selection changes, so the loop asks again for the current state (an inapplicable pick is a self-transition).
+/// b: the sample's extra bounce (two bounces; unused at one).
+uint applicable(Reservoir r, ExtraBounceReservoir b)
+{
+    const bool selfEmission = r.lightID == kSelfEmissionLightID;
+    const bool inMedium = r.depth != kRayTMax;
+#ifdef SURFACE_SCENE
+    const bool hasShadingPoint = true;     // kRayTMax = surface hit; an invalid hit gives p_hat = 0
+#else
+    const bool hasShadingPoint = inMedium; // kRayTMax = background, no light sample
+#endif
+    const int lightCount = (int)gScene.getLightCount();
+    const bool env = r.lightID < 0 && !selfEmission; // -1; delta (analytic) lights are never moved
+    const bool emissiveTri = r.lightID >= lightCount;
+    uint mask = 0;
+    if (hasShadingPoint && !selfEmission && (env || emissiveTri)) mask |= 1u << kLight;
+    if (inMedium) mask |= (1u << kDepth) | (1u << kFlight);
+    // Any light sample in the medium (a point light too), but not an emission path: its p_hat is the medium's
+    // own emission, a kind the proposal never draws.
+    const bool lightSample = r.lightID == -1 || r.lightID >= 0;
+    if (inMedium && lightSample && decodePathTag(r.sampledPixel) != 1) mask |= 1u << kSelect;
+#if MAX_BOUNCES > 1
+    if (decodeMaxIndirectBounces(r.sampledPixel) == 1)
+    {
+        // Tag 1: lightID / lightUV hold x2's position, not a light. A surface x2: the re-selection needs a medium vertex.
+        if (decodePathTag(r.sampledPixel) == 1) mask &= ~((1u << kLight) | (1u << kSelect));
+        else if (decodeWiDist(b.wi_dist, false).w == kRayTMax) mask &= ~(1u << kSelect);
+        if (inMedium) mask |= bounceMoves(r, b);
+    }
+#endif
+    return mask & gStrategyMask;
+}
+
+float pHat(Reservoir r, VolRay ray, inout SampleGenerator sg, MutationDataProvider dp,
            VBUFFERDECLARE inout CachingVisibilityProvider vis)
 {
     const float p = evaluate_P_hat(ray, sg, envMapSampler, emissiveSampler, VBUFFERITEM dp, SAMPLING_OPTIONS, r, vis, false, true, false);
@@ -438,7 +464,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
     Reservoir r = gCurReservoirs[pixelId];
     // Empty or invalid reservoirs are never touched: the update below divides by p_y.
     if (!(r.runningSum > 0.f) || isinf(r.runningSum) || !(r.M > 0.f) || !(r.p_y > 0.f) || isinf(r.p_y)) { stat(4); return; }
-    const uint moves = applicable(r);
+#if MAX_BOUNCES > 1
+    ExtraBounceReservoir xb = gCurExtraBounceReservoirs[r.extraBounceStartId]; // the chain's extra bounce
+#else
+    ExtraBounceReservoir xb = {}; // no extra bounce at one bounce
+#endif
+    const uint moves = applicable(r, xb);
     if (moves == 0) return; // every step would be a self-transition
 
     // A stream no other pass uses: other passes seed with gNumTotalRounds * gFrameCount + round < 2^31.
@@ -451,8 +482,12 @@ void main(uint3 DTid : SV_DispatchThreadID)
 #else
     const VolRay flightRay = ray;
 #endif
-    StructuredBufferArrayDataProvider dp;
+    MutationDataProvider dp;
     dp.data = gCurExtraBounceReservoirs;
+#if MAX_BOUNCES > 1
+    dp.index = r.extraBounceStartId; // every p_hat in the chain sees x's extra bounce, not the buffer's
+    dp.value = xb;
+#endif
 
     CachingVisibilityProvider vis0;
     vis0.Initialize();
@@ -463,6 +498,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     Reservoir x = r;
     float px = p0;
     float primaryVis = vis0.data;
+#if MAX_BOUNCES > 1
+    float bounceVis = vis0.data1; // segment 1 of x
+#endif
     const float depthUnit = gScene.volumeDesc.tStep * gScene.volumeWorldScaling;
     const uint enabledCount = countbits(gStrategyMask);
     const LightKinds kinds = lightKinds();
@@ -474,19 +512,86 @@ void main(uint3 DTid : SV_DispatchThreadID)
         const uint pick = min(uint(sampleNext1D(sg) * enabledCount), enabledCount - 1);
         uint s = firstbitlow(gStrategyMask);
         for (uint k = 0; k < pick; k++) s = firstbitlow(gStrategyMask & ~((2u << s) - 1u));
-        if ((applicable(x) & (1u << s)) == 0) continue;
+        if ((applicable(x, xb) & (1u << s)) == 0)
+        {
+        #if MAX_BOUNCES > 1
+            if (s >= kDirection) stat(57); // a bounce move with nothing to move
+        #endif
+            continue;
+        }
 
         Reservoir z = x;
         CachingVisibilityProvider visz;
         visz.Initialize();
+    #if MAX_BOUNCES > 1
+        if (s >= kDirection)
+        {
+            const float3 x1 = ray.origin + x.depth * ray.dir;
+            const Bounce bx = readBounce(x, xb, x1);
+            const uint k = s - kDirection; // 0 direction, 1 distance, 2 rebounce
+            stat(49 + 2 * k);
+            ExtraBounceReservoir zb = xb;
+            float qx = 1.f, qz = 1.f;
+            float3 zDir = bx.dir;
+            float zDist = bx.dist;
+            float3 zX2 = bx.x2;
+            if (s == kRebounce)
+            {
+                if (!proposeRebounce(x1, -ray.dir, sg, zDir, zDist)) { stat(55); continue; } // escaped or reached a surface
+                zX2 = x1 + zDist * zDir;
+                qx = rebounceQ(x1, -ray.dir, bx.dir, bx.dist, bx.emissive, sg);
+                if (!(qx > 0.f) || isinf(qx)) { stat(56); continue; }
+            }
+            else if (s == kDirection)
+            {
+                if (bx.emissive) zX2 = bx.x2 + isotropicStep(depthUnit, sg);
+                else zDir = rotateDirection(bx.dir, sg);
+            }
+            else // kDistance
+            {
+                zDist = bx.dist + depthUnit * kelemenStep(gDepthStepMin, gDepthStepMax, sampleNext2D(sg));
+                if (!(zDist > 0.f)) { stat(58); continue; } // p_hat = 0: rejected, never resampled
+            }
+            if (bx.emissive) encodeEmissivePosition(zX2, z.lightID, z.lightUV);
+            else zb.wi_dist = encodeWiDist(float4(zDir, zDist));
+            if (s == kRebounce)
+            {
+                const Bounce bz = readBounce(z, zb, x1); // the stored state: what p_hat sees
+                qz = rebounceQ(x1, -ray.dir, bz.dir, bz.dist, bz.emissive, sg);
+                if (!(qz > 0.f) || isinf(qz)) { stat(56); continue; }
+            }
+            MutationDataProvider dpz = dp;
+            dpz.value = zb;
+            visz.data = primaryVis; // x1 did not move
+            const float pz = pHat(z, ray, sg, dpz, VBUFFERITEM visz);
+            if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qx)
+            {
+                x = z;
+                xb = zb;
+                dp.value = xb;
+                px = pz;
+                bounceVis = visz.data1;
+                stat(50 + 2 * k);
+            }
+            continue;
+        }
+    #endif
         if (s == kSelect)
         {
             // Independence move: the acceptance carries q(x) / q(z), both at the same scatter point.
+        #if MAX_BOUNCES > 1
+            // The light connects at the last vertex: x2 after an extra bounce, seen along -omega.
+            const Bounce bs = readBounce(x, xb, ray.origin + x.depth * ray.dir);
+            const float3 p = bs.x2;
+            const float3 wo = bs.present ? -bs.dir : -ray.dir;
+        #else
             const float3 p = ray.origin + x.depth * ray.dir;
+            const float3 wo = -ray.dir;
+        #endif
             if (kinds.pKind == 0.f) continue;
             stat(6);
             float envSamplerPdf;
-            const AnalyticProposal ap = analyticProposal(p, -ray.dir, kinds.analytic);
+            const AnalyticProposal ap = analyticProposal(p, wo, kinds.analytic);
             if (!proposeLight(p, kinds, ap, sg, z, envSamplerPdf)) { stat(8); continue; }
             const uint zKind = z.lightID < 0 ? 0 : (z.lightID < (int)gScene.getLightCount() ? 1 : 2);
             stat(11 + zKind);
@@ -499,6 +604,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             }
             if (!(qx > 0.f) || !(qz > 0.f) || isinf(qx) || isinf(qz)) { stat(9); continue; }
             visz.data = primaryVis; // the depth did not move
+        #if MAX_BOUNCES > 1
+            visz.data1 = bounceVis; // nor did the extra bounce
+        #endif
             const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz);
             if (!(pz > 0.f)) stat(10);
             if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qx)
@@ -553,6 +661,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 x = z;
                 px = pz;
                 primaryVis = visz.data;
+            #if MAX_BOUNCES > 1
+                bounceVis = visz.data1;
+            #endif
                 qFlight = qz;
                 stat(21);
             }
@@ -576,6 +687,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
                                                     kelemenStep(gLightStepMin, gLightStepMax, sampleNext2D(sg))));
             }
             visz.data = primaryVis; // the depth did not move
+        #if MAX_BOUNCES > 1
+            visz.data1 = bounceVis; // nor did the extra bounce
+        #endif
             stat(0);
         }
         else // s == kDepth: Pauly's propagation perturbation along the camera ray
@@ -590,6 +704,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             x = z;
             px = pz;
             primaryVis = visz.data;
+        #if MAX_BOUNCES > 1
+            bounceVis = visz.data1;
+        #endif
             if (s == kDepth) qFlight = -1.f; // the depth moved
             stat(s == kLight ? 1 : 3);
         }
@@ -603,4 +720,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     r.lightUV = x.lightUV;
     r.p_y = px;
     gCurReservoirs[pixelId] = r;
+#if MAX_BOUNCES > 1
+    gCurExtraBounceReservoirs[r.extraBounceStartId] = xb; // the extra bounce the chain ended on
+#endif
 }

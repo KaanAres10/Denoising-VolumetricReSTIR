@@ -8,6 +8,7 @@ target_sources(VolumetricReSTIR PRIVATE
     HostDeviceSharedDefinitions.slangh
 
     ArrayDataProvider.slang
+    BounceMoves.slang
     ComputeInitialSample.slang
     CopyReservoirs.cs.slang
     DuplicationMap.cs.slang
