@@ -80,7 +80,9 @@ namespace
                                         "capture voxel entry", "capture voxel exit", "capture reason",
                                         "direction proposed", "direction accepted", "distance proposed", "distance accepted",
                                         "rebounce proposed", "rebounce accepted", "rebounce escaped or hit a surface",
-                                        "rebounce q = 0", "bounce move not applicable", "distance <= 0"};
+                                        "rebounce q = 0", "bounce move not applicable", "distance <= 0",
+                                        "rebounce: q evaluator != sampler pdf", "rebounce: q checked",
+                                        "rebounce: mismatch, evaluator 0", "rebounce: mismatch, evaluator above"};
     constexpr uint32_t kMutationStatCount = sizeof(kMutationStatNames) / sizeof(kMutationStatNames[0]);
     constexpr int kMutationStatInterval = 256; ///< frames between acceptance log lines
 
@@ -678,6 +680,9 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
                     "rebounce {}/{} ({:.3f}); {} {}, {} {}, {} {}, {} {}", s[50], s[49], rate(s[50], s[49]), s[52], s[51],
                     rate(s[52], s[51]), s[54], s[53], rate(s[54], s[53]), s[55], kMutationStatNames[55], s[56],
                     kMutationStatNames[56], s[57], kMutationStatNames[57], s[58], kMutationStatNames[58]);
+        if (s[60] > 0)
+            logInfo("VolumetricReSTIR rebounce diagnostics: {} of {} proposals with the evaluator off the sampler's density by "
+                    "> 1e-3 ({} with the evaluator 0, {} with it above)", s[59], s[60], s[61], s[62]);
         pRenderContext->clearUAV(mMutationStatsBuffer->getUAV().get(), uint4(0));
         mMutationStatFrames = 0;
     }

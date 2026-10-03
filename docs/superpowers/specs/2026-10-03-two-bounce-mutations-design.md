@@ -249,3 +249,49 @@ stops the round and is debugged before any figure is made.
   - Reuse adds correlation as at one bounce: ρ̄(8) is 0.010 shipped against 0.000 with no reuse.
 - **The chain-level `bias_check.py`** cannot run on pruned study runs (2 kept frames). The mutation
   bias gate uses dedicated unpruned runs (Task 5).
+
+### V-C1 — mutations at 2 bounces are unbiased (2026-10-03)
+- **Gate setup.** Dedicated unpruned runs, 480x270, M cap 200, 16 chains x 12 frames (warm 800). Each
+  run is compared with plain reuse by `bias_check.py`; errors are 1 s.e. over chains.
+
+  | scene | 5 moves of every kind (R / G / B) | 5 light moves only (R / G / B) |
+  |---|---|---|
+  | explosion | +3.03 / +1.82 / +0.14% (±1.43 / 0.97 / 0.32) | +0.76 / +0.51 / +0.17% (±1.30 / 0.82 / 0.29) |
+  | cathedral | −0.99% (±0.96) | −0.10% (±0.88) |
+  | backlit rim | +0.77% (±2.44) | −0.08% (±2.52) |
+  | panel lights | −0.15 / −0.08 / −0.00% (±0.07 / 0.04 / 0.02) | −0.10 / −0.04 / +0.02% (±0.08 / 0.05 / 0.03) |
+  | sunset | −0.04 / −0.04 / −0.09% (±0.34 / 0.26 / 0.24) | +0.13 / +0.05 / −0.10% (±0.41 / 0.30 / 0.25) |
+
+  All are within 3 s.e.
+- **The explosion, sharper.** Its all-moves R/G sat near 2 s.e., so it was rerun with 64 chains and
+  each move kind alone (`run_b2_bias_explosion.sh`):
+
+  | moves | R / G / B against plain reuse |
+  |---|---|
+  | existing moves | −0.01 / −0.01 / +0.01% |
+  | direction | +0.53 / +0.32 / +0.02% |
+  | distance | +0.42 / +0.02 / −0.08% |
+  | rebounce | +1.30 / +0.97 / +0.34% (±0.75 / 0.49 / 0.15) |
+  | all | +0.88 / +0.54 / +0.10% (±0.67 / 0.46 / 0.16) |
+
+- **Rebounce alone, at ~2 s.e., was traced:**
+  - **The proposal's own density is right.** The q evaluator against the sampler's density on these
+    rays, which start inside the medium (new stats 59–62): 2 of 15.8M proposals differ by more than
+    1e-3, which is float rounding.
+  - **Amplification does not grow it.** 20 rebounces per pixel instead of 5 read
+    +0.84 / +0.56 / +0.17% (±0.69 / 0.45 / 0.15), smaller rather than larger. A biased kernel moves
+    further from p̂ with more steps.
+  - **The deviation is shared.** Every mutated configuration compared with that baseline reads
+    slightly positive, which points to the baseline's own fluctuation, not a move.
+- **Acceptance** (direction / distance / rebounce):
+
+  | scene | direction | distance | rebounce |
+  |---|---|---|---|
+  | explosion | 0.40 | 0.41 | 0.13 |
+  | cathedral | 0.81 | 0.66 | 0.08 |
+  | backlit rim | 0.70 | 0.56 | 0.03 |
+  | panel lights | 0.81 | 0.55 | 0.12 |
+  | sunset | 0.93 | 0.50 | 0.24 |
+
+  Rebounce is rare under strong forward scattering, where the local moves carry the scene, as the spec
+  expected.

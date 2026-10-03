@@ -116,8 +116,8 @@ float rebounceQ(float3 x1, float3 wo, float3 dir, float dist, bool emissive, ino
 }
 
 /// The rebounce draw: omega from the phase function, d from the free-flight sampler along it. False on an escape
-/// or a surface: no medium vertex, a rejected proposal.
-bool proposeRebounce(float3 x1, float3 wo, inout SampleGenerator sg, out float3 dir, out float dist)
+/// or a surface: no medium vertex, a rejected proposal. qSampler: the sampler's own density at d (diagnostics).
+bool proposeRebounce(float3 x1, float3 wo, inout SampleGenerator sg, out float3 dir, out float dist, out float qSampler)
 {
     MediumInteraction mi = { x1, wo, gScene.volumeDesc.PhaseFunctionConstantG, true };
     dir = float3(0.f, 0.f, 1.f);
@@ -128,5 +128,6 @@ bool proposeRebounce(float3 x1, float3 wo, inout SampleGenerator sg, out float3 
     float trs[MaxInitialSampleCount];
     SampleMediumAnalyticGeneric(r, sg, false, hit, gFlightMipLevel, qs, trs, 1);
     dist = hit[0];
+    qSampler = qs[0];
     return hit[0] > 0.f && hit[0] < r.tMax && hit[0] < kRayTMax;
 }

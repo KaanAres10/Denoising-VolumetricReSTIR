@@ -537,7 +537,18 @@ void main(uint3 DTid : SV_DispatchThreadID)
             float3 zX2 = bx.x2;
             if (s == kRebounce)
             {
-                if (!proposeRebounce(x1, -ray.dir, sg, zDir, zDist)) { stat(55); continue; } // escaped or reached a surface
+                float qSampler;
+                if (!proposeRebounce(x1, -ray.dir, sg, zDir, zDist, qSampler)) { stat(55); continue; } // escaped or reached a surface
+                // Diagnostics (VR_MUT_STATS): the evaluator q is checked only on camera rays (kFlight); here it marches a
+                // ray that starts inside the medium. Its density at the proposal vs the sampler's own, beyond float
+                // rounding (the adapter draws no random numbers: the chain is unchanged).
+                if (gCollectStats)
+                {
+                    FreeFlightPdfAdapterGVDB ed;
+                    const float qe = flightPdf(bounceRay(x1, zDir), zDist, sg, ed);
+                    stat(60);
+                    if (abs(qe - qSampler) > 1e-3f * qSampler) { stat(59); if (!(qe > 0.f)) stat(61); else if (qe > qSampler) stat(62); }
+                }
                 zX2 = x1 + zDist * zDir;
                 qx = rebounceQ(x1, -ray.dir, bx.dir, bx.dist, bx.emissive, sg);
                 if (!(qx > 0.f) || isinf(qx)) { stat(56); continue; }
