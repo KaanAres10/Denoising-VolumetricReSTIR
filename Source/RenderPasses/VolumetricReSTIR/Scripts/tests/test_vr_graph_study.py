@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS",
               "VR_MUTATIONS", "VR_MUT_STRAT", "VR_MUT_STATS", "VR_INITIAL_M",
               "VR_DECOUPLED", "VR_DUP_CAP", "VR_MUT_AFTER_SPATIAL", "VR_TARGET_MIP", "VR_SELECT_UNIFORM",
-              "VR_PARAMS")
+              "VR_PARAMS", "VR_EXPLOSION_LESCALE", "VR_EXPLOSION_TSCALE")
 
 
 class Recorder:
@@ -274,9 +274,15 @@ class TestStressScenes(StudyEnv):
         env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
         self.assertTrue(env and env[-1].endswith("skylight-dusk.exr"))
         self.assertEqual(m.scene.envMap.rotation, vr.falcor4_env_rotation((13, 136, 340)))
-        self.assertEqual(vol["temperatureScale"], 1000.0)
-        self.assertEqual({k: v for k, v in vol.items() if k != "temperatureScale"},
-                         {k: v for k, v in base.items() if k != "temperatureScale"})
+        # Matched to the paper's figure at exposure 1 (its sky matches ours at 0.998): fire's brightest 10%
+        # (252, 230, 136) and 8.6% clipped, the paper's (254, 246, 147) and 9.2%.
+        self.assertEqual((vol["temperatureScale"], vol["LeScale"]), (1250.0, 0.1))
+        tuned = ("temperatureScale", "LeScale")
+        self.assertEqual({k: v for k, v in vol.items() if k not in tuned}, {k: v for k, v in base.items() if k not in tuned})
+        os.environ["VR_EXPLOSION_LESCALE"] = "0"  # the knob still overrides
+        vr, m = fresh_vr()
+        vr.SCENES["explosiondusk"]()
+        self.assertEqual(volume_call(m)["LeScale"], 0.0)
 
     def test_knobs_reach_the_stress_scenes(self):
         os.environ.update({"VR_PHASE_G": "0.8", "VR_DENSITY_MULT": "5"})
