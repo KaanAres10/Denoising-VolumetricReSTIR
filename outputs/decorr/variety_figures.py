@@ -15,7 +15,7 @@ import paper_figure
 
 PAIR = ("den_optix_mut0cap200", "den_optix_mut5cap200")
 # Scenes whose lit part is a small bright patch of the medium: a higher exposure percentile keeps its texture.
-EXPOSURE = {"bunnyspot": 99.9, "bunnyinside": 99.9, "plumeback_g0.9": 99.8, "bunnystripes": 99.8}
+EXPOSURE = {"bunnyspot": 99.9, "bunnyinside": 99.9, "plumeback_g0.9": 99.8, "bunnystripes": 99.8, "explosion": 99.95}
 TITLES = {
     "wdassunset_g0.85": "Disney cloud at sunset, backlit: sun vs sky colour",
     "plumeconcert_g0.6": "Concert: six coloured beams crossing in stage smoke",
