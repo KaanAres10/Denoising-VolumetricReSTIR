@@ -87,11 +87,30 @@ def main(argv=None):
     ap.add_argument("--exposure-pct", type=float, default=99.0,
                     help="percentile of the medium's luminance mapped to white (higher: a bright beam keeps its texture)")
     a = ap.parse_args(argv)
-    ref = art.reference(a.root, a.label)
-    imgs = [art.kept(os.path.join(a.root, a.label, c))[0] for c in (a.without, a.with_)]
+    p = prepare(a.root, a.label, a.without, a.with_, a.exposure_pct)
+    ref, imgs, inside, size, boxes, k, relmse = p.ref, p.imgs, p.inside, p.size, p.boxes, p.k, p.relmse
+    names = a.names.split(",") + ["path-traced reference"]
+    fig = plt.figure(figsize=(18, 13.2 + (5.6 if a.errors else 0)), facecolor="white")
+    rows = 4 if a.errors else 3
+    gs = fig.add_gridspec(rows, 6, height_ratios=[1.0, 0.62, 0.62] + ([1.0] if a.errors else []), hspace=0.12, wspace=0.04)
+    draw(fig, gs, a, p, names)
+    fig.suptitle(a.title, fontsize=15, y=0.995)
+    out = a.out or os.path.join(a.root, "figs", "paper_%s_%s.png" % (a.label, a.with_))
+    fig.savefig(out, dpi=90, bbox_inches="tight")
+    plt.close(fig)
+    print(out)
+    return [relmse(img) for img in imgs]  # in the medium, this frame: without, with
+
+
+def prepare(root, label, without, with_, exposure_pct=99.0):
+    """The frames (without / with mutations) and the reference cropped to the medium, its mask, the zoom boxes, the
+    exposure and the in-medium relMSE function -- shared by this figure and gallery_figure.py."""
+    import types
+    ref = art.reference(root, label)
+    imgs = [art.kept(os.path.join(root, label, c))[0] for c in (without, with_)]
     # The medium (the no-reuse run's mask): the crop, the zoom boxes and the numbers stay inside it, so emitters in
     # view (whose edges the denoiser softens) neither draw the boxes nor dominate the error.
-    mp = os.path.join(a.root, a.label, "noreuse", "c.medium.npy")
+    mp = os.path.join(root, label, "noreuse", "c.medium.npy")
     mask = np.load(mp) if os.path.exists(mp) else None
     if mask is not None and mask.shape == ref.shape[:2] and mask.any():
         ys, xs = np.nonzero(mask)
@@ -104,12 +123,11 @@ def main(argv=None):
         y0, y1, x0, x1 = lit_region(ref)
     ref = ref[y0:y1, x0:x1]
     imgs = [img[y0:y1, x0:x1] for img in imgs]
-    names = a.names.split(",") + ["path-traced reference"]
     size = max(64, min(ref.shape[:2]) // 4)
     boxes = pick_boxes(imgs[0], ref, size, mask=mask)
     inside = mask if mask is not None else np.ones(ref.shape[:2], bool)
     lref = ref @ mc.Y_RGB
-    k = np.percentile(lref[inside], a.exposure_pct) + 1e-9
+    k = np.percentile(lref[inside], exposure_pct) + 1e-9
 
     # Clipped at the medium's brightest 0.5%: a light inside the medium (the lanterns) makes a few pixels huge, and
     # one frame's error there would decide the number.
@@ -118,9 +136,12 @@ def main(argv=None):
     def relmse(img):
         d = (np.minimum(img @ mc.Y_RGB, cl) - np.minimum(lref, cl))[inside]
         return float(np.mean(d ** 2) / max(np.mean(np.minimum(lref, cl)[inside] ** 2), 1e-20))
-    fig = plt.figure(figsize=(18, 13.2 + (5.6 if a.errors else 0)), facecolor="white")
-    rows = 4 if a.errors else 3
-    gs = fig.add_gridspec(rows, 6, height_ratios=[1.0, 0.62, 0.62] + ([1.0] if a.errors else []), hspace=0.12, wspace=0.04)
+    return types.SimpleNamespace(ref=ref, imgs=imgs, mask=mask, inside=inside, size=size, boxes=boxes, k=k,
+                                 relmse=relmse, label=label, configs=(without, with_))
+
+
+def draw(fig, gs, a, p, names):
+    ref, imgs, inside, size, boxes, k, relmse = p.ref, p.imgs, p.inside, p.size, p.boxes, p.k, p.relmse
     if a.errors:
         # Signed error vs the reference, lightly blurred (sigma 2), luminance: the blotches a denoiser leaves.
         errs = [cv2.GaussianBlur(((img - ref) @ mc.Y_RGB).astype(np.float32), (0, 0), 2) * inside for img in imgs]
@@ -163,12 +184,6 @@ def main(argv=None):
                 s.set_linewidth(3)
             ax2.set_xticks([])
             ax2.set_yticks([])
-    fig.suptitle(a.title, fontsize=15, y=0.995)
-    out = a.out or os.path.join(a.root, "figs", "paper_%s_%s.png" % (a.label, a.with_))
-    fig.savefig(out, dpi=90, bbox_inches="tight")
-    plt.close(fig)
-    print(out)
-    return [relmse(img) for img in imgs]  # in the medium, this frame: without, with
 
 
 if __name__ == "__main__":
