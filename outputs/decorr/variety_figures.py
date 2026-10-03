@@ -14,6 +14,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paper_figure
 
 PAIR = ("den_optix_mut0cap200", "den_optix_mut5cap200")
+# Scenes whose lit part is a small bright patch of the medium: a higher exposure percentile keeps its texture.
+EXPOSURE = {"bunnyspot": 99.9, "bunnyinside": 99.9, "plumeback_g0.9": 99.8, "bunnystripes": 99.8}
 TITLES = {
     "wdassunset_g0.85": "Disney cloud at sunset, backlit: sun vs sky colour",
     "plumeconcert_g0.6": "Concert: six coloured beams crossing in stage smoke",
@@ -47,7 +49,8 @@ def main(argv=None):
         if a.force or not os.path.exists(out):
             rel = paper_figure.main([a.root, label, PAIR[0], PAIR[1], "--errors", "--out", out,
                                      "--names", "ReSTIR + OptiX denoiser,ReSTIR + 5 mutations + OptiX denoiser",
-                                     "--title", "%s (M cap 200, one frame, same denoiser)" % title])
+                                     "--title", "%s (M cap 200, one frame, same denoiser)" % title,
+                                     "--exposure-pct", str(EXPOSURE.get(label, 99.0))])
             print("%-22s relMSE in the medium %.4f -> %.4f (%+.0f%%)" % (label, rel[0], rel[1], 100 * (rel[1] / rel[0] - 1)))
 
 

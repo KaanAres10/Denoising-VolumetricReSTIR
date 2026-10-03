@@ -84,6 +84,8 @@ def main(argv=None):
     ap.add_argument("--names", default="ReSTIR,ReSTIR + 5 mutations")
     ap.add_argument("--out")
     ap.add_argument("--errors", action="store_true", help="a row of signed error maps vs the reference")
+    ap.add_argument("--exposure-pct", type=float, default=99.0,
+                    help="percentile of the medium's luminance mapped to white (higher: a bright beam keeps its texture)")
     a = ap.parse_args(argv)
     ref = art.reference(a.root, a.label)
     imgs = [art.kept(os.path.join(a.root, a.label, c))[0] for c in (a.without, a.with_)]
@@ -107,7 +109,7 @@ def main(argv=None):
     boxes = pick_boxes(imgs[0], ref, size, mask=mask)
     inside = mask if mask is not None else np.ones(ref.shape[:2], bool)
     lref = ref @ mc.Y_RGB
-    k = np.percentile(lref[inside], 99) + 1e-9
+    k = np.percentile(lref[inside], a.exposure_pct) + 1e-9
 
     # Clipped at the medium's brightest 0.5%: a light inside the medium (the lanterns) makes a few pixels huge, and
     # one frame's error there would decide the number.
