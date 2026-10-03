@@ -230,3 +230,22 @@ stops the round and is debugged before any figure is made.
 - More than 2 bounces. The design generalises, but the round tests 2.
 - Moving surface x2 vertices, and changing a path's type or its number of bounces (reversible jump).
 - The older queue items, which resume after this round.
+
+## Verification results
+
+### V-C0 — plain 2-bounce ReSTIR (2026-10-03): matches the legacy build and the 2-bounce reference
+- **Port vs legacy, explosion at 2 bounces, 960x540, 1024 frames.** The port's 2-bounce reference
+  against the legacy build's `run_LGHExplosion.py` as written (ReSTIR, accumulated):
+  - sky (top-left patch) identical: 0.0000 per channel;
+  - explosion box +0.68% / +0.53% / +0.13% (R/G/B);
+  - whole frame +0.51% / +0.29% / +0.04% (`compare_legacy.py`).
+  - For scale: the port at 1 bounce against the same legacy image gives −36% in the box, so the
+    comparison sees the second bounce.
+  - Figure: `figs/explosion_b2_port_vs_legacy.png`.
+- **`explosiondusk_b2` against its 2-bounce reference** (1080p, 2048 frames x 16 spp), 100-frame
+  means from `m_corr`:
+  - shipped reuse −0.35%;
+  - no reuse +0.002%.
+  - Reuse adds correlation as at one bounce: ρ̄(8) is 0.010 shipped against 0.000 with no reuse.
+- **The chain-level `bias_check.py`** cannot run on pruned study runs (2 kept frames). The mutation
+  bias gate uses dedicated unpruned runs (Task 5).
