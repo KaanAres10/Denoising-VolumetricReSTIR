@@ -3128,6 +3128,9 @@ the emission flag but never built the blackbody LUT, and the LUT file was missin
 (data/LUT from legacy/); non-emissive captures byte-identical after the fix. The paper's temperatureScale
 750 still gives exactly zero emission on this bake (LeScale 1 and 100 identical), so the scene uses 7500;
 skylight-dusk.exr crashes setEnvMap, so it uses satara_night_8k.hdr.
+(2026-10-03: both no longer hold with the current loader. At 750 / LeScale 1 under skylight-dusk.exr, with
+the 4.x rotation converted, the port renders the paper's explosion and matches the legacy build side by side;
+see vr_graph.load_explosion_dusk.)
 
 Retracted (my measurement error): "a dark band 1-12 px outside the smoke, in the raw input even without
 temporal reuse". The stops occupy frames 74..224, 299..449, 524..674 (schedule index == file index); that

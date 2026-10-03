@@ -456,6 +456,9 @@ with a proper truth it is no longer the more accurate still image either (edge r
   the explosion scene uses 7500.
 * `skylight-dusk.exr` crashes `setEnvMap` in this build (the paper's explosion sky); the explosion scene
   uses `satara_night_8k.hdr`.
+* (2026-10-03) Neither of the last two holds with the current loader: at the paper's 750 / LeScale 1
+  under `skylight-dusk.exr` (its 4.x rotation converted to Falcor 9), the port renders the paper's
+  explosion and matches the legacy build side by side -- the `explosiondusk` scene in `vr_graph.py`.
 * `VolumetricReSTIR::setProperties` dereferenced the scene unconditionally: setting a property while a
   graph is built crashed without a message, and any runtime set on bistro would have crashed on its
   missing environment map. Guarded.

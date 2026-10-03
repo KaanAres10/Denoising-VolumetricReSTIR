@@ -274,9 +274,10 @@ class TestStressScenes(StudyEnv):
         env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
         self.assertTrue(env and env[-1].endswith("skylight-dusk.exr"))
         self.assertEqual(m.scene.envMap.rotation, vr.falcor4_env_rotation((13, 136, 340)))
-        # Matched to the paper's figure at exposure 1 (its sky matches ours at 0.998): fire's brightest 10%
-        # (252, 230, 136) and 8.6% clipped, the paper's (254, 246, 147) and 9.2%.
-        self.assertEqual((vol["temperatureScale"], vol["LeScale"]), (1250.0, 0.1))
+        # run_LGHExplosion.py's own values: rendered side by side with the legacy build, the port matches it
+        # at these (the "750 renders no fire" note predates the current loader).
+        self.assertEqual((vol["temperatureScale"], vol["LeScale"]), (750.0, 1.0))
+        self.assertEqual(m.scene.camera.up, (-0.000909, 1.0, 0.00003))
         tuned = ("temperatureScale", "LeScale")
         self.assertEqual({k: v for k, v in vol.items() if k not in tuned}, {k: v for k, v in base.items() if k not in tuned})
         os.environ["VR_EXPLOSION_LESCALE"] = "0"  # the knob still overrides

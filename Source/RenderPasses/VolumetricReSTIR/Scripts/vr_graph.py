@@ -299,11 +299,11 @@ def load_explosion(env="satara_night_8k.hdr", temperature_scale=7500.0, le_scale
     m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(10, 10, 10), g=env_float("VR_PHASE_G", 0.0),
                           dataFile=DATA_DIR + r"\LGHExplosion\LGHExplosion.183", numMips=4, densityScale=_density(0.02),
                           hasVelocity=False, hasEmission=True, LeScale=env_float("VR_EXPLOSION_LESCALE", le_scale),
-                          # The paper's temperatureScale 750 maps this bake below the blackbody LUT's first
-                          # non-zero row: measured, LeScale 1 and 100 render byte-identical, i.e. emission
-                          # is exactly zero (the grid's values reach ~4, the LUT is black below ~3300 K).
-                          # 7500 gives the fireball, but most of it clamps at the LUT's 6400 K row, which is
-                          # greenish white; 1000 keeps it in the orange rows (load_explosion_dusk).
+                          # 7500 here, 10x the paper's 750, came from a measurement under an earlier loader
+                          # (750 rendered no emission then). With the current loader the paper's 750 renders
+                          # the paper's fire (load_explosion_dusk, checked against the legacy build); at 7500
+                          # most of the fireball clamps at the blackbody LUT's greenish-white 6400 K row.
+                          # Kept for the results already rendered with this scene.
                           temperatureCutoff=0.0, temperatureScale=env_float("VR_EXPLOSION_TSCALE", temperature_scale))
     m.scene.camera.animated = False
     m.scene.camera.position = float3(-29.487331, 10.408340, 0.493491)
@@ -320,14 +320,14 @@ def load_explosion(env="satara_night_8k.hdr", temperature_scale=7500.0, le_scale
 
 
 def load_explosion_dusk():
-    """The explosion as the paper shows it: run_LGHExplosion.py's sky (skylight-dusk.exr, setEnvMapRotation
-    (13, 136, 340) converted to Falcor 9), and the fire matched to the paper's figure, which shows the render at
-    exposure 1 (its sky matches ours at 0.998): temperature scale 1250 keeps the fire in the blackbody LUT's
-    orange-yellow rows instead of clamping at its greenish-white 6400 K row, and LeScale 0.1 sets its
-    brightness -- brightest 10% (252, 230, 136) and 8.6% clipped, the paper's (254, 246, 147) and 9.2%. The
-    smoke stays darker than the paper's: single scattering, so the fire does not light it."""
-    info = load_explosion(env="skylight-dusk.exr", temperature_scale=1250.0, le_scale=0.1)
+    """The explosion as the paper sets it up (run_LGHExplosion.py): skylight-dusk.exr with setEnvMapRotation
+    (13, 136, 340) converted to Falcor 9, temperature scale 750, LeScale 1, its camera up vector. Rendered next to
+    the legacy build at these values, the port matches it -- the same fire, the same sky to 3 digits; the
+    paper's figures show the render at exposure 1. The smoke is darker than the paper's: it renders 2 and 4
+    bounces, the study 1, so the fire does not light the smoke here."""
+    info = load_explosion(env="skylight-dusk.exr", temperature_scale=750.0, le_scale=1.0)
     m.scene.envMap.rotation = float3(*falcor4_env_rotation((13, 136, 340)))
+    m.scene.camera.up = float3(-0.000909, 1.0, 0.00003)
     return info
 
 
