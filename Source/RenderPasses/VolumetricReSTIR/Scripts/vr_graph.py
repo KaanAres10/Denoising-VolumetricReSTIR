@@ -479,7 +479,10 @@ def load_scene(name):
 # Graph pieces
 # ---------------------------------------------------------------------------------------------
 
-MUTATION_STRATEGIES = {"light": 1, "depth": 2, "select": 4, "flight": 8}  # MutateSamples.cs.slang's strategy bits
+MUTATION_STRATEGIES = {"light": 1, "depth": 2, "select": 4, "flight": 8,  # MutateSamples.cs.slang's strategy bits
+                       # two bounces (BounceMoves.slang): rotate the extra bounce's direction, step its distance,
+                       # redraw it from the phase function and free flight
+                       "direction": 16, "distance": 32, "rebounce": 64}
 
 
 def mutation_strategy_mask(spec):
@@ -580,6 +583,8 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
                               ("mSpatialSampleCount", "VR_SR_COUNT", int),
                               ("mSpatialReuseRounds", "VR_SR_ROUNDS", int),
                               ("mInitialM", "VR_INITIAL_M", int),
+                              # Bounces (the study runs 1; the paper's explosion 2). Mutations support <= 2.
+                              ("mMaxBounces", "VR_MAX_BOUNCES", int),
                               # A cheaper, coarser target (spec V-B10): p_hat's light and camera-ray transmittance
                               # on this mip (shipped: 1); final shading stays on mip 0, so f / p_hat -- what a
                               # shared sample carries into every pixel that shares it -- varies more.

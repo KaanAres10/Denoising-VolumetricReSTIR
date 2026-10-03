@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPTS))
 STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS",
               "VR_MUTATIONS", "VR_MUT_STRAT", "VR_MUT_STATS", "VR_INITIAL_M",
               "VR_DECOUPLED", "VR_DUP_CAP", "VR_MUT_AFTER_SPATIAL", "VR_TARGET_MIP", "VR_SELECT_UNIFORM",
-              "VR_PARAMS", "VR_EXPLOSION_LESCALE", "VR_EXPLOSION_TSCALE")
+              "VR_PARAMS", "VR_EXPLOSION_LESCALE", "VR_EXPLOSION_TSCALE", "VR_MAX_BOUNCES")
 
 
 class Recorder:
@@ -348,6 +348,19 @@ class TestKnobs(StudyEnv):
         self.assertNotIn("mMutationSelectWeighted", self.restir_params())  # the pass's default: weighted
         os.environ["VR_SELECT_UNIFORM"] = "1"  # the re-selection's original uniform point-light proposal
         self.assertIs(self.restir_params()["mMutationSelectWeighted"], False)
+
+    def test_bounce_knob(self):
+        self.assertNotIn("mMaxBounces", self.restir_params())
+        os.environ["VR_MAX_BOUNCES"] = "2"  # the paper's explosion renders 2 bounces
+        params = self.restir_params()
+        self.assertEqual(params["mMaxBounces"], 2)
+        self.assertIsInstance(params["mMaxBounces"], int)
+
+    def test_two_bounce_strategy_names(self):
+        os.environ["VR_MUT_STRAT"] = "direction,distance,rebounce"  # MutateSamples.cs.slang bits 4-6
+        self.assertEqual(self.restir_params()["mMutationStrategyMask"], 16 | 32 | 64)
+        os.environ["VR_MUT_STRAT"] = "light,depth,select,flight,direction,distance,rebounce"
+        self.assertEqual(self.restir_params()["mMutationStrategyMask"], 127)
 
     def test_sharing_knobs(self):
         params = self.restir_params()
