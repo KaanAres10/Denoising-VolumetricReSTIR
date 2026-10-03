@@ -150,6 +150,15 @@ class TestKeptAll(unittest.TestCase):
             self.assertEqual(frames[0].shape, (4, 6, 3))
 
 
+class TestPaperDisplay(unittest.TestCase):
+    def test_exposure_one_srgb_clamp(self):
+        # The Volumetric ReSTIR paper's figures show the render at exposure 1 through the sRGB curve, clamped.
+        import numpy as np
+        import artifacts
+        out = artifacts.srgb_display(np.array([[[0.0, 0.5, 1.0], [2.0, 0.002, -1.0]]]))
+        np.testing.assert_allclose(out, [[[0.0, 0.735357, 1.0], [1.0, 0.02584, 0.0]]], atol=1e-5)
+
+
 class TestAtlasConfigs(unittest.TestCase):
     def test_first_scored_alternative(self):
         import atlas_figure

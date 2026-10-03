@@ -22,6 +22,8 @@ def pair(denoiser="optix"):
 
 
 PAIR = pair()
+# Shown as the paper shows it (exposure 1, sRGB, clamped) -- the scene was matched to the paper's figure that way.
+PAPER_DISPLAY = {"explosiondusk"}
 # Scenes whose lit part is a small bright patch of the medium: a higher exposure percentile keeps its texture.
 EXPOSURE = {"bunnyspot": 99.9, "bunnyinside": 99.9, "plumeback_g0.9": 99.8, "bunnystripes": 99.8, "explosion": 99.95}
 TITLES = {
@@ -63,7 +65,8 @@ def main(argv=None):
             rel = paper_figure.main([a.root, label, configs[0], configs[1], "--errors", "--out", out,
                                      "--names", "ReSTIR + %s,ReSTIR + 5 mutations + %s" % (den, den),
                                      "--title", "%s (M cap 200, one frame, both through %s)" % (title, den),
-                                     "--exposure-pct", str(EXPOSURE.get(label, 99.0))])
+                                     "--exposure-pct", str(EXPOSURE.get(label, 99.0))]
+                                    + (["--paper-display"] if label in PAPER_DISPLAY else []))
             print("%-22s relMSE in the medium %.4f -> %.4f (%+.0f%%)" % (label, rel[0], rel[1], 100 * (rel[1] / rel[0] - 1)))
 
 

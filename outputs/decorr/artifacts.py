@@ -76,6 +76,13 @@ def medium_crop(ident, size):
     return np.s_[y0:y0 + s, x0:x0 + s]
 
 
+def srgb_display(x):
+    """The render at exposure 1 through the sRGB curve, clamped to [0, 1]: how the Volumetric ReSTIR paper shows
+    its figures (the explosion's sky matches it at exposure 0.998)."""
+    x = np.clip(x, 0, 1)
+    return np.where(x <= 0.0031308, 12.92 * x, 1.055 * x ** (1 / 2.4) - 0.055)
+
+
 def tonemap(x, k):
     t = np.clip(x / k, 0, None)
     return np.clip(t / (1 + t) * 2, 0, 1) ** (1 / 2.2)

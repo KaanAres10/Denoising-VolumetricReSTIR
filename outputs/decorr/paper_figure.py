@@ -86,8 +86,9 @@ def main(argv=None):
     ap.add_argument("--errors", action="store_true", help="a row of signed error maps vs the reference")
     ap.add_argument("--exposure-pct", type=float, default=99.0,
                     help="percentile of the medium's luminance mapped to white (higher: a bright beam keeps its texture)")
+    ap.add_argument("--paper-display", action="store_true", help="exposure 1, sRGB, clamped (as the paper's figures)")
     a = ap.parse_args(argv)
-    p = prepare(a.root, a.label, a.without, a.with_, a.exposure_pct)
+    p = prepare(a.root, a.label, a.without, a.with_, a.exposure_pct, a.paper_display)
     ref, imgs, inside, size, boxes, k, relmse = p.ref, p.imgs, p.inside, p.size, p.boxes, p.k, p.relmse
     names = a.names.split(",") + ["path-traced reference"]
     fig = plt.figure(figsize=(18, 13.2 + (5.6 if a.errors else 0)), facecolor="white")
@@ -102,7 +103,7 @@ def main(argv=None):
     return [relmse(img) for img in imgs]  # in the medium, this frame: without, with
 
 
-def prepare(root, label, without, with_, exposure_pct=99.0):
+def prepare(root, label, without, with_, exposure_pct=99.0, paper_display=False):
     """The frames (without / with mutations) and the reference cropped to the medium, its mask, the zoom boxes, the
     exposure and the in-medium relMSE function -- shared by this figure and gallery_figure.py."""
     import types
@@ -136,7 +137,9 @@ def prepare(root, label, without, with_, exposure_pct=99.0):
     def relmse(img):
         d = (np.minimum(img @ mc.Y_RGB, cl) - np.minimum(lref, cl))[inside]
         return float(np.mean(d ** 2) / max(np.mean(np.minimum(lref, cl)[inside] ** 2), 1e-20))
-    return types.SimpleNamespace(ref=ref, imgs=imgs, mask=mask, inside=inside, size=size, boxes=boxes, k=k,
+    # paper_display: exposure 1, sRGB, clamped -- how the Volumetric ReSTIR paper shows its figures.
+    show = art.srgb_display if paper_display else (lambda img: art.tonemap(img, k))
+    return types.SimpleNamespace(ref=ref, imgs=imgs, mask=mask, inside=inside, size=size, boxes=boxes, k=k, show=show,
                                  relmse=relmse, label=label, configs=(without, with_), crop=np.s_[y0:y1, x0:x1])
 
 
@@ -160,7 +163,7 @@ def draw(fig, gs, a, p, names):
         ax.axis("off")
     for j, (img, name) in enumerate(zip(imgs + [ref], names)):
         ax = fig.add_subplot(gs[0, 2 * j:2 * j + 2])
-        ax.imshow(art.tonemap(img, k))
+        ax.imshow(p.show(img))
         info = ""
         if j < 2:
             c = corr(a.root, a.label, (a.without, a.with_)[j])
@@ -178,7 +181,7 @@ def draw(fig, gs, a, p, names):
         ax.axis("off")
         for b, ((y, x), colour) in enumerate(zip(boxes, BOX_COLOURS)):
             ax2 = fig.add_subplot(gs[1 + b, 2 * j:2 * j + 2])
-            ax2.imshow(art.tonemap(img[y:y + size, x:x + size], k), interpolation="nearest")
+            ax2.imshow(p.show(img[y:y + size, x:x + size]), interpolation="nearest")
             for s in ax2.spines.values():
                 s.set_edgecolor(colour)
                 s.set_linewidth(3)
