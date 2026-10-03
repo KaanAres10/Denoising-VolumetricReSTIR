@@ -134,6 +134,22 @@ class TestSheet(unittest.TestCase):
             self.assertGreater(os.path.getsize(out), 10000)
 
 
+class TestKeptAll(unittest.TestCase):
+    def test_first_capture_of_every_chain_still_on_disk(self):
+        import cv2
+        import numpy as np
+        import artifacts
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "c.schedule.json"), "w") as fh:
+                json.dump({"chains": [{"frames": [9, 14]}, {"frames": [30, 35]}, {"frames": [51, 56]}],
+                           "burst": None, "channel": "Denoiser.output"}, fh)
+            for f, v in ((9, 0.25), (30, 0.5), (14, 1.0)):  # prune keeps chains 0 and 1; 14 is not a first capture
+                cv2.imwrite(os.path.join(d, "c.Denoiser.output.%d.exr" % f), np.full((4, 6, 3), v, np.float32))
+            frames = artifacts.kept_all(d)
+            self.assertEqual([float(f[0, 0, 0]) for f in frames], [0.25, 0.5])
+            self.assertEqual(frames[0].shape, (4, 6, 3))
+
+
 class TestAtlasConfigs(unittest.TestCase):
     def test_first_scored_alternative(self):
         import atlas_figure

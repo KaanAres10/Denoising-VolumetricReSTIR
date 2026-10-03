@@ -41,6 +41,15 @@ def kept(run_dir):
     return color[..., :3][..., ::-1].astype(np.float64), ident
 
 
+def kept_all(run_dir):
+    """The first capture of every chain still on disk (prune.py keeps chains 0 and 1), colour (RGB), chain order."""
+    with open(os.path.join(run_dir, "c.schedule.json")) as fh:
+        s = json.load(fh)
+    channel = s.get("channel", "VolumetricReSTIR.accumulated_color")
+    paths = [os.path.join(run_dir, "c.%s.%d.exr" % (channel, c["frames"][0])) for c in s["chains"]]
+    return [mc.read_exr(p)[..., :3][..., ::-1].astype(np.float64) for p in paths if os.path.exists(p)]
+
+
 def reference(root, label, override=None):
     if override:
         return mc.read_exr(override)[..., :3][..., ::-1].astype(np.float64)

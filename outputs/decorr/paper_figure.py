@@ -137,7 +137,7 @@ def prepare(root, label, without, with_, exposure_pct=99.0):
         d = (np.minimum(img @ mc.Y_RGB, cl) - np.minimum(lref, cl))[inside]
         return float(np.mean(d ** 2) / max(np.mean(np.minimum(lref, cl)[inside] ** 2), 1e-20))
     return types.SimpleNamespace(ref=ref, imgs=imgs, mask=mask, inside=inside, size=size, boxes=boxes, k=k,
-                                 relmse=relmse, label=label, configs=(without, with_))
+                                 relmse=relmse, label=label, configs=(without, with_), crop=np.s_[y0:y1, x0:x1])
 
 
 def draw(fig, gs, a, p, names):
