@@ -41,7 +41,7 @@ if tasklist 2>/dev/null | grep -qi mogwai; then echo "[study] Mogwai is running;
 ls build/windows-vs2022/bin/Release/libprotoc.dll build/windows-vs2022/bin/Release/z.dll >/dev/null 2>&1 ||
     ./tools/.packman/cmake/bin/cmake.exe --build build/windows-vs2022 --config Release --target restore_runtime_dlls >/dev/null 2>&1
 
-scene_env() {  # label -> VR_SCENE (+ VR_PHASE_G for _g<g>, VR_DENSITY_MULT for _d<mult>)
+scene_env() {  # label -> VR_SCENE (+ VR_PHASE_G for _g<g>, VR_DENSITY_MULT for _d<mult>, VR_MAX_BOUNCES for _b<n>)
     local IFS=_
     # shellcheck disable=SC2086
     set -- $1
@@ -51,6 +51,7 @@ scene_env() {  # label -> VR_SCENE (+ VR_PHASE_G for _g<g>, VR_DENSITY_MULT for 
         case "$m" in
             g*) out="$out VR_PHASE_G=${m#g}" ;;
             d*) out="$out VR_DENSITY_MULT=${m#d}" ;;
+            b*) out="$out VR_MAX_BOUNCES=${m#b}" ;;
         esac
     done
     echo "$out"
