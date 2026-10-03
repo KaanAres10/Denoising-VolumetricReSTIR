@@ -24,18 +24,24 @@ from variety_figures import DENOISERS, EXPOSURE, PAPER_DISPLAY, TITLES, pair, sc
 ORDER = ["bunnycathedral_d0.3", "bunnyspot", "bunnysoftbox", "bunnyinside", "bunnyback_g0.8", "bunnystripes",
          "explosion", "bunnylanterns", "wdassunset_g0.85", "plumeback_g0.9", "plumeconcert_g0.6"]
 NOTES = {"bunnystripes": " *"}
+# Two bounces (spec 2026-10-03-two-bounce-mutations-design.md): the first-round scenes, 5 moves of every kind.
+ORDER_B2 = ["explosiondusk_b2", "bunnycathedral_d0.3_b2", "bunnyback_g0.8_b2", "bunnysoftbox_b2", "wdassunset_g0.85_b2"]
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("--out")
-    ap.add_argument("--scenes", default=",".join(ORDER))
+    ap.add_argument("--scenes")
+    ap.add_argument("--two-bounce", action="store_true", help="the two-bounce first round (ORDER_B2)")
     ap.add_argument("--denoiser", default="optix", choices=sorted(DENOISERS))
     a = ap.parse_args(argv)
     PAIR, den = pair(a.denoiser), DENOISERS[a.denoiser]
     notes = NOTES if a.denoiser == "optix" else {}  # the slats caveat was seen through OptiX
-    labels = [l for l in a.scenes.split(",") if all(scored(a.root, l, c) for c in PAIR)]
+    scenes = a.scenes.split(",") if a.scenes else (ORDER_B2 if a.two_bounce else ORDER)
+    labels = [l for l in scenes if all(scored(a.root, l, c) for c in PAIR)]
+    if not labels:
+        sys.exit("gallery_figure: no scene has a scored %s pair yet" % " / ".join(PAIR))
     fig, ax = plt.subplots(len(labels), 4, figsize=(15, 3.6 * len(labels)), squeeze=False,
                            gridspec_kw={"width_ratios": [1.25, 1, 1, 1], "wspace": 0.04, "hspace": 0.08})
     for i, label in enumerate(labels):
@@ -55,14 +61,16 @@ def main(argv=None):
             x_.set_yticks([])
         for s in ax[i][0].spines.values():
             s.set_visible(False)
-    fig.suptitle("Where Metropolis-Hastings mutations remove volumetric ReSTIR's artifacts (M cap 200, one frame, %s,\n"
-                 "zoom where plain ReSTIR's error is largest; mutations alone, no decoupled history)" % den,
+    fig.suptitle("Where Metropolis-Hastings mutations remove volumetric ReSTIR's artifacts (%sM cap 200, one frame, %s,\n"
+                 "zoom where plain ReSTIR's error is largest; mutations alone, no decoupled history)"
+                 % ("two bounces, " if a.two_bounce else "", den),
                  fontsize=14, y=0.997)
     fig.subplots_adjust(top=0.975, bottom=0.01)
     if any(l in notes for l in labels):
         fig.text(0.01, 0.002, "* next to the slats the mutated run shows a few larger patches (see its full figure).",
                  fontsize=10)
-    out = a.out or os.path.join(a.root, "figs", "gallery_mutations%s.png" % ("" if a.denoiser == "optix" else "_" + a.denoiser))
+    out = a.out or os.path.join(a.root, "figs", "gallery_mutations%s%s.png" % ("_b2" if a.two_bounce else "",
+                                                                         "" if a.denoiser == "optix" else "_" + a.denoiser))
     fig.savefig(out, dpi=80, bbox_inches="tight")
     print(out)
 
