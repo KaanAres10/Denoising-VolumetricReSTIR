@@ -54,7 +54,7 @@ def main(argv=None):
         for j, img in enumerate(p.imgs + [p.ref]):
             ax[i][j + 1].imshow(p.show(img[y:y + p.size, x:x + p.size]), interpolation="nearest")
             if i == 0:
-                ax[i][j + 1].set_title(["ReSTIR + %s" % den.replace(" denoiser", ""), "+ 5 mutations, same denoiser",
+                ax[i][j + 1].set_title(["ReSTIR + %s" % {"optix": "OptiX", "rr": "DLSS RR"}[a.denoiser], "+ 5 mutations, same denoiser",
                                         "path-traced reference"][j], fontsize=13)
         for x_ in ax[i]:
             x_.set_xticks([])
