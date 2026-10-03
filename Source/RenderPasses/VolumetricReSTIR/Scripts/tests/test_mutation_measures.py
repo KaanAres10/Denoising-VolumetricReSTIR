@@ -363,5 +363,154 @@ class TestFreeFlight(unittest.TestCase):
         self.assertGreater(np.abs(self.run_chain(False, 40000) - self.expected_shares()).max(), 0.05)
 
 
+# ---- Two bounces (spec 2026-10-03-two-bounce-mutations-design.md) ----
+# The direction move is the env move's rotation line for line (BounceMoves.slang rotateDirection): its solid-angle
+# symmetry is TestEnvMap's.
+
+def encode_wi_dist(w, d):
+    """ReSTIRHelper.slang encodeWiDist: (w.x, w.y, +-d), the sign carrying w.z's (float32)."""
+    w = np.asarray(w, f32)
+    return np.array([w[0], w[1], -d if w[2] < 0 else d], f32)
+
+
+def decode_wi_dist(e):
+    """ReSTIRHelper.slang decodeWiDist(input, false): w.z = +-sqrt(1 - x^2 - y^2) (NaN -> 0), d = |input.z|."""
+    e = np.asarray(e, f32)
+    with np.errstate(invalid="ignore"):  # the shader's NaN, mapped to 0 below
+        z = np.sqrt(f32(1) - (e[0] * e[0] + e[1] * e[1]))
+    if np.isnan(z):
+        z = f32(0)
+    if e[2] < 0:
+        z, d = -z, -e[2]
+    else:
+        d = e[2]
+    return np.array([e[0], e[1], z], f32), d
+
+
+def hg_pdf(cos, g):
+    """VolumeBase.slang PhaseHG."""
+    denom = 1 + g * g + 2 * g * cos
+    return (1 - g * g) / (4 * np.pi * denom * np.sqrt(denom))
+
+
+def coordinate_system(v1):
+    """VolumeBase.slang CoordinateSystem."""
+    if abs(v1[0]) > abs(v1[1]):
+        v2 = np.array([-v1[2], 0, v1[0]]) / np.sqrt(v1[0] ** 2 + v1[2] ** 2)
+    else:
+        v2 = np.array([0, v1[2], -v1[1]]) / np.sqrt(v1[1] ** 2 + v1[2] ** 2)
+    return v2, np.cross(v1, v2)
+
+
+def hg_sample(wo, g, u):
+    """VolumeBase.slang MediumInteraction::Sample_p: wi with density PhaseHG(dot(wo, wi), g)."""
+    if abs(g) < 1e-3:
+        cos = 1 - 2 * u[0]
+    else:
+        sq = (1 - g * g) / (1 + g - 2 * g * u[0])
+        cos = -(1 + g * g - sq * sq) / (2 * g)
+    sin = np.sqrt(max(0.0, 1 - cos * cos))
+    phi = 2 * np.pi * u[1]
+    v1, v2 = coordinate_system(wo)
+    return sin * np.cos(phi) * v1 + sin * np.sin(phi) * v2 + cos * wo
+
+
+def isotropic_step(unit, lo, hi, n):
+    """BounceMoves.slang isotropicStep: unit * |kelemenStep(lo, hi)| times a uniform direction (sample_sphere)."""
+    length = unit * np.abs(kelemen_step(lo, hi, RNG.random((n, 2))))
+    u = RNG.random((n, 2))
+    z = 1 - 2 * u[:, 0]
+    r = np.sqrt(np.maximum(0, 1 - z * z))
+    phi = 2 * np.pi * u[:, 1]
+    return length[:, None] * np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=-1)
+
+
+def rebounce_q(cos, d, sigma, R, g):
+    """BounceMoves.slang rebounceQ on a homogeneous ball of radius R around x1: phase x sigma T, per sr per length."""
+    return np.where((d > 0) & (d < R), hg_pdf(cos, g) * sigma * np.exp(-sigma * d), 0.0)
+
+
+def rebounce_step(state, target, sigma, R, g, u):
+    """The rebounce move on (cos, d) with wo = +z: phase-sampled direction, free-flight distance, independence
+    acceptance min(1, p(z) q(x) / (p(x) q(z))); a draw past R (escape) is rejected."""
+    wi = hg_sample(np.array([0.0, 0.0, 1.0]), g, RNG.random(2))
+    d = -np.log(1 - RNG.random()) / sigma
+    if d >= R:
+        return state
+    z = (wi[2], d)
+    qx, qz = rebounce_q(state[0], state[1], sigma, R, g), rebounce_q(z[0], z[1], sigma, R, g)
+    px, pz = target(*state), target(*z)
+    return z if pz > 0 and u * px * qz < pz * qx else state
+
+
+class TestTwoBounceMeasures(unittest.TestCase):
+    def test_wi_dist_round_trips(self):
+        # z is recomputed as sqrt(1 - x^2 - y^2) in float32, so the error grows like ~1e-7 / |z| towards the
+        # horizon (measured: 7e-8 / |z|; 4.6e-5 rad at most for |z| >= 1e-3, 2.6e-4 rad at |z| ~ 1e-4). The angle is
+        # taken from the chord: arccos of a dot product near 1 cannot resolve it below ~4e-4 rad.
+        for _ in range(20000):
+            w = RNG.normal(size=3)
+            w /= np.linalg.norm(w)
+            if abs(w[2]) < 1e-5:
+                continue
+            d = RNG.uniform(0.01, 50.0)
+            w2, d2 = decode_wi_dist(encode_wi_dist(w, d))
+            w2 = w2.astype(float) / np.linalg.norm(w2.astype(float))
+            angle = 2 * np.arcsin(np.linalg.norm(w - w2) / 2)
+            self.assertLess(angle * abs(w[2]), 2e-7)
+            if abs(w[2]) >= 1e-3:
+                self.assertLess(angle, 1e-4)
+            self.assertAlmostEqual(float(d2), d, delta=1e-5 * d)
+
+    def test_hg_sample_follows_its_pdf(self):
+        g, wo = 0.6, np.array([0.0, 0.6, 0.8])
+        cos = np.array([np.dot(wo, hg_sample(wo, g, RNG.random(2))) for _ in range(100000)])
+        edges = np.linspace(-1, 1, 41)
+        hist, _ = np.histogram(cos, edges, density=True)
+        mid = 0.5 * (edges[1:] + edges[:-1])
+        np.testing.assert_allclose(hist, 2 * np.pi * hg_pdf(mid, g), rtol=0.08, atol=0.01)
+
+    def test_isotropic_step_is_symmetric(self):
+        # p(x -> z) depends on z - x only through |z - x| and a uniform direction: symmetric in volume.
+        s = isotropic_step(0.1, 0.5, 8.0, 200000)
+        axis = np.array([0.3, -0.5, 0.81])
+        axis /= np.linalg.norm(axis)
+        proj = s @ axis
+        self.assertLess(ks_distance(proj, -proj), 0.01)
+        self.assertLess(abs(proj.mean()), 0.01 * np.abs(proj).mean())
+
+    def test_rebounce_density_mass_is_one_minus_escape(self):
+        sigma, R, g = 0.7, 3.0, 0.5
+        cos = np.linspace(-1, 1, 2001)
+        d = np.linspace(0, R, 3001)
+        C, D = np.meshgrid(cos, d, indexing="ij")
+        mass = np.trapezoid(np.trapezoid(rebounce_q(C, D, sigma, R, g), d, axis=1), cos) * 2 * np.pi
+        self.assertAlmostEqual(mass, 1 - np.exp(-sigma * R), delta=2e-3)
+        # Emission at x2: q / d^2 is a density in volume with the same mass (dV = d^2 domega dd).
+        n = 400000
+        p = RNG.uniform(-R, R, (n, 3))
+        r = np.linalg.norm(p, axis=1)
+        qv = rebounce_q(p[:, 2] / np.maximum(r, 1e-12), r, sigma, R, g) / np.maximum(r, 1e-12) ** 2
+        self.assertAlmostEqual(qv.mean() * (2 * R) ** 3, 1 - np.exp(-sigma * R), delta=0.03)
+
+    def test_rebounce_keeps_the_target(self):
+        sigma, R, g = 0.9, 2.5, 0.4
+
+        def target(cos, d):  # a 2-bounce-like p_hat: forward lobe times a light falling off with depth
+            return (1.2 + cos) ** 2 * np.exp(-0.4 * d) * (d < R)
+
+        x, cs = (0.5, 1.0), []
+        for i in range(200000):
+            x = rebounce_step(x, target, sigma, R, g, RNG.random())
+            if i > 1000:
+                cs.append(x[0])
+        # The target's marginal of cos (per steradian -> per unit cos: the same, the azimuth is uniform).
+        grid = np.linspace(-1, 1, 801)
+        w = (1.2 + grid) ** 2
+        cdf = np.cumsum(w) / w.sum()
+        ref = np.interp(RNG.random(50000), cdf, grid)
+        self.assertLess(ks_distance(np.array(cs), ref), 0.02)
+
+
 if __name__ == "__main__":
     unittest.main()
