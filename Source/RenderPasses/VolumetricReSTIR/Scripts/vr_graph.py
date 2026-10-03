@@ -23,6 +23,7 @@
 #
 # See run.py, which is the entry point for every scene/denoiser/upscale combination.
 
+import math
 import os
 import sys
 
@@ -266,20 +267,44 @@ def load_bistro():
     }
 
 
-def load_explosion():
+def falcor4_env_rotation(degrees):
+    """A Falcor 4.x setEnvMapRotation (degrees XYZ) as Falcor 9's envMap.rotation for the same sky. 4.x built
+    Rz Ry Rx (glm); 9 builds Rx Ry Rz (MatrixMath.h matrixFromRotationXYZ), so a rotation about more than one
+    axis has to be re-derived -- a single-axis one carries over unchanged."""
+    x, y, z = (math.radians(d) for d in degrees)
+    cx, sx, cy, sy, cz, sz = math.cos(x), math.sin(x), math.cos(y), math.sin(y), math.cos(z), math.sin(z)
+    # The entries of Rz Ry Rx that its Rx(a) Ry(b) Rz(c) decomposition needs: row 0 is (cb cc, -cb sc, sb),
+    # (1, 2) is -sa cb and (2, 2) is ca cb.
+    m00, m01, m02 = cz * cy, cz * sy * sx - sz * cx, cz * sy * cx + sz * sx
+    m12, m22 = sz * sy * cx - cz * sx, cy * cx
+    a, b, c = math.atan2(-m12, m22), math.asin(max(-1.0, min(1.0, m02))), math.atan2(-m01, m00)
+    # (a, b, c) and (a + pi, pi - b, c + pi) are the same rotation; keep the one nearer the input angles.
+    other = (a + math.pi, math.pi - b, c + math.pi)
+
+    def dist(angles):
+        return sum(abs(math.remainder(u - v, 2 * math.pi)) for u, v in zip(angles, (x, y, z)))
+    best = min((a, b, c), other, key=dist)
+    # Each angle wrapped to within 180 degrees of the input's, so a single-axis rotation comes back as given.
+    return tuple(math.degrees(v + math.remainder(u - v, 2 * math.pi)) for u, v in zip(best, (x, y, z)))
+
+
+def load_explosion(env="satara_night_8k.hdr", temperature_scale=7500.0):
     """The Volumetric ReSTIR paper's explosion (run_LGHExplosion.py): an EMISSIVE medium -- blackbody
     emission from its temperature grid -- here under a night sky. The case where a sliver of medium can
     be most of a pixel's light, which is what a coverage threshold gets wrong and a light-share one
-    should not. (The paper's skylight-dusk.exr crashes setEnvMap in this build, hence the .hdr.)"""
+    should not. (When this port began, the paper's skylight-dusk.exr crashed setEnvMap, hence the .hdr;
+    it loads now -- see load_explosion_dusk, the paper's look.)"""
     m.loadScene(DATA_DIR + r"\default.obj")
-    m.scene.setEnvMap(DATA_DIR + r"\satara_night_8k.hdr")
+    m.scene.setEnvMap(DATA_DIR + "\\" + env)
     m.scene.addGVDBVolume(sigma_a=float3(10, 10, 10), sigma_s=float3(10, 10, 10), g=env_float("VR_PHASE_G", 0.0),
                           dataFile=DATA_DIR + r"\LGHExplosion\LGHExplosion.183", numMips=4, densityScale=_density(0.02),
                           hasVelocity=False, hasEmission=True, LeScale=env_float("VR_EXPLOSION_LESCALE", 1.0),
                           # The paper's temperatureScale 750 maps this bake below the blackbody LUT's first
                           # non-zero row: measured, LeScale 1 and 100 render byte-identical, i.e. emission
-                          # is exactly zero. 7500 gives the fireball.
-                          temperatureCutoff=0.0, temperatureScale=env_float("VR_EXPLOSION_TSCALE", 7500.0))
+                          # is exactly zero (the grid's values reach ~4, the LUT is black below ~3300 K).
+                          # 7500 gives the fireball, but most of it clamps at the LUT's 6400 K row, which is
+                          # greenish white; 1000 keeps it in the orange rows (load_explosion_dusk).
+                          temperatureCutoff=0.0, temperatureScale=env_float("VR_EXPLOSION_TSCALE", temperature_scale))
     m.scene.camera.animated = False
     m.scene.camera.position = float3(-29.487331, 10.408340, 0.493491)
     m.scene.camera.target = float3(-28.505859, 10.597045, 0.460278)
@@ -292,6 +317,15 @@ def load_explosion():
         "exposure": 0.0,
         "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False},
     }
+
+
+def load_explosion_dusk():
+    """The explosion as the paper shows it: run_LGHExplosion.py's sky (skylight-dusk.exr, setEnvMapRotation
+    (13, 136, 340) converted to Falcor 9) and temperature scale 1000, so the fire sits in the blackbody LUT's
+    orange-yellow rows (~3300-4000 K) under dark smoke instead of clamping at its greenish-white 6400 K row."""
+    info = load_explosion(env="skylight-dusk.exr", temperature_scale=1000.0)
+    m.scene.envMap.rotation = float3(*falcor4_env_rotation((13, 136, 340)))
+    return info
 
 
 # The remaining scenes on disk, for the decorrelation study (docs/superpowers/specs/2026-09-27-restir-
@@ -387,7 +421,7 @@ def load_emerald_night():
 
 # The JangaFX EmberGen datasets (FirePlumeVDB, DustShockwaveVDB) are deliberately not here: the user
 # excluded them from the decorrelation study. run_volume_dataset.py still plays them back.
-SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion,
+SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion, "explosiondusk": load_explosion_dusk,
           "emerald": load_emerald, "bunny": load_bunny, "wdas": load_wdas,
           # Stress scenes (spec V-B9), point lights only; names without "_" (run_study.sh's label suffixes).
           "bunnyrgb": lambda: load_bunny(SCENE_DIR + r"\bunny_rgb.pyscene"),

@@ -236,6 +236,48 @@ class TestStressScenes(StudyEnv):
         colours = {tuple(mat.emissiveColor) for _, mat in meshes}
         self.assertEqual(len(colours), 2)
 
+    def test_falcor4_env_rotation(self):
+        # Falcor 4 applied Rz Ry Rx; Falcor 9's envMap.rotation applies Rx Ry Rz. A single-axis rotation
+        # carries over as is; the paper's explosion sky (13, 136, 340) does not.
+        import math
+
+        def rot(axis, deg):
+            c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+            return {"x": [[1, 0, 0], [0, c, -s], [0, s, c]], "y": [[c, 0, s], [0, 1, 0], [-s, 0, c]],
+                    "z": [[c, -s, 0], [s, c, 0], [0, 0, 1]]}[axis]
+
+        def mul(*ms):
+            out = [[float(i == j) for j in range(3)] for i in range(3)]
+            for b in ms:
+                out = [[sum(out[i][k] * b[k][j] for k in range(3)) for j in range(3)] for i in range(3)]
+            return out
+
+        vr, _ = fresh_vr()
+        self.assertEqual(tuple(round(v, 6) + 0.0 for v in vr.falcor4_env_rotation((0, 165, 0))), (0, 165, 0))
+        for deg in ((13, 136, 340), (-37.5, 93.5, 27), (80, -20, 45)):
+            x, y, z = deg
+            a, b, c = vr.falcor4_env_rotation(deg)
+            want, got = mul(rot("z", z), rot("y", y), rot("x", x)), mul(rot("x", a), rot("y", b), rot("z", c))
+            for i in range(3):
+                for j in range(3):
+                    self.assertAlmostEqual(got[i][j], want[i][j], places=9, msg=str(deg))
+
+    def test_explosiondusk_is_the_papers_look(self):
+        # The paper's sky (skylight-dusk.exr, its rotation converted) and a temperature scale that keeps the
+        # fire in the blackbody table's orange rows; the volume is otherwise the explosion's.
+        vr, m = fresh_vr()
+        vr.SCENES["explosion"]()
+        base = volume_call(m)
+        vr, m = fresh_vr()
+        vr.SCENES["explosiondusk"]()
+        vol = volume_call(m)
+        env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
+        self.assertTrue(env and env[-1].endswith("skylight-dusk.exr"))
+        self.assertEqual(m.scene.envMap.rotation, vr.falcor4_env_rotation((13, 136, 340)))
+        self.assertEqual(vol["temperatureScale"], 1000.0)
+        self.assertEqual({k: v for k, v in vol.items() if k != "temperatureScale"},
+                         {k: v for k, v in base.items() if k != "temperatureScale"})
+
     def test_knobs_reach_the_stress_scenes(self):
         os.environ.update({"VR_PHASE_G": "0.8", "VR_DENSITY_MULT": "5"})
         for name in self.LIGHTS:

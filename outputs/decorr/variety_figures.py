@@ -38,6 +38,7 @@ TITLES = {
     #  100 frames relMSE 0.0082 -> 0.0076, no bias; kept as figs/caveat_plume_g-0.9_single_frame_burst.png)
     # "plume_g-0.9": "Smoke under a sky, strong back scattering",
     "explosion": "Explosion: self-emitting fire, colour set by depth",
+    "explosiondusk": "Explosion as in the paper: fire in dark smoke under a dusk sky",
     "bunnystripes": "Light through slats: sharp shadow stripes in a cloud",
     "bunnyback_g0.8": "Cloud backlit by one light: the silver-lining rim",
 }
