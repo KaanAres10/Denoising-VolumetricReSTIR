@@ -26,7 +26,9 @@ TITLES = {
     "bunnyspot": "A spotlight beam through a cloud",
     "bunnyinside": "A lamp inside the cloud (near-field light)",
     "plumeback_g0.9": "Smoke backlit by one light, strong forward scattering",
-    "plume_g-0.9": "Smoke under a sky, strong back scattering",
+    # (plume_g-0.9: left out -- its kept frame catches a transient burst at a thin edge in the mutated run; over
+    #  100 frames relMSE 0.0082 -> 0.0076, no bias; kept as figs/caveat_plume_g-0.9_single_frame_burst.png)
+    # "plume_g-0.9": "Smoke under a sky, strong back scattering",
     "explosion": "Explosion: self-emitting fire, colour set by depth",
     "bunnystripes": "Light through slats: sharp shadow stripes in a cloud",
     "bunnyback_g0.8": "Cloud backlit by one light: the silver-lining rim",
