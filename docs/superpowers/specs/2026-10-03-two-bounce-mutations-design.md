@@ -322,3 +322,26 @@ stops the round and is debugged before any figure is made.
   - The cathedral's walls, lit at 2 bounces by light scattered from the dust, keep their reuse streaks
     in both runs: a pixel whose camera ray hits a surface first is not moved (out of scope, see
     above). That is the next target.
+
+### V-C1b — the explosion's rebounce, settled with independent seeds and a reference (2026-10-06, final review)
+- **What the final review found** in V-C1's gate:
+  - every configuration used the same chain seeds (`VR_SEED_BASE + i × 10000`);
+  - `bias_check.py` used unpaired error bars;
+  - the 64-chain run contained the 16-chain run's chains;
+  - no configuration was compared with a reference.
+- **The rerun** (`run_b2_bias_paired.sh`):
+  - fresh seeds, `VR_SEED_BASE=1000000`, clear of the earlier 100000–730000;
+  - a converged 480x270 reference of the same pose (8192 frames x 16 spp);
+  - 64 chains x 12 frames, M cap 200;
+  - read with `bias_check.py --paired --ref`. Chain means are in `b2bias_paired/explosiondusk_b2/chains.json`.
+
+  | explosion, 2 bounces | vs plain reuse, paired (R / G / B) | vs reference (R / G / B) |
+  |---|---|---|
+  | plain reuse | — | −0.10 / −0.06 / +0.05% (±0.68 / 0.41 / 0.14) |
+  | rebounce only | −0.13 / −0.03 / −0.02% (±0.82 / 0.55 / 0.19) | −0.24 / −0.09 / +0.02% (±0.55 / 0.37 / 0.10) |
+  | all moves | +0.50 / +0.24 / −0.09% (±0.94 / 0.63 / 0.20) | +0.40 / +0.18 / −0.05% (±0.58 / 0.41 / 0.11) |
+
+- **Verdict.** Every value is within 1 s.e. of plain reuse and of the reference. V-C1's +1.30 / +0.97 /
+  +0.34% for rebounce belonged to that seed set. Pairing barely narrows the error bars here (unpaired:
+  ±0.87 / 0.55 / 0.17%): the mutation pass draws its own random numbers, so the chains diverge from the
+  baseline's within the 800 warm-up frames.
