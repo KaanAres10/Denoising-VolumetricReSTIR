@@ -295,3 +295,30 @@ stops the round and is debugged before any figure is made.
 
   Rebounce is rare under strong forward scattering, where the local moves carry the scene, as the spec
   expected.
+
+### V-C2 — what a viewer sees at 2 bounces: mutations cut the denoised error 45–89% (2026-10-06)
+- **Setup.** M cap 200, 0 vs 5 moves of every kind after spatial reuse, no decoupled history. Error is
+  the in-medium clipped relMSE after the denoiser, averaged over the kept first frames of 2
+  independent chains (`run_two_bounce.sh`).
+  - The explosion's pairs ran with 10 chains, the other four with 4 (K = 40): at 2 bounces the
+    cathedral's chain is ~21 min at 1080p.
+
+  | scene | 1 bounce, OptiX | 1 bounce, RR | 2 bounces, OptiX | 2 bounces, RR |
+  |---|---|---|---|---|
+  | explosion (paper setup) | 0.0418 → 0.0100 (−76%) | 0.0336 → 0.0034 (−90%) | 0.0612 → 0.0144 (−76%) | 0.0619 → 0.0122 (−80%) |
+  | cathedral god rays | 0.0141 → 0.0027 (−81%) | 0.0118 → 0.0010 (−91%) | 0.0165 → 0.0030 (−82%) | 0.0113 → 0.0012 (−89%) |
+  | backlit rim | 0.0668 → 0.0168 (−75%) | 0.0602 → 0.0097 (−84%) | 0.0870 → 0.0316 (−64%) | 0.0798 → 0.0291 (−64%) |
+  | panel lights | 0.0472 → 0.0089 (−81%) | 0.0427 → 0.0048 (−89%) | 0.0546 → 0.0105 (−81%) | 0.0489 → 0.0064 (−87%) |
+  | sunset cloud | 0.0503 → 0.0251 (−50%) | 0.0567 → 0.0227 (−60%) | 0.0639 → 0.0244 (−62%) | 0.0503 → 0.0275 (−45%) |
+
+- **Figures.**
+  - `figs/variety_<label>_b2.png` and `figs/variety_rr_<label>_b2.png`;
+  - `figs/gallery_mutations_b2{,_rr}.png`;
+  - `figs/explosion_b2_port_vs_legacy.png`.
+- **Findings.**
+  - The gain carries over to 2 bounces.
+  - It is smaller on the backlit rim (g = 0.8), where the rebounce is accepted 3% of the time and
+    x2 moves only by small steps.
+  - The cathedral's walls, lit at 2 bounces by light scattered from the dust, keep their reuse streaks
+    in both runs: a pixel whose camera ray hits a surface first is not moved (out of scope, see
+    above). That is the next target.
