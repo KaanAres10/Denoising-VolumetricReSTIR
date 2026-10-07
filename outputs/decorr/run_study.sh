@@ -77,6 +77,9 @@ render() {  # dir, then env assignments; runs correlation_pose.py into dir
     mkdir -p "$d"
     (
         for v in $(env | grep -o "^\(VR_\|NRD4_\)[A-Z0-9_]*"); do unset "$v"; done
+        # STUDY_MUT_COHERENT=0: mutations draw a move kind per pixel, as every run before 2af014f did (the pass draws
+        # one per step for the whole frame by default since then); a config's own VR_MUT_COHERENT still wins.
+        [ -n "${STUDY_MUT_COHERENT:-}" ] && export VR_MUT_COHERENT="$STUDY_MUT_COHERENT"
         # shellcheck disable=SC2046
         export VR_DISPLAY="${STUDY_DISPLAY:-1920x1080}" "$@"
         [ -n "${STUDY_CHAINS:-}" ] && export VR_CHAINS="$STUDY_CHAINS"

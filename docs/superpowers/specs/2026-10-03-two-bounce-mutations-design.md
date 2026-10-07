@@ -393,6 +393,8 @@ stops the round and is debugged before any figure is made.
 - **Stage 2, the same chain in law** (2af014f, `mMutationCoherentMoves` / `VR_MUT_COHERENT=1`, off by default). Each
   step's move kind is drawn from a stream every pixel shares, so a warp runs one move per step. A re-selection that
   draws x's own light (with one light, every one) is a self-transition and skips p̂; its random number is still drawn.
+  The default since 2026-10-07 (user's request): with no setting a run renders Stage 2's frames bit for bit; `VR_MUT_COHERENT=0`
+  (`run_study.sh STUDY_MUT_COHERENT=0` for a whole study) renders Stage 1's, for studies begun before.
 - **A/B** (`run_speed_ab.sh`, `speed_ab_check.py`). One binary, the runtime shader copy swapped, A B B A per setup,
   1080p, M cap 200, 5 mutations of every kind. Mutate Samples ms, and its cost relative to the rest of the frame:
 

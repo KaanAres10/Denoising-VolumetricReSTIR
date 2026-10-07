@@ -604,7 +604,8 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
     # VR_MUT_AFTER_SPATIAL=1: mutate spatial reuse's output (the shaded reservoir) instead of the temporal one.
     if os.environ.get("VR_MUT_AFTER_SPATIAL"):
         props["mParams"]["mMutateAfterSpatial"] = env_bool("VR_MUT_AFTER_SPATIAL", False)
-    # VR_MUT_COHERENT=1: each step's move kind is drawn once per frame, not per pixel (a warp runs one move per step).
+    # VR_MUT_COHERENT: the pass draws each step's move kind once per frame by default (a warp runs one move per step);
+    # 0 = a kind per pixel, as before (the studies begun that way: run_study.sh STUDY_MUT_COHERENT=0).
     if os.environ.get("VR_MUT_COHERENT"):
         props["mParams"]["mMutationCoherentMoves"] = env_bool("VR_MUT_COHERENT", False)
     # VR_SELECT_UNIFORM=1: the light re-selection's original point-light proposal (uniform), to reproduce runs made

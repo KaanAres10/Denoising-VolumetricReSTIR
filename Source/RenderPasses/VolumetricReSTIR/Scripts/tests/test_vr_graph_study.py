@@ -348,9 +348,11 @@ class TestKnobs(StudyEnv):
         self.assertNotIn("mMutationSelectWeighted", self.restir_params())  # the pass's default: weighted
         os.environ["VR_SELECT_UNIFORM"] = "1"  # the re-selection's original uniform point-light proposal
         self.assertIs(self.restir_params()["mMutationSelectWeighted"], False)
-        self.assertNotIn("mMutationCoherentMoves", self.restir_params())  # the pass's default: a move kind per pixel
+        self.assertNotIn("mMutationCoherentMoves", self.restir_params())  # the pass's default: one kind per step, frame-wide
         os.environ["VR_MUT_COHERENT"] = "1"  # one move kind per step for the whole frame (no warp divergence)
         self.assertIs(self.restir_params()["mMutationCoherentMoves"], True)
+        os.environ["VR_MUT_COHERENT"] = "0"  # a move kind per pixel, as before 2af014f (studies begun that way)
+        self.assertIs(self.restir_params()["mMutationCoherentMoves"], False)
 
     def test_bounce_knob(self):
         self.assertNotIn("mMaxBounces", self.restir_params())

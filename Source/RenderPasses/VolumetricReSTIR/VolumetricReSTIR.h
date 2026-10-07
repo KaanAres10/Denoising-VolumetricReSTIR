@@ -247,7 +247,7 @@ private:
         bool mMutationStats = false;                ///< log acceptance per strategy every 256 frames
         bool mMutateAfterSpatial = false;           ///< mutate spatial reuse's output (the shaded reservoir) instead
         bool mMutationSelectWeighted = true;        ///< re-selection proposes point lights by their contribution (else uniformly)
-        bool mMutationCoherentMoves = false;        ///< each step's move kind drawn once per frame, not per pixel (no warp divergence)
+        bool mMutationCoherentMoves = true;         ///< each step's move kind drawn once per frame, not per pixel (no warp divergence)
 
         /////////////////////
         /// Sharing less. When p_hat is close to the integrand a pixel's estimate is close to its reservoir's
