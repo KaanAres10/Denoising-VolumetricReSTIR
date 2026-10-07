@@ -345,3 +345,71 @@ stops the round and is debugged before any figure is made.
   +0.34% for rebounce belonged to that seed set. Pairing barely narrows the error bars here (unpaired:
   ±0.87 / 0.55 / 0.17%): the mutation pass draws its own random numbers, so the chains diverge from the
   baseline's within the 800 warm-up frames.
+
+### V-C3 — cost and equal time: the mutations win at equal time at M cap 200 (2026-10-07)
+- **Cost** (`run_cost.sh`, `cost_table.py`). Median GPU ms per frame of the VolumetricReSTIR pass at 1080p, M cap 200,
+  before the denoiser, stats off; 5 moves of every kind (4 at 1 bounce, 7 at 2), with the code at 3c0456b.
+
+  | scene | bounces | plain | 1 mutation | 5 mutations | 5 mutations cost as much as |
+  |---|---|---|---|---|---|
+  | explosion (paper setup) | 1 / 2 | 55.6 / 79.8 ms | +12 / +22% | +71 / +114% | 21 / 32 initial candidates |
+  | cathedral god rays | 1 / 2 | 72.4 / 561 ms | +20 / +11% | +79 / +34% | 18 / 13 |
+  | backlit rim | 1 / 2 | 62.9 / 102 ms | +26 / +50% | +120 / +217% | 61 / 74 |
+  | panel lights | 1 / 2 | 79.3 / 129 ms | +38 / +38% | +140 / +167% | 35 / 28 |
+  | sunset cloud | 1 / 2 | 93.8 / 142 ms | +37 / +41% | +129 / +135% | 36 / 29 |
+
+  - The shipped count is 4 initial candidates; above 32 the count is extrapolated linearly.
+  - The paper's Table 1 reports +21 to +129% for 5 mutations.
+  - One step costs as much as 4 to 11 initial candidates. It evaluates the reuse target (mip 1, full step, no Russian
+    roulette), and before V-C4 a warp ran every move its pixels picked.
+- **Equal time** (`run_equal_time.sh`, `equal_time_table.py`): plain ReSTIR given the 5 mutations' time as initial
+  candidates, through OptiX, same chains, seeds and kept frames as V-C2's pairs; in-medium relMSE.
+
+  | scene | plain | + 5 mutations | plain, equal time |
+  |---|---|---|---|
+  | explosion, 1 / 2 bounces | 0.0418 / 0.0612 | −76 / −76% | −16 / +4% (21 / 32 candidates) |
+  | cathedral | 0.0141 / 0.0165 | −81 / −82% | −21 / +4% (19 / 13) |
+  | backlit rim | 0.0668 / 0.0870 | −75 / −64% | −6 / +4% (61 / 74) |
+  | panel lights | 0.0472 / 0.0546 | −81 / −81% | +1 / −10% (35 / 28) |
+  | sunset cloud | 0.0503 / 0.0639 | −50 / −62% | +16 / +6% (35 / 29) |
+
+  - At M cap 200 more candidates do not reach the correlation; on bistro at its shipped cap they won (V-B5 of the
+    decorrelation spec).
+  - The equal-time runs time their chosen count right after a 20-minute render, while that render is scored. The
+    first five of those checks read 20–50% high, which gave plain ReSTIR more time than the mutations, not less.
+- **Caveat: the long history.** Both arms run at M cap 200; the shipped cap is 4. At the shipped cap plain ReSTIR is
+  already as good as cap 200 + 5 mutations on the cathedral, panel lights and sunset (in-medium relMSE 0.0022 vs
+  0.0027, 0.0082 vs 0.0089, 0.0117 vs 0.0251), and 5 mutations there cut 3–26%. Most of the −50..−82% is mutations
+  undoing what the 200-frame history does; cap 200 + mutations wins outright only with many lights (lanterns 0.0199
+  vs 0.0246, concert 0.0175 vs 0.0254).
+
+### V-C4 — the mutation pass made 2.5–4.1x faster (2026-10-07)
+- **Cause.** Each pixel drew its move at random, and each move ran its own marches (four p̂ call sites at 2 bounces,
+  plus the proposals' own marches: free-flight sampling, light sampling, rebounce). A warp ran every move its pixels
+  picked, one after another.
+- **Stage 1, exact** (8e64a78). Every move only builds its proposal (and an independence move's q terms; 1 for the
+  symmetric ones), then one shared p̂(z) and acceptance test. Same arithmetic, same random-number order. The
+  rebounce's q(x) is cached as the free flight's already was.
+- **Stage 2, the same chain in law** (2af014f, `mMutationCoherentMoves` / `VR_MUT_COHERENT=1`, off by default). Each
+  step's move kind is drawn from a stream every pixel shares, so a warp runs one move per step. A re-selection that
+  draws x's own light (with one light, every one) is a self-transition and skips p̂; its random number is still drawn.
+- **A/B** (`run_speed_ab.sh`, `speed_ab_check.py`). One binary, the runtime shader copy swapped, A B B A per setup,
+  1080p, M cap 200, 5 mutations of every kind. Mutate Samples ms, and its cost relative to the rest of the frame:
+
+  | scene | before | Stage 1 | Stage 2 (coherent) |
+  |---|---|---|---|
+  | explosion, 1 / 2 bounces | 48.6 / 76.4 (+95 / +111%) | 43.9 / 55.2 | 18.5 / 18.7 (+36 / +29%) |
+  | cathedral | 59.9 / 184 (+87 / +33%) | 48.9 / 146 | 18.3 / 55.0 (+25 / +10%) |
+  | backlit rim | 72.7 / 177 (+120 / +166%) | 65.5 / 135 | 20.4 / 43.1 (+34 / +40%) |
+  | panel lights | 112 / 178 (+146 / +134%) | 96.0 / 145 | 41.4 / 55.5 (+52 / +41%) |
+  | sunset cloud | 118 / 170 (+125 / +133%) | 109 / 140 | 48.1 / 54.9 (+51 / +37%) |
+
+- **Verification.**
+  - Stage 1: 40/40 frames bit-identical to the code before it; repeated old runs are bit-identical too.
+  - Stage 2 off: 40/40 frames bit-identical to Stage 1, so the skip is exact.
+  - Stage 2 on, bias (`run_coherent_quality.sh`, V-C1b's 64 chains and seeds, `bias_check.py --saved`): −0.56 /
+    −0.39 / −0.12% vs plain (±0.85 / 0.58 / 0.18), −0.66 / −0.45 / −0.07% vs the reference (±0.52 / 0.36 / 0.11).
+  - Stage 2 on, quality: V-C2's runs with the switch on, `equal_time_table.py --configs`. In-medium relMSE within the
+    2-frame noise of the per-pixel runs on 9/10 setups (sunset at 2 bounces 0.0350 vs 0.0244: one kept frame catches a
+    transient dark patch); m_corr's all-frame relMSE equal or lower on 10/10 (sunset 2 bounces 0.0079 vs 0.0091);
+    ρ̄(8) unchanged. `figs/coherent_*.png` compare one frame of each.
