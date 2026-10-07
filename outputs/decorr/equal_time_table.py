@@ -3,7 +3,10 @@ with the initial candidates that cost what the 5 mutations cost -- all through O
 variety_figures.py's (relMSE in the medium, clipped at its brightest 0.5%), averaged over the kept frames (the first
 frame of chains 0 and 1); rho(8) is m_corr's over every frame of the run.
 
-    python equal_time_table.py <root>        (root: outputs/decorr)
+    python equal_time_table.py <root> [--configs a,b,c]        (root: outputs/decorr)
+
+--configs: other configs to compare the same way (the first is the baseline of the % changes), e.g. Stage 2's
+den_optix_mut0cap200,den_optix_mut5cap200,den_optix_mut5cohcap200 (run_coherent_quality.sh).
 """
 import argparse
 import json
@@ -20,13 +23,13 @@ LABELS = ["explosiondusk", "bunnycathedral_d0.3", "bunnyback_g0.8", "bunnysoftbo
 CONFIGS = ("den_optix_mut0cap200", "den_optix_mut5cap200", "den_optix_eq5cap200")
 
 
-def scores(root, label):
+def scores(root, label, configs=CONFIGS):
     """{config: (relMSE in the medium, mean over kept frames; rho(8); initial candidates)} for the configs on disk."""
-    if not all(os.path.exists(os.path.join(root, label, c, "c.corr.json")) for c in CONFIGS[:2]):
+    if not all(os.path.exists(os.path.join(root, label, c, "c.corr.json")) for c in configs[:2]):
         return None
-    p = paper_figure.prepare(root, label, CONFIGS[0], CONFIGS[1])
+    p = paper_figure.prepare(root, label, configs[0], configs[1])
     out = {}
-    for c in CONFIGS:
+    for c in configs:
         d = os.path.join(root, label, c)
         if not os.path.exists(os.path.join(d, "c.corr.json")):
             continue
@@ -41,7 +44,21 @@ def scores(root, label):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("root", nargs="?", default=".")
+    ap.add_argument("--configs", help="comma-separated configs to compare instead (baseline first)")
     a = ap.parse_args(argv)
+    if a.configs:
+        configs = a.configs.split(",")
+        print("%-24s " % "scene" + " ".join("%28s" % c for c in configs) + "   (relMSE in the medium; rho(8))")
+        for base in LABELS:
+            for label in (base, base + "_b2"):
+                s = scores(a.root, label, configs)
+                if not s:
+                    continue
+                r0 = s[configs[0]][0]
+                print("%-24s " % label + " ".join(
+                    "%28s" % ("%.4f (%+.0f%%) %.3f" % (s[c][0], 100 * (s[c][0] / r0 - 1), s[c][1]) if c in s else "-")
+                    for c in configs))
+        return
     fmt = "%-24s %15s %22s %26s"
     print(fmt % ("scene", "plain (4 cand.)", "+ 5 mutations", "plain, equal time"))
     for base in LABELS:

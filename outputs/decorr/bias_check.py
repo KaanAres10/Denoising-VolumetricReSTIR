@@ -57,6 +57,14 @@ def load(run_dir):
     return chain_means(frames, chains), len(frames)
 
 
+def chains_for(root, name, saved=None):
+    """A config's chain means and frame count: from saved (a --save JSON) when it has the config -- its EXRs may be
+    gone -- else from root/name."""
+    if saved and name in saved:
+        return np.array(saved[name], dtype=np.float64), "saved"
+    return load(os.path.join(root, name))
+
+
 def pct(v):
     return " ".join("%+.2f%%" % (100 * x) for x in v)
 
@@ -69,16 +77,18 @@ def main(argv):
     ap.add_argument("--paired", action="store_true", help="the configs share their chains' seeds (pair chain i)")
     ap.add_argument("--ref", help="a converged reference EXR: also each config's mean against it")
     ap.add_argument("--save", help="write every config's chain means here (JSON), for re-analysis after pruning")
+    ap.add_argument("--saved", help="a --save JSON: the configs it has are read from it (their EXRs may be gone)")
     a = ap.parse_args(argv[1:])
+    saved = json.load(open(a.saved)) if a.saved else None
     means = {}
-    base, n = load(os.path.join(a.root, a.names[0]))
+    base, n = chains_for(a.root, a.names[0], saved)
     means[a.names[0]] = base
-    print("%-22s n=%d  (baseline)" % (a.names[0], n))
+    print("%-22s n=%s  (baseline)" % (a.names[0], n))
     for name in a.names[1:]:
-        conf, n = load(os.path.join(a.root, name))
+        conf, n = chains_for(a.root, name, saved)
         means[name] = conf
         bias, se = (paired_relative_bias if a.paired else relative_bias)(conf, base)
-        print("%-22s n=%d  RGB vs %s %s   (+- %s, 1 s.e. over chains%s)" % (
+        print("%-22s n=%s  RGB vs %s %s   (+- %s, 1 s.e. over chains%s)" % (
             name, n, a.names[0], pct(bias), " ".join("%.2f%%" % (100 * v) for v in se), ", paired" if a.paired else ""))
     if a.ref:
         import cv2

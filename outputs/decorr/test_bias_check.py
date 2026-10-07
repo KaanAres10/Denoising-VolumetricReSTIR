@@ -53,6 +53,13 @@ class TestRelativeBias(unittest.TestCase):
         np.testing.assert_allclose(bias, [0.0, 0.01, -0.02], atol=4 * se.max())
         np.testing.assert_allclose(se, conf.std(0, ddof=1) / np.sqrt(50) / 0.5)
 
+    def test_saved_chain_means_stand_in_for_a_pruned_run(self):
+        # A run whose EXRs were deleted after --save: its chain means come from the JSON, its directory is not read.
+        saved = {"mcap200": [[1.0, 2.0, 3.0], [1.5, 2.5, 3.5]]}
+        means, n = bias_check.chains_for("/nonexistent/root", "mcap200", saved)
+        np.testing.assert_allclose(means, saved["mcap200"])
+        self.assertEqual(n, "saved")
+
     def test_missing_frames_are_skipped(self):
         chains = [[1, 2, 3], [4, 5]]
         frames = {1: np.ones(3), 3: 3 * np.ones(3), 4: 2 * np.ones(3)}

@@ -60,6 +60,7 @@ cbuffer CB
     int gFlightMipLevel;                 // the initial distance sampler's grid (initialOptions.visibilityMipLevel)
     bool gSelectWeightedAnalytic;        // re-selection: point lights by their contribution here (else uniformly)
     bool gCollectStats;
+    bool gCoherentMoves;                 // one move kind per step for the whole frame, not per pixel (no warp divergence)
     SamplingOptions gSamplingOptions;
     EnvMapSampler envMapSampler;
     EmissiveLightSampler emissiveSampler;
@@ -474,6 +475,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // A stream no other pass uses: other passes seed with gNumTotalRounds * gFrameCount + round < 2^31.
     SampleGenerator sg = SampleGenerator(pixelPos, uint(gNumTotalRounds * gFrameCount) | 0x80000000u);
+    // gCoherentMoves: each step's move kind is drawn from a stream every pixel shares (an off-screen pixel, a seed no
+    // pass uses), so the pixels of a warp make the same move and the warp runs one move's marches per step, not each
+    // picked move's in turn. Every pixel's chain is unchanged in law: the kind is still drawn with the fixed
+    // probabilities, independently of the state; only neighbours now make the same kind of move at the same step.
+    SampleGenerator sgMove = SampleGenerator(uint2(0xFFFFu, 0xFFFFu), uint(gNumTotalRounds * gFrameCount) | 0xC0000000u);
     CameraRay cameraRay = computeRayPinholeScaled(gScene.camera, pixelPos, 1, 0.5f, gResolution);
     const VolRay ray = { cameraRay.origin, cameraRay.dir, 0, kRayTMax };
 #ifdef SURFACE_SCENE
@@ -512,7 +518,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
     for (int it = 0; it < gMutationCount; it++)
     {
         // Fixed, state-independent strategy probabilities; an inapplicable pick is a self-transition.
-        const uint pick = min(uint(sampleNext1D(sg) * enabledCount), enabledCount - 1);
+        float uMove;
+        if (gCoherentMoves) uMove = sampleNext1D(sgMove);
+        else uMove = sampleNext1D(sg);
+        const uint pick = min(uint(uMove * enabledCount), enabledCount - 1);
         uint s = firstbitlow(gStrategyMask);
         for (uint k = 0; k < pick; k++) s = firstbitlow(gStrategyMask & ~((2u << s) - 1u));
         if ((applicable(x, xb) & (1u << s)) == 0)
@@ -612,6 +621,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 if (abs(qz - envSamplerPdf) > 1e-3f * envSamplerPdf) stat(14);
             }
             if (!(qx > 0.f) || !(qz > 0.f) || isinf(qx) || isinf(qz)) { stat(9); continue; }
+            if (z.lightID == x.lightID && (zKind == 1 || all(z.lightUV == x.lightUV)))
+            {
+                // z is x (the only light drawn again; a point light's u is unused): p_hat(z) = p_hat(x) and q(z) = q(x),
+                // so the test accepts and the state stays x -- p_hat is not evaluated. With one light this is every
+                // re-selection. The test's random number is still drawn: the stream stays as if it had been.
+                sampleNext1D(sg);
+                x = z;
+                stat(7);
+                stat(32 + zKind);
+                continue;
+            }
             visz.data = primaryVis; // the depth did not move
         #if MAX_BOUNCES > 1
             visz.data1 = bounceVis; // nor did the extra bounce

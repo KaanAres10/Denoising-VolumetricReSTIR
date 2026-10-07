@@ -635,6 +635,7 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
         mParams.mInitialVisibilityUseLinearSampler ? mParams.mInitialBaseMipLevel : mParams.mInitialBaseMipLevel + kNumMaxMips;
     vars["CB"]["gSelectWeightedAnalytic"] = mParams.mMutationSelectWeighted;
     vars["CB"]["gCollectStats"] = mParams.mMutationStats;
+    vars["CB"]["gCoherentMoves"] = mParams.mMutationCoherentMoves;
     options.setShaderData(vars["CB"]["gSamplingOptions"]);
 
     if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
@@ -2198,6 +2199,9 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
                            "share) instead of uniformly; with many lights most uniform proposals are far away and rejected.", true);
             widget.tooltip("Mutate the reservoir that is shaded (spatial reuse's output) instead of the temporal one, "
                            "so what spatial reuse shares within the frame is diversified too.", true);
+            dirty |= widget.checkbox("Same move kind in every pixel", mParams.mMutationCoherentMoves);
+            widget.tooltip("Draw each step's move kind once per frame instead of per pixel: the pixels of a warp then make "
+                           "the same move, and the warp runs one move's marches per step. Each pixel's chain is unchanged in law.", true);
             dirty |= widget.checkbox("Decoupled history", mParams.mDecoupledHistory);
             widget.tooltip("History = the temporal (and mutated) reservoir; spatial reuse's output only shades "
                            "(Zhou 2025, sec. 5.5.5).", true);
