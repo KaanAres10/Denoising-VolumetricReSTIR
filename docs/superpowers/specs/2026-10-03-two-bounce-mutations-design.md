@@ -415,3 +415,24 @@ stops the round and is debugged before any figure is made.
     2-frame noise of the per-pixel runs on 9/10 setups (sunset at 2 bounces 0.0350 vs 0.0244: one kept frame catches a
     transient dark patch); m_corr's all-frame relMSE equal or lower on 10/10 (sunset 2 bounces 0.0079 vs 0.0091);
     ρ̄(8) unchanged. `figs/coherent_*.png` compare one frame of each.
+
+### V-C5 — after the speed-up: early rejection kept, one-move programs not (2026-10-07)
+- **Where Stage 2's time goes** (`run_move_cost.sh`, `move_cost_table.py`; one kind alone, frame-wide, ms per step at
+  1080p): re-selection, free flight and rebounce are the dear moves (panel lights at 2 bounces 15.0, 11.5 and 13.6;
+  light, depth, direction, distance 6.2–7.8), plus a fixed ~7.5 ms for p̂(x0). They are also the most rejected (3–41%
+  accepted).
+- **A, early rejection** (64fb0b2, `mMutationEarlyReject` / `VR_MUT_EARLY_REJECT`, on by default). The test's random
+  number is drawn before p̂ (which draws none), giving what p̂(z) must exceed, u p̂(x) q(z) / q(x). The light's
+  unoccluded term is known before the shadow march and the transmittance only shrinks along it, so the march stops,
+  returning 0, once their product is below that (less a 1e-4 margin for the full product's rounding), or is skipped
+  when the unoccluded term already is. Compiled into the mutation program alone (`VR_EARLY_REJECT`).
+  - Exact: on vs off 40/40 frames bit-identical, off vs Stage 2 40/40, plain ReSTIR vs before 12/12
+    (`run_speed_stageA.sh`). The first build read an uninitialized threshold (a declared default is not applied to
+    a local adapter) and differed run to run; fixed by setting it in `InitializeValues`.
+  - Mutate Samples: explosion −24 / −11% (1 / 2 bounces), sunset −29 / −17%, panel lights −15 / −16%; the backlit
+    rim −3 / −4% and the cathedral −3 / 0%, whose single light sits outside the medium (short shadow marches).
+- **B, one program per move** (`run_speed_probeB.sh`, `VR_MUT_STATIC_MASK`): each kind in a program compiled for it
+  alone vs the full one, frames bit-identical, Mutate Samples −1 to −11% (mean ~5%), the frame unchanged within the
+  timing noise. A dispatch per step with the chain's state kept in a buffer between them would cost about that, so B
+  is not built; the define stays for the probe.
+- **C, fewer mutations**: `run_fewer_mutations.sh` (1, 3, 5 timed; 3 and 1 rendered through OptiX like V-C2's runs).
