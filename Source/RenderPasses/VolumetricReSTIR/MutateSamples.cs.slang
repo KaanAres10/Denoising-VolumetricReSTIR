@@ -61,6 +61,7 @@ cbuffer CB
     bool gSelectWeightedAnalytic;        // re-selection: point lights by their contribution here (else uniformly)
     bool gCollectStats;
     bool gCoherentMoves;                 // one move kind per step for the whole frame, not per pixel (no warp divergence)
+    bool gEarlyReject;                   // stop a proposal's shadow march once it cannot be accepted (VR_EARLY_REJECT)
     SamplingOptions gSamplingOptions;
     EnvMapSampler envMapSampler;
     EmissiveLightSampler emissiveSampler;
@@ -71,6 +72,14 @@ static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
 #define SAMPLING_OPTIONS specializeOptions(kSamplingOptions, gSamplingOptions)
 #else
 #define SAMPLING_OPTIONS gSamplingOptions
+#endif
+// VR_MUT_STATIC_MASK: the strategy mask fixed at compile time (speed-up B), so a program built for one move kind
+// carries that move's code alone -- fewer registers, more warps in flight. Unset: gStrategyMask, as before.
+#ifdef VR_MUT_STATIC_MASK
+static const uint kStaticStrategyMask = VR_MUT_STATIC_MASK;
+#define STRATEGY_MASK kStaticStrategyMask
+#else
+#define STRATEGY_MASK gStrategyMask
 #endif
 
 RWStructuredBuffer<Reservoir> gCurReservoirs;
@@ -438,13 +447,14 @@ uint applicable(Reservoir r, ExtraBounceReservoir b)
         if (inMedium) mask |= bounceMoves(r, b);
     }
 #endif
-    return mask & gStrategyMask;
+    return mask & STRATEGY_MASK;
 }
 
+/// rejectBelow > 0: early rejection -- 0 may come back for a value below it (its shadow march stopped early).
 float pHat(Reservoir r, VolRay ray, inout SampleGenerator sg, MutationDataProvider dp,
-           VBUFFERDECLARE inout CachingVisibilityProvider vis)
+           VBUFFERDECLARE inout CachingVisibilityProvider vis, float rejectBelow = 0.f)
 {
-    const float p = evaluate_P_hat(ray, sg, envMapSampler, emissiveSampler, VBUFFERITEM dp, SAMPLING_OPTIONS, r, vis, false, true, false);
+    const float p = evaluate_P_hat(ray, sg, envMapSampler, emissiveSampler, VBUFFERITEM dp, SAMPLING_OPTIONS, r, vis, false, true, false, rejectBelow);
     return (isnan(p) || isinf(p)) ? 0.f : p;
 }
 
@@ -508,7 +518,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
     float bounceVis = vis0.data1; // segment 1 of x
 #endif
     const float depthUnit = gScene.volumeDesc.tStep * gScene.volumeWorldScaling;
-    const uint enabledCount = countbits(gStrategyMask);
+    const uint enabledCount = countbits(STRATEGY_MASK);
     const LightKinds kinds = lightKinds();
     float qFlight = -1.f; // q(x) of the free-flight move while x's depth stays; -1 = not evaluated yet
 #if MAX_BOUNCES > 1
@@ -522,8 +532,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         if (gCoherentMoves) uMove = sampleNext1D(sgMove);
         else uMove = sampleNext1D(sg);
         const uint pick = min(uint(uMove * enabledCount), enabledCount - 1);
-        uint s = firstbitlow(gStrategyMask);
-        for (uint k = 0; k < pick; k++) s = firstbitlow(gStrategyMask & ~((2u << s) - 1u));
+        uint s = firstbitlow(STRATEGY_MASK);
+        for (uint k = 0; k < pick; k++) s = firstbitlow(STRATEGY_MASK & ~((2u << s) - 1u));
         if ((applicable(x, xb) & (1u << s)) == 0)
         {
         #if MAX_BOUNCES > 1
@@ -706,15 +716,21 @@ void main(uint3 DTid : SV_DispatchThreadID)
             if (!(z.depth > 0.f)) continue; // p_hat = 0: rejected, never resampled
         }
 
+        // The test's random number comes first -- p_hat draws none, so the stream is unchanged -- and with it what
+        // p_hat(z) must exceed to be accepted, u p_hat(x) q(z) / q(x): with gEarlyReject the shadow march stops once
+        // p_hat(z) provably cannot (evaluate_L_in_volume), and the decision is the full value's. Stats runs evaluate
+        // in full (their p_hat(z) = 0 counts stay exact).
+        const float u = sampleNext1D(sg);
+        const float rejectBelow = (gEarlyReject && !gCollectStats) ? u * px * qz / qx : 0.f;
     #if MAX_BOUNCES > 1
         MutationDataProvider dpz = dp;
         dpz.value = zb; // the extra bounce z ends on (x's, unless a bounce move moved it)
-        const float pz = pHat(z, ray, sg, dpz, VBUFFERITEM visz);
+        const float pz = pHat(z, ray, sg, dpz, VBUFFERITEM visz, rejectBelow);
     #else
-        const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz);
+        const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz, rejectBelow);
     #endif
         if (s == kSelect && !(pz > 0.f)) stat(10);
-        if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qx)
+        if (pz > 0.f && u * px * qz < pz * qx)
         {
             x = z;
             px = pz;

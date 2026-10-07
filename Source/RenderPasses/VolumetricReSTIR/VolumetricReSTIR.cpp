@@ -591,6 +591,9 @@ void VolumetricReSTIR::createMutateSamplesPass()
     // made before it cannot bind them ("No member named '_emissivePower'" on bistro).
     mMutateSamplesPass->getProgram()->addDefines(mpSampleGenerator->getDefines());
     if (mpEmissiveSampler) mMutateSamplesPass->getProgram()->addDefines(mpEmissiveSampler->getDefines());
+    // The early rejection's stop in the shadow march (VolumeTrackingAdapterGVDB.slang): this program alone compiles
+    // it; gEarlyReject switches it at runtime.
+    mMutateSamplesPass->getProgram()->addDefine("VR_EARLY_REJECT", "1");
     updateSceneDefines(mMutateSamplesPass, mpScene);
     mpSampleGenerator->bindShaderData(mMutateSamplesPass->getRootVar());
 }
@@ -636,6 +639,7 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
     vars["CB"]["gSelectWeightedAnalytic"] = mParams.mMutationSelectWeighted;
     vars["CB"]["gCollectStats"] = mParams.mMutationStats;
     vars["CB"]["gCoherentMoves"] = mParams.mMutationCoherentMoves;
+    vars["CB"]["gEarlyReject"] = mParams.mMutationEarlyReject;
     options.setShaderData(vars["CB"]["gSamplingOptions"]);
 
     if (mpEnvMapSampler) mpEnvMapSampler->bindShaderData(vars["CB"]["envMapSampler"]);
@@ -2202,6 +2206,9 @@ void VolumetricReSTIR::renderUI(Gui::Widgets& widget)
             dirty |= widget.checkbox("Same move kind in every pixel", mParams.mMutationCoherentMoves);
             widget.tooltip("Draw each step's move kind once per frame instead of per pixel: the pixels of a warp then make "
                            "the same move, and the warp runs one move's marches per step. Each pixel's chain is unchanged in law.", true);
+            widget.checkbox("Early rejection", mParams.mMutationEarlyReject);
+            widget.tooltip("Stop a proposal's shadow-ray march once it can no longer be accepted. Every decision is the full "
+                           "evaluation's, so the image does not change; only the time does.", true);
             dirty |= widget.checkbox("Decoupled history", mParams.mDecoupledHistory);
             widget.tooltip("History = the temporal (and mutated) reservoir; spatial reuse's output only shades "
                            "(Zhou 2025, sec. 5.5.5).", true);

@@ -608,6 +608,9 @@ def add_restir(g, scene, upscale=False, profile="Balanced", ratio=None, guides=F
     # 0 = a kind per pixel, as before (the studies begun that way: run_study.sh STUDY_MUT_COHERENT=0).
     if os.environ.get("VR_MUT_COHERENT"):
         props["mParams"]["mMutationCoherentMoves"] = env_bool("VR_MUT_COHERENT", False)
+    # VR_MUT_EARLY_REJECT=0: every proposal's shadow march runs to the end (on by default; the decisions are the same).
+    if os.environ.get("VR_MUT_EARLY_REJECT"):
+        props["mParams"]["mMutationEarlyReject"] = env_bool("VR_MUT_EARLY_REJECT", True)
     # VR_SELECT_UNIFORM=1: the light re-selection's original point-light proposal (uniform), to reproduce runs made
     # before the position-aware one (by each light's contribution at the scatter point, the pass's default).
     if os.environ.get("VR_SELECT_UNIFORM"):

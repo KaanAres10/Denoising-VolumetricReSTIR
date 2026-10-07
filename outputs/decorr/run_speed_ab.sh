@@ -17,6 +17,8 @@ LOG=$O/speed_ab.log
 NAME=$1 A=$2 B=$3
 shift 3
 BENV=("$@")
+# SPEED_AB_AENV="VAR=value ...": extra env for the A runs (e.g. a switch's off side when B is the default).
+read -r -a AENV <<< "${SPEED_AB_AENV:-}"
 SCRIPT_CP='C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\correlation_pose.py'
 MOG=./build/windows-vs2022/bin/Release/Mogwai.exe
 BIN_SHADER=build/windows-vs2022/bin/Release/shaders/RenderPasses/VolumetricReSTIR/MutateSamples.cs.slang
@@ -30,7 +32,7 @@ run() {  # label variant (A1 B1 B2 A2) strategies
     [ -f "$d/c.passes.json" ] && return 0
     mkdir -p "$d"
     local extra=()
-    case $v in A*) cp "$A" "$BIN_SHADER" ;; B*) cp "$B" "$BIN_SHADER"; extra=("${BENV[@]}") ;; esac
+    case $v in A*) cp "$A" "$BIN_SHADER"; extra=("${AENV[@]}") ;; B*) cp "$B" "$BIN_SHADER"; extra=("${BENV[@]}") ;; esac
     # shellcheck disable=SC2046
     ( for x in $(env | grep -o "^\(VR_\|NRD4_\)[A-Z0-9_]*"); do unset "$x"; done
       export $(scene_env "$label") VR_DISPLAY=1920x1080 VR_CHAINS=1 VR_PER_CHAIN=4 VR_SPACING=8 VR_WARM=192 VR_IDS=0 \
@@ -39,7 +41,7 @@ run() {  # label variant (A1 B1 B2 A2) strategies
       VR_OUT_DIR="$(cygpath -am "$d")" VR_TAG=c timeout 1200 $MOG --script "$SCRIPT_CP" > "$d/run.log" 2>&1 )
     echo "[$(date +%H:%M:%S)] ab $NAME $label/$v: passes.json $([ -f "$d/c.passes.json" ] && echo ok || echo MISSING), $(ls "$d"/*.exr 2>/dev/null | wc -l) exr, $(grep -c '(Error)' "$d/run.log") errors" >> $LOG
 }
-echo "[$(date +%H:%M:%S)] ab $NAME start: A=$A B=$B ${BENV[*]}" >> $LOG
+echo "[$(date +%H:%M:%S)] ab $NAME start: A=$A ${AENV[*]} B=$B ${BENV[*]}" >> $LOG
 for L in explosiondusk bunnycathedral_d0.3 bunnyback_g0.8 bunnysoftbox wdassunset_g0.85; do
     for X in "$L" "${L}_b2"; do
         S=light,depth,select,flight

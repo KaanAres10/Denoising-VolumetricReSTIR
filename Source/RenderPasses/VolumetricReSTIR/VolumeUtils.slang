@@ -546,13 +546,18 @@ float2 SampleVolumeCellByDensityGeneric(VolRay rWorld, inout SampleGenerator sg,
     return adapter.selectedInterval;
 }
 
-float MediumTrRayMarchingGeneric(VolRay rWorld, int mipLevel, bool useLinearSampler, float tStepScale, inout SampleGenerator sg)
+/// trStop > 0 (the mutation pass's early rejection, VR_EARLY_REJECT): stop and return 0 once the transmittance is
+/// below it. 0 = march to the end.
+float MediumTrRayMarchingGeneric(VolRay rWorld, int mipLevel, bool useLinearSampler, float tStepScale, inout SampleGenerator sg, float trStop = 0.f)
 {
     int effectiveMipLevel = mipLevel >= kPrevFrameDensityGridOffset ? mipLevel - kPrevFrameDensityGridOffset : mipLevel;
     effectiveMipLevel = effectiveMipLevel >= kNumMaxMips ? effectiveMipLevel - kNumMaxMips : effectiveMipLevel;
 
     MediumTrRayMarchingAdapterGVDB adapter;
     adapter.InitializeValues();
+#if VR_EARLY_REJECT
+    if (trStop > 0.f) adapter.logTrStop = log(trStop);
+#endif
 
     adapter.tStep = gScene.volumeDesc.tStep * gScene.volumeWorldScaling * tStepScale * (effectiveMipLevel + 1);
     adapter.useLinearSampler = useLinearSampler;
@@ -736,7 +741,7 @@ float3 SampleDirectLightingSurface(inout SampleGenerator sg, out float pdf, Surf
 
 #ifdef SURFACE_SCENE
 // consider both surface and volume occlusion
-float computeGeneralPathSpaceVisibility(bool includeVolume, bool includeSurface, VolRay ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f, bool cullNonOpaqueGeometry = false)
+float computeGeneralPathSpaceVisibility(bool includeVolume, bool includeSurface, VolRay ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f, bool cullNonOpaqueGeometry = false, float trStop = 0.f)
 {
     float visibility = 1.f;
     // shoot ray to light
@@ -751,7 +756,7 @@ float computeGeneralPathSpaceVisibility(bool includeVolume, bool includeSurface,
     else
     {
         if (includeVolume)
-            visibility = computeVisibility(ray, sg, 1, mipLevel, true, trackingMethod, 1.f);
+            visibility = computeVisibility(ray, sg, 1, mipLevel, true, trackingMethod, 1.f, trStop);
     }
     return visibility;
 }
@@ -776,7 +781,8 @@ float computeGeneralPathSpaceVisibility(bool includeVolume, bool includeSurface,
 #define VR_COMPILES_RAY_MARCHING ((VR_TRACKING_MASK & 4) != 0) // bit 2
 
 // Reduce the number of cases to speed up shader compilation
-float computeVisibility(VolRay ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f)
+/// trStop: see MediumTrRayMarchingGeneric (ray marching only; the other trackers ignore it).
+float computeVisibility(VolRay ray, inout SampleGenerator sg, int visibilitySamples, int mipLevel, bool useLinearSampler, uint trackingMethod, float tStepScale = 1.f, float trStop = 0.f)
 {
     float visibility = 0;
 
@@ -789,7 +795,7 @@ float computeVisibility(VolRay ray, inout SampleGenerator sg, int visibilitySamp
 #endif
 #if VR_COMPILES_RAY_MARCHING
         if (trackingMethod == kRayMarching)
-            visibility += MediumTrRayMarchingGeneric(ray, mipLevel, useLinearSampler, tStepScale, sg);
+            visibility += MediumTrRayMarchingGeneric(ray, mipLevel, useLinearSampler, tStepScale, sg, trStop);
         else
 #endif
 #if VR_COMPILES_ANALYTIC_TRACKER

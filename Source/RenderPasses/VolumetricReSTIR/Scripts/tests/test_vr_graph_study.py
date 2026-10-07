@@ -18,7 +18,8 @@ sys.path.insert(0, str(SCRIPTS))
 STUDY_VARS = ("VR_PHASE_G", "VR_DENSITY_MULT", "VR_MTHRESH", "VR_SR_RADIUS", "VR_SR_COUNT", "VR_SR_ROUNDS",
               "VR_MUTATIONS", "VR_MUT_STRAT", "VR_MUT_STATS", "VR_INITIAL_M",
               "VR_DECOUPLED", "VR_DUP_CAP", "VR_MUT_AFTER_SPATIAL", "VR_TARGET_MIP", "VR_SELECT_UNIFORM",
-              "VR_PARAMS", "VR_EXPLOSION_LESCALE", "VR_EXPLOSION_TSCALE", "VR_MAX_BOUNCES", "VR_MUT_COHERENT")
+              "VR_PARAMS", "VR_EXPLOSION_LESCALE", "VR_EXPLOSION_TSCALE", "VR_MAX_BOUNCES", "VR_MUT_COHERENT",
+              "VR_MUT_EARLY_REJECT")
 
 
 class Recorder:
@@ -353,6 +354,9 @@ class TestKnobs(StudyEnv):
         self.assertIs(self.restir_params()["mMutationCoherentMoves"], True)
         os.environ["VR_MUT_COHERENT"] = "0"  # a move kind per pixel, as before 2af014f (studies begun that way)
         self.assertIs(self.restir_params()["mMutationCoherentMoves"], False)
+        self.assertNotIn("mMutationEarlyReject", self.restir_params())  # the pass's default: on
+        os.environ["VR_MUT_EARLY_REJECT"] = "0"  # every proposal's shadow march to the end (the A/B baseline)
+        self.assertIs(self.restir_params()["mMutationEarlyReject"], False)
 
     def test_bounce_knob(self):
         self.assertNotIn("mMaxBounces", self.restir_params())

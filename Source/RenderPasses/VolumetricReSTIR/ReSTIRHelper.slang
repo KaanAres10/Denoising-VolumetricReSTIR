@@ -140,7 +140,8 @@ int encodePathTag(int storage, int pathTag)
 
 float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvider : IExternalVisibilityProvider>(
     REUSETYPE Reservoir tap, VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
-    VolRay ray, inout SampleGenerator sg, SamplingOptions options, inout ExternalVisibilityProvider externalVis, bool isLastFrame, bool noReuse, bool spatialReuse, bool isFinalShading)
+    VolRay ray, inout SampleGenerator sg, SamplingOptions options, inout ExternalVisibilityProvider externalVis, bool isLastFrame, bool noReuse, bool spatialReuse, bool isFinalShading,
+    float rejectBelow = 0.f) // > 0: the mutation pass's early rejection (evaluate_L_in_volume); 0 elsewhere
 {
     bool useLastFrameGrid = gScene.volumeDesc.usePrevGridForReproj && isLastFrame && gScene.volumeDesc.hasAnimation;
     int mipLevelOffset = useLastFrameGrid ? kPrevFrameDensityGridOffset : 0;
@@ -459,7 +460,7 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
                 if (isLastVertexSurface) F *= evaluate_L_on_surface(shadingInfo, tap.lightID, tap.lightUV, precomputedVisibility, bounceId, sg, options, envMapSampler, emissiveSampler, lightVisibilityReuse, isLastFrame, true, !isFinalShading);
                 else
             #endif  
-                    F *= evaluate_L_in_volume(mi, tap.lightID, tap.lightUV, precomputedVisibility, bounceId, sg, options, envMapSampler, emissiveSampler, lightVisibilityReuse, isLastFrame, true, !isFinalShading); // bounceId already +1 by for loop
+                    F *= evaluate_L_in_volume(mi, tap.lightID, tap.lightUV, precomputedVisibility, bounceId, sg, options, envMapSampler, emissiveSampler, lightVisibilityReuse, isLastFrame, true, !isFinalShading, F, rejectBelow); // bounceId already +1 by for loop
 
                 #ifdef VERTEX_REUSE
                 if (bounceId == options.vertexReuseStartBounce && !spatialReuse)
@@ -482,9 +483,10 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
 
 float evaluate_P_hat<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvider : IExternalVisibilityProvider>(VolRay ray, inout SampleGenerator sg, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
     VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, SamplingOptions options,
-    REUSETYPE Reservoir tap, inout ExternalVisibilityProvider externalVis, bool isLastFrame = false, bool nonBinary = true, bool spatialReuse = false) // only set to false when computing binary MIS
+    REUSETYPE Reservoir tap, inout ExternalVisibilityProvider externalVis, bool isLastFrame = false, bool nonBinary = true, bool spatialReuse = false, // only set to false when computing binary MIS
+    float rejectBelow = 0.f) // > 0: the mutation pass's early rejection -- 0 is returned for a value below it
 {
-    float3 F = evaluate_F_(tap, VBUFFERITEM extraBounceReservoirs, envMapSampler, emissiveSampler, ray, sg, options, externalVis, isLastFrame, false, spatialReuse, false);
+    float3 F = evaluate_F_(tap, VBUFFERITEM extraBounceReservoirs, envMapSampler, emissiveSampler, ray, sg, options, externalVis, isLastFrame, false, spatialReuse, false, rejectBelow);
     return !nonBinary && any(F > 0.f) ? 1.f : luminance(F);
 }
 
@@ -497,8 +499,14 @@ float3 evaluate_F<ArrayDataProvider:IArrayDataProvider>(Reservoir tap, VBUFFERDE
 }
 
 // Include phase function
+// rejectBelow > 0 (the mutation pass's early rejection, VR_EARLY_REJECT): the caller multiplies the result into
+// rejectPrefix and needs luminance(rejectPrefix * result) >= rejectBelow, or it rejects. The light's unoccluded term is
+// known before the shadow march and the transmittance only shrinks along it, so once their product falls below that
+// (less a 1e-4 margin, which covers the rounding of the full product) the march stops and 0 is returned: the decision
+// is the full value's.
 float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, inout float precomputedVisibility, int bounce, inout SampleGenerator sg, SamplingOptions options,
-                            EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, bool lightVisibilityReuse=false, bool isLastFrame=false, bool nonBinary=true, bool cullNonOpaqueGeometry=false)
+                            EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler, bool lightVisibilityReuse=false, bool isLastFrame=false, bool nonBinary=true, bool cullNonOpaqueGeometry=false,
+                            float3 rejectPrefix = 1.f, float rejectBelow = 0.f)
 {
     VolRay shadowRay;
     float3 Ld = 0.f;
@@ -556,10 +564,20 @@ float3 evaluate_L_in_volume(MediumInteraction mi, int lightID, float2 lightUV, i
         if (lightVisibilityReuse) Tr = precomputedVisibility;
         else
         {
+            float trStop = 0.f;
+#if VR_EARLY_REJECT
+            if (rejectBelow > 0.f)
+            {
+                const float bound = luminance(rejectPrefix * Ld);
+                const float stop = rejectBelow * (1.f - 1e-4f);
+                if (!(bound > stop)) return 0.f; // rejected even unoccluded: no march
+                trStop = stop / bound;
+            }
+#endif
 #ifdef SURFACE_SCENE
-            Tr = computeGeneralPathSpaceVisibility(nonBinary, true, shadowRay, sg, options.lightSamples, cullNonOpaqueGeometry ? options.lightingMipLevel + densityGridOffset : 0, options.lightingUseLinearSampler, options.lightingTrackingMethod, options.lightingTStepScale, cullNonOpaqueGeometry);
+            Tr = computeGeneralPathSpaceVisibility(nonBinary, true, shadowRay, sg, options.lightSamples, cullNonOpaqueGeometry ? options.lightingMipLevel + densityGridOffset : 0, options.lightingUseLinearSampler, options.lightingTrackingMethod, options.lightingTStepScale, cullNonOpaqueGeometry, trStop);
 #else
-            Tr = computeVisibility(shadowRay, sg, options.lightSamples, cullNonOpaqueGeometry ? options.lightingMipLevel + densityGridOffset : 0, options.lightingUseLinearSampler, options.lightingTrackingMethod, options.lightingTStepScale);
+            Tr = computeVisibility(shadowRay, sg, options.lightSamples, cullNonOpaqueGeometry ? options.lightingMipLevel + densityGridOffset : 0, options.lightingUseLinearSampler, options.lightingTrackingMethod, options.lightingTStepScale, trStop);
 #endif
             precomputedVisibility = Tr;
         }

@@ -146,6 +146,13 @@ struct MediumTrRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
     float tFar;
     VolRay ray;
     float tStep; // ray marching step
+#if VR_EARLY_REJECT
+    // The mutation pass's early rejection (MutateSamples.cs.slang): the march stops, returning 0, once the log
+    // transmittance falls below this -- it only shrinks from there. The pass alone compiles it. Set in
+    // InitializeValues: a declared default is not applied to `MediumTrRayMarchingAdapterGVDB adapter;` (left
+    // uninitialized, it stopped marches at random: run-to-run differences on the explosion and the sunset).
+    float logTrStop;
+#endif
 
     bool hasInitialized = false;
 
@@ -153,6 +160,9 @@ struct MediumTrRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
     {
         Tr = 0.f;
         hasInitialized = false;
+    #if VR_EARLY_REJECT
+        logTrStop = -3.402823466e+38f; // never stop
+    #endif
     }
 
     [mutating] void SetRayInfo(float tNear_, float tFar_, VolRay ray_)
@@ -194,6 +204,9 @@ struct MediumTrRayMarchingAdapterGVDB : IVolumeTrackingAdapterGVDB
                 float density = DensityInAtlas(p + o, mipLevel, useLinearSampler, atlasMip);
                 float sigma_t = density * gScene.volumeDesc.sigma_t;
                 Tr += -sigma_t * (iter == 0 ? 1.f : tStepMultipler) * tStep;
+            #if VR_EARLY_REJECT
+                if (Tr < logTrStop) { Tr = 0.f; return true; } // transmittance 0: the proposal is rejected anyway
+            #endif
                 p += wpt;
                 t += tStepMultipler * tStep;
             }
