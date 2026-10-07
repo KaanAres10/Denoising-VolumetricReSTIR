@@ -505,6 +505,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
     const uint enabledCount = countbits(gStrategyMask);
     const LightKinds kinds = lightKinds();
     float qFlight = -1.f; // q(x) of the free-flight move while x's depth stays; -1 = not evaluated yet
+#if MAX_BOUNCES > 1
+    float qRebounce = -1.f; // q(x) of the rebounce move while x's x1 and extra bounce stay; -1 = not evaluated yet
+#endif
 
     for (int it = 0; it < gMutationCount; it++)
     {
@@ -520,18 +523,24 @@ void main(uint3 DTid : SV_DispatchThreadID)
             continue;
         }
 
+        // Each move only builds its proposal z -- and, an independence move, q(x) and q(z) -- and ONE p_hat(z) and
+        // acceptance test follow for every move. The pixels of a warp pick different moves, and with a p_hat call in
+        // each move the warp ran every picked move's marches in turn. The symmetric moves keep q(x) = q(z) = 1, which
+        // multiplies exactly, so the test is min(1, p_hat(z) q(x) / (p_hat(x) q(z))) for all. A move without a
+        // proposal continues: a rejection, p_hat never evaluated, never resampled.
         Reservoir z = x;
         CachingVisibilityProvider visz;
         visz.Initialize();
+        float qx = 1.f, qz = 1.f;
+        uint zKind = 0; // the re-selection's proposed light: env, analytic, emissive
     #if MAX_BOUNCES > 1
+        ExtraBounceReservoir zb = xb;
         if (s >= kDirection)
         {
             const float3 x1 = ray.origin + x.depth * ray.dir;
             const Bounce bx = readBounce(x, xb, x1);
             const uint k = s - kDirection; // 0 direction, 1 distance, 2 rebounce
             stat(49 + 2 * k);
-            ExtraBounceReservoir zb = xb;
-            float qx = 1.f, qz = 1.f;
             float3 zDir = bx.dir;
             float zDist = bx.dist;
             float3 zX2 = bx.x2;
@@ -550,7 +559,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
                     if (abs(qe - qSampler) > 1e-3f * qSampler) { stat(59); if (!(qe > 0.f)) stat(61); else if (qe > qSampler) stat(62); }
                 }
                 zX2 = x1 + zDist * zDir;
-                qx = rebounceQ(x1, -ray.dir, bx.dir, bx.dist, bx.emissive, sg);
+                if (qRebounce < 0.f) qRebounce = rebounceQ(x1, -ray.dir, bx.dir, bx.dist, bx.emissive, sg);
+                qx = qRebounce;
                 if (!(qx > 0.f) || isinf(qx)) { stat(56); continue; }
             }
             else if (s == kDirection)
@@ -571,21 +581,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 qz = rebounceQ(x1, -ray.dir, bz.dir, bz.dist, bz.emissive, sg);
                 if (!(qz > 0.f) || isinf(qz)) { stat(56); continue; }
             }
-            MutationDataProvider dpz = dp;
-            dpz.value = zb;
             visz.data = primaryVis; // x1 did not move
-            const float pz = pHat(z, ray, sg, dpz, VBUFFERITEM visz);
-            if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qx)
-            {
-                x = z;
-                xb = zb;
-                dp.value = xb;
-                px = pz;
-                bounceVis = visz.data1;
-                stat(50 + 2 * k);
-            }
-            continue;
         }
+        else
     #endif
         if (s == kSelect)
         {
@@ -604,10 +602,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
             float envSamplerPdf;
             const AnalyticProposal ap = analyticProposal(p, wo, kinds.analytic);
             if (!proposeLight(p, kinds, ap, sg, z, envSamplerPdf)) { stat(8); continue; }
-            const uint zKind = z.lightID < 0 ? 0 : (z.lightID < (int)gScene.getLightCount() ? 1 : 2);
+            zKind = z.lightID < 0 ? 0 : (z.lightID < (int)gScene.getLightCount() ? 1 : 2);
             stat(11 + zKind);
-            const float qx = selectPdf(x.lightID, x.lightUV, p, kinds, ap);
-            const float qz = selectPdf(z.lightID, z.lightUV, p, kinds, ap);
+            qx = selectPdf(x.lightID, x.lightUV, p, kinds, ap);
+            qz = selectPdf(z.lightID, z.lightUV, p, kinds, ap);
             if (gCollectStats && envSamplerPdf >= 0.f)
             {
                 stat(15);
@@ -618,18 +616,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
         #if MAX_BOUNCES > 1
             visz.data1 = bounceVis; // nor did the extra bounce
         #endif
-            const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz);
-            if (!(pz > 0.f)) stat(10);
-            if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qx)
-            {
-                x = z;
-                px = pz;
-                stat(7);
-                stat(32 + zKind); // accepted, by the proposed light's kind: env, analytic, emissive
-            }
-            continue;
         }
-        if (s == kFlight)
+        else if (s == kFlight)
         {
             // Independence move on the depth: the acceptance carries q(x) / q(z), both on the same ray.
             stat(20);
@@ -639,7 +627,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             SampleMediumAnalyticGeneric(flightRay, sg, false, hit, gFlightMipLevel, qs, trs, 1);
             if (!(hit[0] > 0.f) || !(hit[0] < kRayTMax)) { stat(22); continue; } // escaped: no proposal
             z.depth = hit[0];
-            const float qz = qs[0];
+            qz = qs[0];
             if (qFlight < 0.f)
             {
                 FreeFlightPdfAdapterGVDB ex;
@@ -666,21 +654,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
             }
             if (!(qz > 0.f) || isinf(qz)) { stat(27); continue; }
             if (!(qFlight > 0.f)) { stat(24); continue; }
-            const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz);
-            if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qFlight)
-            {
-                x = z;
-                px = pz;
-                primaryVis = visz.data;
-            #if MAX_BOUNCES > 1
-                bounceVis = visz.data1;
-            #endif
-                qFlight = qz;
-                stat(21);
-            }
-            continue;
+            qx = qFlight;
         }
-        if (s == kLight)
+        else if (s == kLight)
         {
             if (x.lightID < 0) // environment map: rotate on the sphere, symmetric in solid angle
             {
@@ -709,17 +685,38 @@ void main(uint3 DTid : SV_DispatchThreadID)
             stat(2);
             if (!(z.depth > 0.f)) continue; // p_hat = 0: rejected, never resampled
         }
+
+    #if MAX_BOUNCES > 1
+        MutationDataProvider dpz = dp;
+        dpz.value = zb; // the extra bounce z ends on (x's, unless a bounce move moved it)
+        const float pz = pHat(z, ray, sg, dpz, VBUFFERITEM visz);
+    #else
         const float pz = pHat(z, ray, sg, dp, VBUFFERITEM visz);
-        if (pz > 0.f && sampleNext1D(sg) * px < pz)
+    #endif
+        if (s == kSelect && !(pz > 0.f)) stat(10);
+        if (pz > 0.f && sampleNext1D(sg) * px * qz < pz * qx)
         {
             x = z;
             px = pz;
-            primaryVis = visz.data;
+            primaryVis = visz.data; // preset to x's when the move kept x1 (p_hat only reads it then), else z's
         #if MAX_BOUNCES > 1
             bounceVis = visz.data1;
+            xb = zb;
+            dp.value = xb;
         #endif
-            if (s == kDepth) qFlight = -1.f; // the depth moved
-            stat(s == kLight ? 1 : 3);
+            if (s == kFlight) qFlight = qz;
+            else if (s == kDepth) qFlight = -1.f; // the depth moved
+        #if MAX_BOUNCES > 1
+            // The rebounce's q(x) follows x1 and the extra bounce; the light moves keep both.
+            if (s == kRebounce) qRebounce = qz;
+            else if (s != kLight && s != kSelect) qRebounce = -1.f;
+        #endif
+            if (s == kSelect) { stat(7); stat(32 + zKind); } // accepted, by the proposed light's kind
+            else if (s == kFlight) stat(21);
+            else if (s == kLight || s == kDepth) stat(s == kLight ? 1 : 3);
+        #if MAX_BOUNCES > 1
+            else stat(50 + 2 * (s - kDirection));
+        #endif
         }
     }
 
