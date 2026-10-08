@@ -450,3 +450,37 @@ stops the round and is debugged before any figure is made.
   (The panel lights' whole-image relMSE is the denoiser's soft emitter edges for every config; in the medium it is
   0.0472 / 0.0126 / 0.0088 / 0.0089 at 1 bounce.) Three mutations are within 2–12% of five's error, one is 18–43% worse
   (its streaks show on the cathedral and at 2 bounces); every count keeps most of the cut against plain ReSTIR.
+
+### V-C6 — why the shipped pass is unbiased (2026-10-08)
+The pass as it ships: 5 steps after spatial reuse, coherent move choice (Stage 2), early rejection (A), all seven
+moves at 2 bounces (four at 1).
+
+1. **ReSTIR's guarantee (the input).** After spatial reuse a pixel holds x0 with W0 = runningSum / (p_y M), and for
+   every f that vanishes outside supp p̂: E[f(x0) W0] = ∫ f (Lin et al. 2021; Talbot MIS). The mutation pass draws its
+   own random numbers, so given x0 its moves are independent of W0.
+2. **Eq. 16 needs only invariance.** Let K be any kernel with ∫ p̂(x) K(x, z) dx = p̂(z) that never moves to p̂ = 0,
+   and set W(z) = W0 p̂(x0) / p̂(z). With h(x) = p̂(x) ∫ K(x, z) f(z) / p̂(z) dz (zero outside supp p̂):
+   E[f(z) W(z)] = E[W0 h(x0)] = ∫ h = ∫ f(z) / p̂(z) [∫ p̂(x) K(x, z) dx] dz = ∫ f.
+3. **Every step leaves p̂ invariant** (detailed balance in the measure p̂ is a density in):
+   - symmetric moves (light u on the torus, env and ω rotations, depth and distance steps, the x2 step in volume)
+     accept with min(1, p̂(z)/p̂(x)); their symmetry is checked numerically in `test_mutation_measures.py`;
+   - independence moves (re-selection, free flight, rebounce) propose z ~ q independently of x and accept with
+     min(1, p̂(z) q(x) / (p̂(x) q(z))), q(x) and q(z) from the same evaluator; an escape (no proposal) has a probability
+     that does not depend on x and is a self-transition;
+   - a proposal with p̂(z) = 0 is rejected, never redrawn; an inapplicable kind is a self-transition, and no move
+     changes a sample so that the reverse move becomes inapplicable;
+   - the kind is drawn with fixed probabilities independent of the state. With coherent moves the draw is shared by
+     all pixels, but given it each pixel applies a fixed sequence of p̂-invariant steps, which is p̂-invariant; 2 holds
+     for every sequence, so for their mixture.
+4. **The implementation is that kernel.** Stage 1 kept the arithmetic (bit-identical). Early rejection stops a
+   march only when p̂(z) ≤ (unoccluded term) × (transmittance so far) < u p̂(x) q(z)/q(x) (1 − 1e-4), so it rejects
+   only what the full value rejects (bit-identical). The skipped re-selection has z = x (bit-identical). The
+   write-back runningSum ← runningSum p̂(x0)/p_y, p_y ← p̂(z) is W(z) = W0 p̂(x0)/p̂(z) with p̂(x0) recomputed.
+5. **Downstream.** The mutated reservoir is an unbiased contribution weight for its sample: shading f(z) W(z) is
+   unbiased, and reusing it next frame is what ReSTIR's reuse assumes of its inputs.
+
+What the argument assumes rather than proves: W0 unbiased over all of supp p̂ (the candidates' coverage, a property
+of the plain pipeline), a deterministic p̂ (the host allows mutations only with ray marching or analytic tracking),
+and floating point (ties within the 1e-4 margin or 1e-7 rounding). Tests so far: V-B1, V-B9/10 (one bounce),
+V-C1, V-C1b (two bounces), Stage 2's paired explosion test (V-C4); the shipped pass on all ten setups:
+`run_bias_final.sh` (results below).
