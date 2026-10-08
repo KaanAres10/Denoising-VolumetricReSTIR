@@ -157,10 +157,80 @@ def identical(root, out):
     return out
 
 
+def stage_a_speed(root, out):
+    """Stage A's time, which is all it changes: per setup the mutation pass with early rejection off and on (the mean
+    of the A/B's two runs each), and the frame they make with the other passes at their median (as summary())."""
+    rows = []
+    for base, title in SCENES:
+        for suffix in ("", "_b2"):
+            label = base + suffix
+            d = os.path.join(root, "speed_ab", "stageA", label)
+            t = ab.times(d)
+            rest = float(np.median([tot - mut for tot, mut in timings(root, label)]))
+            rows.append(("%s, %s" % (title, "2 bounces" if suffix else "1 bounce"), t["A"]["mutate"], t["B"]["mutate"], rest))
+    rows = rows[::-1]  # first setup at the top
+    y = np.arange(len(rows))
+    off_c, on_c = "#c9c7bf", "#2a78d6"
+    fig, axes = plt.subplots(1, 2, figsize=(17, 9), facecolor="#fcfcfb", gridspec_kw={"width_ratios": [1, 1.25]})
+    fig.subplots_adjust(top=0.8, bottom=0.08, left=0.13, right=0.985, wspace=0.32)
+    fig.suptitle("Stage A (early rejection): the same image, less time", fontsize=17, color=INK, y=0.975)
+    fig.text(0.5, 0.905, "A stops a rejected proposal's shadow-ray march early; every accept/reject decision is the full "
+             "evaluation's, so all 40 frames are bit-identical.\nIt saves the most where shadow rays cross a lot of medium "
+             "(explosion, sunset, panel lights), little where the one light sits outside it (cathedral, backlit rim).",
+             ha="center", fontsize=11, color=INK2)
+    h = 0.38
+
+    def frame(ax):
+        ax.set_facecolor("#fcfcfb")
+        ax.tick_params(axis="x", labelsize=9, colors=INK2)
+        for s in ("top", "right"):
+            ax.spines[s].set_visible(False)
+        for s in ("left", "bottom"):
+            ax.spines[s].set_color("#d6d4cc")
+        ax.xaxis.grid(True, color="#ebeae5", linewidth=0.8)
+        ax.set_axisbelow(True)
+
+    # Left: the mutation pass, off vs on.
+    ax = axes[0]
+    frame(ax)
+    off = [r[1] for r in rows]
+    on = [r[2] for r in rows]
+    ax.barh(y + h / 2, off, height=h, color=off_c, edgecolor="#fcfcfb", linewidth=1.5, label="early rejection off")
+    ax.barh(y - h / 2, on, height=h, color=on_c, edgecolor="#fcfcfb", linewidth=1.5, label="early rejection on")
+    span = max(off)
+    for yi, a, b in zip(y, off, on):
+        ax.text(a + 0.01 * span, yi + h / 2, "%.1f" % a, va="center", fontsize=9, color=INK2)
+        ax.text(b + 0.01 * span, yi - h / 2, "%.1f  (%+.0f%%)" % (b, 100 * (b / a - 1)), va="center", fontsize=9, color=INK)
+    ax.set_yticks(y)
+    ax.set_yticklabels([r[0] for r in rows], fontsize=10, color=INK)
+    ax.set_xlim(0, span * 1.25)
+    ax.set_title("Mutation pass (Mutate Samples), ms per frame", fontsize=12, color=INK, loc="left", pad=26)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncol=2, frameon=False, fontsize=10, labelcolor=INK2)
+
+    # Right: what it saves per frame, and that saving's share of the whole frame.
+    ax = axes[1]
+    frame(ax)
+    saved = [a - b for a, b in zip(off, on)]
+    ax.barh(y, saved, height=0.55, color=on_c, edgecolor="#fcfcfb", linewidth=1.5)
+    top = max(max(saved), 1e-6)
+    for yi, s, r in zip(y, saved, rows):
+        ax.text(max(s, 0) + 0.015 * top, yi, "%.1f ms  (%.0f%% of the frame)" % (s, 100 * s / (r[3] + r[1])),
+                va="center", fontsize=9, color=INK)
+    ax.set_yticks(y)
+    ax.set_yticklabels([])
+    ax.set_xlim(0, top * 1.6)
+    ax.set_title("Time saved per frame by early rejection, ms", fontsize=12, color=INK, loc="left", pad=26)
+    ax.set_xlabel("share of the whole ReSTIR frame: the other passes at their median over the runs", fontsize=9, color=INK2)
+    fig.savefig(out, dpi=80, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return out
+
+
 def main(argv):
     root = argv[1] if len(argv) > 1 else "."
     print(summary(root, os.path.join(root, "figs", "speed_summary.png")))
     print(identical(root, os.path.join(root, "figs", "stageA_identical.png")))
+    print(stage_a_speed(root, os.path.join(root, "figs", "stageA_speed.png")))
 
 
 if __name__ == "__main__":
