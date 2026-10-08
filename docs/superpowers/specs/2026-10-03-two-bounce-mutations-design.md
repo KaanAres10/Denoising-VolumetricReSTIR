@@ -435,4 +435,18 @@ stops the round and is debugged before any figure is made.
   alone vs the full one, frames bit-identical, Mutate Samples −1 to −11% (mean ~5%), the frame unchanged within the
   timing noise. A dispatch per step with the chain's state kept in a buffer between them would cost about that, so B
   is not built; the define stays for the probe.
-- **C, fewer mutations**: `run_fewer_mutations.sh` (1, 3, 5 timed; 3 and 1 rendered through OptiX like V-C2's runs).
+- **C, fewer mutations** (`run_fewer_mutations.sh`, `count_gallery.py` -> `figs/count_gallery.png`): 1, 3 and 5
+  mutations with A and Stage 2, timed (A B B A) and rendered through OptiX like V-C2's runs (same chains and kept
+  frames). All-frame relMSE (m_corr, whole image) and the whole pass per frame:
+
+  | scene, 1 / 2 bounces | plain | 1 mutation | 3 mutations | 5 mutations |
+  |---|---|---|---|---|
+  | explosion | 0.0262 / 0.0332 | 0.0127 / 0.0134 | 0.0112 / 0.0109 | 0.0100 / 0.0102 |
+  | cathedral | 0.0040 / 0.0248 | 0.0014 / 0.0179 | 0.0011 / 0.0175 | 0.0010 / 0.0171 |
+  | backlit rim | 0.0057 / 0.0119 | 0.0022 / 0.0057 | 0.0018 / 0.0042 | 0.0017 / 0.0040 |
+  | sunset | 0.0189 / 0.0257 | 0.0071 / 0.0107 | 0.0066 / 0.0083 | 0.0060 / 0.0079 |
+  | frame time (range over the 10 setups) | | −3..−22% of 5's | −3..−14% of 5's | 59–629 ms |
+
+  (The panel lights' whole-image relMSE is the denoiser's soft emitter edges for every config; in the medium it is
+  0.0472 / 0.0126 / 0.0088 / 0.0089 at 1 bounce.) Three mutations are within 2–12% of five's error, one is 18–43% worse
+  (its streaks show on the cathedral and at 2 bounces); every count keeps most of the cut against plain ReSTIR.
