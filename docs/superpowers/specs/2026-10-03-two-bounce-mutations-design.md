@@ -484,3 +484,22 @@ of the plain pipeline), a deterministic p̂ (the host allows mutations only with
 and floating point (ties within the 1e-4 margin or 1e-7 rounding). Tests so far: V-B1, V-B9/10 (one bounce),
 V-C1, V-C1b (two bounces), Stage 2's paired explosion test (V-C4); the shipped pass on all ten setups:
 `run_bias_final.sh` (results below).
+
+**Results (2026-10-09, `bias_summary.py outputs/decorr/biasfinal`).** The shipped pass (coherent moves, early
+rejection, 5 mutations of every kind after spatial reuse) against plain ReSTIR, M cap 200, 480x270, 64 seed-paired
+chains x 12 frames after 800 warm-up frames, seeds from 2000000, statistics off. Luminance bias, 1 s.e. over chains:
+
+| Setup | 1 bounce | z | 2 bounces | z |
+|---|---|---|---|---|
+| explosiondusk | -0.06% +- 0.44% | -0.15 | +0.33% +- 0.60% | +0.55 |
+| bunnycathedral_d0.3 | -0.10% +- 0.61% | -0.17 | +0.04% +- 0.45% | +0.08 |
+| bunnyback_g0.8 | -0.72% +- 1.25% | -0.57 | -0.66% +- 1.97% | -0.33 |
+| bunnysoftbox | -0.02% +- 0.02% | -1.35 | +0.04% +- 0.03% | +1.56 |
+| wdassunset_g0.85 | -0.19% +- 0.11% | -1.80 | -0.09% +- 0.13% | -0.69 |
+
+Largest |z| 1.80, none beyond 2; the ten z's give chi-square 8.77 on 10 degrees of freedom, p = 0.55: no bias
+detected. The tests' reach differs by setup: a +1% bias would have shown at z = 50 on the soft box (1 bounce) and z = 9
+on the sunset, but only z = 0.5-0.8 on the backlit rim, whose chains are too noisy to see 1%. Per-channel z's are all
+within 2 except the soft box's blue at 1 bounce (-2.0), with its luminance at -1.35. The queue was cut off once,
+during the 2-bounce soft box's mutated capture; `run_bias_final.sh` now keeps a capture that finished (all 768
+frames, no errors), so the rerun reused its plain capture.

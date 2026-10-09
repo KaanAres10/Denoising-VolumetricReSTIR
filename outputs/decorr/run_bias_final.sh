@@ -21,6 +21,11 @@ cap() {  # label config env...
     shift 2
     local d="$R/$B/$label/$cfg"
     mkdir -p "$d"
+    # A capture that finished before the queue was cut off (all 64 x 12 frames, no errors) is kept, not re-rendered.
+    if [ "$(ls "$d"/*.exr 2>/dev/null | wc -l)" -eq $((64 * 12)) ] && [ -f "$d/run.log" ] && ! grep -q '(Error)' "$d/run.log"; then
+        echo "[$(date +%H:%M:%S)] $label/$cfg: kept ($((64 * 12)) exr from an earlier run)" >> $LOG
+        return
+    fi
     # shellcheck disable=SC2046
     ( for v in $(env | grep -o "^\(VR_\|NRD4_\)[A-Z0-9_]*"); do unset "$v"; done
       export $(scene_env "$label") VR_DISPLAY=480x270 VR_CHAINS=64 VR_PER_CHAIN=12 VR_SPACING=4 VR_WARM=800 VR_IDS=0 \
