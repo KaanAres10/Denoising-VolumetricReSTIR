@@ -574,10 +574,19 @@ tracking) also uses the brick bounds.
 
 More mutations stop helping past ~10 and more candidates do not help (so not plain variance); keeping spatial reuse's
 output out of the history removes 45% (swarm) and 73% (close panels, below no reuse's 0.0229) of what 10 mutations leave,
-and mutations add nothing on top. What outlasts the mutations is what they cannot change: the swarm's tiles share the
-same LIGHT as often after 20 mutations as without any (114 vs 116 per 20x20 tile, no reuse 76; exact-sample duplicates
-fall 67 -> 0.15), and Eq. 16 keeps each reservoir's runningSum/M, which spatial reuse spreads between neighbours and a
-200-frame history keeps. (The close panels' raw duplicates that stay at ~41 per tile are pixels seeing the panels or the
+and mutations add nothing on top. What outlasts the mutations is the one thing they cannot change: Eq. 16 keeps each
+reservoir's normalization c_hat = runningSum/M, and a pixel's estimate is (f/p_hat)(X) c_hat with p_hat close to f's
+luminance, so a pixel's BRIGHTNESS is mostly c_hat. With a coupled history spatial reuse's output (neighbours' reservoirs
+mixed in) is the next frame's history, so over a 200-frame history neighbouring pixels' c_hat becomes one shared, blotchy
+field. Evidence (raw, M cap 200): colour rho(8) falls 97% with 20 mutations but luminance stalls at 0.017 from 10 on;
+the decoupled history reaches 0.0005 WITHOUT mutations although its tiles share the same light as often (114 per tile,
+as with 10 or 20 mutations; no reuse 76: the target's own preference for the nearest light, not an artifact) and hold
+more exact duplicates (18 vs 0.8). Directly (`chat_maps.py`; a diagnostic runtime-shader copy wrote c_hat into the sample
+identity, `run_chatz.sh`): split against the reference, 97-98% of the brightness error's blotch variance (2-24 px, in the
+medium) is in c_hat for every config, and that variance is 0.89 plain, 0.59 after 10 mutations (they act on c_hat only
+indirectly, through the samples later reuse weighs), 0.30 decoupled (mostly independent noise there). Map:
+`figs/swarm_chat_maps.png` -- the blotches left after 10 mutations sit exactly where c_hat's are. (An earlier reading of
+the light-sharing count as the cause was wrong.) (The close panels' raw duplicates that stay at ~41 per tile are pixels seeing the panels or the
 background; in medium tiles they fall 223 -> 1.4.) So at a long history the decoupled history, not more mutations, is
 the remedy, as V-B9/V-B10 found on Phase B's scenes. On the close
 panels and the hidden backlight even ten mutations stay above no reuse at all: at a 200-frame history these artifacts
