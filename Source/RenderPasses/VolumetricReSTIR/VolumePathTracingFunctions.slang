@@ -41,8 +41,13 @@ float3 IntegrateByVolumePathTracing(VolRay ray, inout SampleGenerator sg, bool u
 
             if (useNEE)
             {
+                // Ratio tracking against the volume's global majorant, not residual ratio tracking: the residual
+                // tracker builds its control and majorant from each GVDB brick's stored density bounds, and with lights
+                // inside the cloud it let light through some bricks unattenuated -- straight-edged bright wedges in the
+                // bunnylanterns / bunnyswarm references (2-5% of the lit pixels >25% too bright), absent with the global
+                // majorant and in ReSTIR's own (analytic) shading. Spec V-C7.
                 float3 Ld = directLighting(sg, mi,
-                        envMapSampler, emissiveSampler, lightSamples, useEnvironmentLights, useAnalyticLights, useEmissiveLights, true, mipLevel, kResidualRatioTracking);
+                        envMapSampler, emissiveSampler, lightSamples, useEnvironmentLights, useAnalyticLights, useEmissiveLights, true, mipLevel, kRatioTracking);
 
                 L += beta * Ld;
             }
@@ -95,7 +100,7 @@ float3 IntegrateByVolumePathTracing(VolRay ray, inout SampleGenerator sg, bool u
                     if (useNEE)
                     {
                         float3 Ld = directLightingSurface(sg, shadingInfo, envMapSampler, emissiveSampler, lightSamples, useEnvironmentLights, useAnalyticLights,
-                            useEmissiveLights, true, mipLevel, true ? kResidualRatioTracking : kRatioTracking);
+                            useEmissiveLights, true, mipLevel, kRatioTracking); // see the medium's NEE above
 
                         L += beta * Ld;
                     }
