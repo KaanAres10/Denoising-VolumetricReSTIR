@@ -211,6 +211,24 @@ class TestStressScenes(StudyEnv):
             lights, meshes = self.run_pyscene(path)
             self.assertEqual(len(lights), n_lights, name)
             self.assertEqual(len(meshes), n_meshes, name)
+        # Mutation-count scenes (spec V-C7): where one mutation per frame should not be enough.
+        for name, n_lights, n_meshes, flags in (("bunnyswarm", 192, 0, (True, False, False, False)),
+                                                ("bunnybeam", 1, 0, (True, False, False, False)),
+                                                ("bunnypinback", 1, 0, (True, False, False, False)),
+                                                ("bunnyclosebox", 0, 2, (False, False, True, True))):
+            vr, m = fresh_vr()
+            self.assertNotIn("_", name)
+            p = vr.SCENES[name]()["params"]
+            self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"],
+                              p.get("mUseSurfaceScene", False)), flags, name)
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            lights, meshes = self.run_pyscene(path)
+            self.assertEqual((len(lights), len(meshes)), (n_lights, n_meshes), name)
+            if name == "bunnyswarm":  # neighbouring lights must not share a hue family, or their colours would not clump
+                hues = {tuple(round(c / max(l.intensity), 2) for c in l.intensity) for l in lights}
+                self.assertEqual(len(hues), 6)
+            if name == "bunnybeam":  # far narrower than bunnyspot's 0.12 rad
+                self.assertLess(lights[0].openingAngle, 0.03)
         # Film-style shots (spec V-B10): concert beams through stage smoke, god rays in a stone room.
         for name, n_lights, n_meshes, flags in (("plumeconcert", 6, 0, (True, False, False, False)),
                                                 ("bunnycathedral", 1, 11, (True, False, False, True))):

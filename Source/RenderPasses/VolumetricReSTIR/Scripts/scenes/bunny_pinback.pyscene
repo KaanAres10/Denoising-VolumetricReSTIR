@@ -1,0 +1,12 @@
+# Mutation-count scene (spec V-C7): ONE white point light directly behind the bunny cloud ON the camera's axis, no sky,
+# run with a near-delta forward phase function (label bunnypinback_g0.97, and _b2 for two bounces). The cloud hides
+# the light; what reaches the camera is light scattered by a few degrees, so the target lives in a narrow forward
+# lobe: a halo around the hidden light and a thin bright rim. Depth, light and bounce moves that turn the path by more
+# than the lobe's width are rejected. bunnyback's light sits off-axis behind the cloud (-17, 30, -45).
+# Camera at (-17.29, 23.75, 45.50) looking along (0.236, -0.155, -0.959): the axis crosses z = -30 at (1.3, 11.5).
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('pinback')
+light.intensity = float3(20000, 20000, 20000)
+light.position = float3(1.3, 11.5, -30)
+sceneBuilder.addLight(light)

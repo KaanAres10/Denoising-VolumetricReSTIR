@@ -1,0 +1,23 @@
+# Mutation-count scene (spec V-C7): the bunny cloud between two LARGE emissive panels almost touching it, warm on the
+# left and cool on the right, no other light (run at two bounces: label bunnyclosebox_b2). bunnysoftbox's panels are
+# 10 x 10 and 7 units out; these are 24 x 24 and 2 units out, so from points near a panel the emitted radiance seen
+# (cos / distance^2) changes steeply across it: light-point moves are accepted only as tiny steps, and at two bounces
+# the bounce moves face the same steep target. Which panel a sample chose is its colour; where on it, its brightness.
+# Cloud x extent -24 .. 22.2 (see bunny_inside.pyscene); panels at x = -26 and 24.2, facing the cloud.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+warm = Material('Warm')
+warm.emissiveColor = float3(1.0, 0.55, 0.2)
+warm.emissiveFactor = 12
+cool = Material('Cool')
+cool.emissiveColor = float3(0.25, 0.5, 1.0)
+cool.emissiveFactor = 12
+
+# createQuad: unit square in xz facing +y. Rotating -90 degrees about z turns +y into +x (the left panel faces the
+# cloud); +90 turns it into -x (the right one).
+left = sceneBuilder.addNode('WarmPanel', Transform(scaling=float3(24, 1, 24), translation=float3(-26, 19, 0.9),
+                                                   rotationEulerDeg=float3(0, 0, -90)))
+sceneBuilder.addMeshInstance(left, sceneBuilder.addTriangleMesh(TriangleMesh.createQuad(), warm))
+right = sceneBuilder.addNode('CoolPanel', Transform(scaling=float3(24, 1, 24), translation=float3(24.2, 19, 0.9),
+                                                    rotationEulerDeg=float3(0, 0, 90)))
+sceneBuilder.addMeshInstance(right, sceneBuilder.addTriangleMesh(TriangleMesh.createQuad(), cool))

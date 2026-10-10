@@ -1,0 +1,14 @@
+# Mutation-count scene (spec V-C7): the bunny cloud crossed by ONE very narrow white beam (1.4 degree half-angle,
+# a laser-like pencil about 2.5 units wide at the cloud's centre), no sky. bunnyspot's beam is 0.12 rad; this one is
+# five times narrower. Along a camera ray the lit stretch is short and bright with darkness on both sides, so the
+# target is sharply peaked in depth: depth steps longer than the beam leave it and are rejected, and free-flight
+# proposals land in it rarely. Same source and aim as bunnyspot (from the front right at the cloud's centre).
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+light = PointLight('beam')
+light.intensity = float3(60000, 60000, 60000)
+light.position = float3(35, 34, 34)
+light.direction = float3(-35.9, -14.9, -33.1)
+light.openingAngle = 0.025
+light.penumbraAngle = 0.005
+sceneBuilder.addLight(light)

@@ -440,6 +440,11 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "bunnyslabs": lambda: load_bunny(SCENE_DIR + r"\bunny_slabs.pyscene", POINT_LIGHTS_OCCLUDED),
           "bunnystripes": lambda: load_bunny(SCENE_DIR + r"\bunny_stripes.pyscene", POINT_LIGHTS_OCCLUDED),
           "bunnysoftbox": lambda: load_bunny(SCENE_DIR + r"\bunny_softbox.pyscene", EMISSIVE_ONLY),
+          # Mutation-count scenes (spec V-C7): where one mutation per frame should not be enough.
+          "bunnyswarm": lambda: load_bunny(SCENE_DIR + r"\bunny_swarm.pyscene"),
+          "bunnybeam": lambda: load_bunny(SCENE_DIR + r"\bunny_beam.pyscene"),
+          "bunnypinback": lambda: load_bunny(SCENE_DIR + r"\bunny_pinback.pyscene"),
+          "bunnyclosebox": lambda: load_bunny(SCENE_DIR + r"\bunny_closebox.pyscene", EMISSIVE_ONLY),
           "bunnylanterns": lambda: load_bunny(SCENE_DIR + r"\bunny_lanterns.pyscene"),
           # Film-style shots: concert beams through stage smoke, god rays in a stone hall, a backlit sunset
           # cloudscape, a foggy street at night.
