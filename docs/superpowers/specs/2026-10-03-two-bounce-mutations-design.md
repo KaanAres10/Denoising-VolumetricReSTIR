@@ -542,11 +542,44 @@ brightest 0.5%, mean over the two kept frames, so rough):
 |---|---|---|---|---|---|---|
 | large close panels, 2 bounces | 0.023 | 0.127 | 0.062 | 0.048 | 0.034 | +82% |
 | hidden backlight, 2 bounces | 0.079 | 0.196 | 0.094 | 0.084 | 0.071 | +32% |
-| 192 coloured lights, dense | 0.345 | 0.225 | 0.086 | 0.072 | 0.067 | +29% |
+| 192 coloured lights, dense (fixed reference) | 0.331 | 0.216 | 0.071 | 0.055 | 0.050 | +41% |
 | hidden backlight | 0.027 | 0.101 | 0.040 | 0.041 | 0.031 | +28% |
 
 One mutation is 28-82% worse than ten after the denoiser on all four, and the strip shows why: plain ReSTIR's blotches
-become wormy streaks after one mutation (close panels) or colour streaks (swarm) and fade with the count. On the close
+become wormy streaks after one mutation (close panels) or colour streaks (swarm) and fade with the count.
+
+**The swarm's reference was wrong** (user: "is the top reference correct?"): a sharp-edged orange bar in both its captures
+(1024 and 2048 frames), and in bunnylanterns' 1080p reference a large cyan wedge next to a lantern, both absent from
+every ReSTIR frame. The reference path tracer (`VolumePathTracingFunctions.slang`) estimated shadow rays by residual
+ratio tracking, whose control and majorant come from each GVDB brick's stored density bounds; ReSTIR's shading uses
+analytic tracking, which reads no bounds. One-variable A/B at 640x360, 512 frames: with global-majorant ratio tracking
+the wedge is gone (its box -36%, the lit image -2%); residual vs ratio, lit pixels >25% too bright: lanterns 5.2%, swarm
+2.6% (patches), the hidden backlight (light outside the cloud) 0.0% and identical. Fixed in a2a3aa8 (both NEE calls use
+ratio tracking; the built shader renders bit-identically to the A/B). Only references with lights INSIDE the medium
+were affected (bunnylanterns, bunnyswarm); the first-round scenes' and the bias suite's results stand (the bias suite
+compares against plain ReSTIR). The swarm's reference is re-rendered (its old one kept as ref_residual); bunnylanterns'
+V-B10 relMSE numbers used the old one. Not yet tested the same way: the reference's free-path sampling (decomposition
+tracking) also uses the brick bounds.
+
+**Why the swarm and the close panels keep artifacts after 10 mutations** (`run_swarm_dig.sh`, `run_dig2.sh`; OptiX, M cap
+200, relMSE in the medium against the fixed references):
+
+| config | swarm | close panels b2 |
+|---|---|---|
+| 10 mutations | 0.0499 | 0.0337 |
+| 20 mutations | 0.0489 | |
+| 10 mutations, 16 initial candidates | 0.0489 | |
+| decoupled history, no mutations | **0.0273** | **0.0091** |
+| decoupled history + 10 mutations | 0.0283 | 0.0091 |
+
+More mutations stop helping past ~10 and more candidates do not help (so not plain variance); keeping spatial reuse's
+output out of the history removes 45% (swarm) and 73% (close panels, below no reuse's 0.0229) of what 10 mutations leave,
+and mutations add nothing on top. What outlasts the mutations is what they cannot change: the swarm's tiles share the
+same LIGHT as often after 20 mutations as without any (114 vs 116 per 20x20 tile, no reuse 76; exact-sample duplicates
+fall 67 -> 0.15), and Eq. 16 keeps each reservoir's runningSum/M, which spatial reuse spreads between neighbours and a
+200-frame history keeps. (The close panels' raw duplicates that stay at ~41 per tile are pixels seeing the panels or the
+background; in medium tiles they fall 223 -> 1.4.) So at a long history the decoupled history, not more mutations, is
+the remedy, as V-B9/V-B10 found on Phase B's scenes. On the close
 panels and the hidden backlight even ten mutations stay above no reuse at all: at a 200-frame history these artifacts
 outlast ten steps. At the shipped cap the effect is small: rho(8) 0.004-0.10 without mutations, five mutations cut it
 3-14% except the swarm's colour (-48%; one mutation takes 37% of that) and the beam (-44%, noisy). So the count matters

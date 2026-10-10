@@ -140,11 +140,13 @@ def gallery_figure(root, out):
 
 
 DENOISED = (("den_optix_c200_noreuse", "no reuse"), ("den_optix_c200_m0", "plain ReSTIR"), ("den_optix_c200_m1", "1 mutation"),
-            ("den_optix_c200_m3", "3 mutations"), ("den_optix_c200_m10", "10 mutations"), ("ref", "reference"))
+            ("den_optix_c200_m3", "3 mutations"), ("den_optix_c200_m10", "10 mutations"),
+            ("den_optix_dec200_m0", "decoupled history"), ("den_optix_dec200_m10", "decoupled + 10"), ("ref", "reference"))
+DENOISED_COUNTS = tuple(c for c in DENOISED if not c[0].startswith("den_optix_dec"))
 OPTIX_LABELS = ("bunnyswarm_d3", "bunnypinback_g0.97", "bunnypinback_g0.97_b2", "bunnyclosebox_b2")
 
 
-def denoised_gallery_figure(root, out):
+def denoised_gallery_figure(root, out, only=None, cols=DENOISED_COUNTS):
     """Per scene that needs more than one mutation: the OptiX output (first chain's first kept frame) of each config and
     the path-traced reference, cropped where plain ReSTIR's denoised error against the reference is largest inside the
     medium, one exposure per scene (from the reference). Under each: relMSE in the medium (equal_time_table.py's,
@@ -152,16 +154,18 @@ def denoised_gallery_figure(root, out):
     import artifacts as art
     import equal_time_table as et
     names = dict(LABELS)
-    rows = [l for l in OPTIX_LABELS if os.path.exists(os.path.join(root, l, "den_optix_c200_m0", "c.corr.json"))]
+    rows = [l for l in (only or OPTIX_LABELS) if os.path.exists(os.path.join(root, l, "den_optix_c200_m0", "c.corr.json"))]
     if not rows:
         return
-    fig, axes = plt.subplots(len(rows), len(DENOISED), figsize=(3.3 * len(DENOISED), 2.35 * len(rows) + 0.4),
+    fig, axes = plt.subplots(len(rows), len(cols), figsize=(3.3 * len(cols), 2.35 * len(rows) + 0.4),
                              facecolor=SURFACE, squeeze=False)
     for r, label in enumerate(rows):
         ref = art.reference(root, label)
-        imgs = {cfg: (art.kept_all(os.path.join(root, label, cfg)) or [None])[0] for cfg, _ in DENOISED if cfg != "ref"}
+        done = lambda cfg: os.path.exists(os.path.join(root, label, cfg, "c.corr.json"))  # noqa: E731 (a run still rendering has no frames yet)
+        imgs = {cfg: (art.kept_all(os.path.join(root, label, cfg)) or [None])[0] if done(cfg) else None
+                for cfg, _ in cols if cfg != "ref"}
         imgs["ref"] = ref
-        rel = et.scores(root, label, tuple(c for c, _ in DENOISED if c != "ref")) or {}
+        rel = et.scores(root, label, tuple(c for c, _ in cols if c != "ref")) or {}
         mpath = os.path.join(root, label, "noreuse", "c.medium.npy")
         med = np.load(mpath) if os.path.exists(mpath) else np.ones(ref.shape[:2], bool)
         inner = cv2.erode(med.astype(np.uint8), np.ones((15, 15), np.uint8)).astype(bool)
@@ -172,7 +176,7 @@ def denoised_gallery_figure(root, out):
         cm = med[y:y + h, x:x + w]
         rc = ref[y:y + h, x:x + w]
         scale = np.percentile(rc[cm] if cm.sum() > 50 else rc, 99.5) + 1e-12
-        for c, (cfg, title) in enumerate(DENOISED):
+        for c, (cfg, title) in enumerate(cols):
             ax = axes[r][c]
             ax.set_xticks([])
             ax.set_yticks([])
@@ -200,4 +204,6 @@ if __name__ == "__main__":
     curve_figure(root, os.path.join(root, "figs", "mutation_counts_curve.png"))
     gallery_figure(root, os.path.join(root, "figs", "mutation_counts_gallery.png"))
     denoised_gallery_figure(root, os.path.join(root, "figs", "mutation_counts_optix.png"))
-    print("wrote figs/mutation_counts_curve.png, figs/mutation_counts_gallery.png, figs/mutation_counts_optix.png")
+    # the two scenes whose artifacts outlast the mutations, with the decoupled history
+    denoised_gallery_figure(root, os.path.join(root, "figs", "mutation_counts_decoupled.png"), ("bunnyswarm_d3", "bunnyclosebox_b2"), DENOISED)
+    print("wrote figs/mutation_counts_{curve,gallery,optix,decoupled}.png")
