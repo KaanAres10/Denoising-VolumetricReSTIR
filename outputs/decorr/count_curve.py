@@ -12,7 +12,8 @@ import re
 import sys
 
 MIN_CUT = 0.3     # the largest count must remove at least this share of the correlation
-MAX_SHARE = 0.5   # and one mutation less than this share of what it removes
+MAX_SHARE = 0.5   # and one mutation less than this share of what it removes,
+MIN_LEFT = 2.0    # or leave at least this many times what the largest count leaves
 
 
 def load_counts(root, label, prefix):
@@ -27,9 +28,11 @@ def load_counts(root, label, prefix):
             continue
         with open(p) as fh:
             d = json.load(fh)
+        ref = d.get("reference") or {}
         out[int(m.group(1))] = {"medium": d["medium"]["rho"]["8"],
                                 "colour": 0.5 * (d["color_rb"]["rho"]["8"] + d["color_gm"]["rho"]["8"]),
-                                "dup": d.get("duplicates", {}).get("sample_mean")}
+                                "dup": d.get("duplicates", {}).get("sample_mean"),
+                                "relmse": ref.get("relmse"), "blur8": (ref.get("blur_rms") or {}).get("8")}
     return out
 
 
@@ -44,8 +47,19 @@ def cut_share(values):
     return share, cut
 
 
-def needs_more(share, cut):
-    return share is not None and cut >= MIN_CUT and share < MAX_SHARE
+def left_ratio(values):
+    """What one mutation leaves over what the largest count leaves (rho_1 / rho_N); None without both."""
+    if 1 not in values or max(values) <= 1 or not values[max(values)] > 0:
+        return None
+    return values[1] / values[max(values)]
+
+
+def needs_more(share, cut, left=None):
+    """One mutation is not enough when the largest count cuts a real share and either one mutation takes less than
+    half of that cut, or what one mutation leaves is at least MIN_LEFT times what the largest count leaves."""
+    if share is None or cut < MIN_CUT:
+        return False
+    return share < MAX_SHARE or (left is not None and left >= MIN_LEFT)
 
 
 def main(argv):
@@ -66,17 +80,22 @@ def main(argv):
             print("%s: no %s_m<N> runs yet" % (label, prefix))
             continue
         print("%s (%s)" % (label, prefix))
-        print("  %6s %12s %12s %10s" % ("muts", "medium r8", "colour r8", "dup/tile"))
+        print("  %6s %12s %12s %10s %10s" % ("muts", "medium r8", "colour r8", "dup/tile", "relMSE"))
+        fmt = lambda v, f: "-" if v is None else f % v  # noqa: E731
         for n in sorted(s):
-            dup = s[n]["dup"]
-            print("  %6d %12.4f %12.4f %10s" % (n, s[n]["medium"], s[n]["colour"], "-" if dup is None else "%.2f" % dup))
+            print("  %6d %12.4f %12.4f %10s %10s" % (n, s[n]["medium"], s[n]["colour"], fmt(s[n]["dup"], "%.2f"),
+                                                    fmt(s[n]["relmse"], "%.4f")))
         row = {"counts": s}
         for key in ("medium", "colour"):
-            share, cut = cut_share({n: s[n][key] for n in s})
-            row[key] = {"share_by_one": share, "cut": cut, "needs_more": needs_more(share, cut)}
+            vals = {n: s[n][key] for n in s}
+            share, cut = cut_share(vals)
+            left = left_ratio(vals)
+            more = needs_more(share, cut, left)
+            row[key] = {"share_by_one": share, "cut": cut, "left_ratio": left, "needs_more": more}
             if share is not None:
-                print("  %s: %d mutations cut %.0f%%; one mutation takes %.0f%% of that%s"
-                      % (key, max(s), 100 * cut, 100 * share, "  -> NEEDS MORE THAN ONE" if needs_more(share, cut) else ""))
+                print("  %s: %d mutations cut %.0f%%; one mutation takes %.0f%% of that and leaves %.1fx what %d leave%s"
+                      % (key, max(s), 100 * cut, 100 * share, left or float("nan"), max(s),
+                         "  -> NEEDS MORE THAN ONE" if more else ""))
         summary[label] = row
     if jout:
         with open(jout, "w") as fh:

@@ -7,9 +7,10 @@
 #   pilot    no reuse, and 0 / 1 / 5 / 20 mutations at M cap 200 (5 with acceptance statistics)
 #   fill     2 / 3 / 10 mutations at M cap 200
 #   ship     0 / 1 / 5 mutations at the shipped M cap
+#   optix    the scenes that need more than one, through OptiX against a reference: 0 / 1 / 3 / 10 at M cap 200
 # then count_curve.py's table (counts.log, counts_summary.json). A config already scored is skipped (run_study.sh),
 # so a cut-off queue resumes where it stopped.
-#   run_counts.sh [smoke|pilot|fill|ship|all]      Log: counts.log.
+#   run_counts.sh [smoke|pilot|fill|ship|optix|all]      Log: counts.log.
 set -u
 STAGE=${1:-all}
 R=/c/research/Denoising-VolumetricReSTIR
@@ -70,6 +71,22 @@ case $STAGE in ship|all)
         for N in 0 1 5; do muts "$L" ship "$N"; done
     done ;;
 esac
+# The scenes where one mutation was not enough in the raw frames, through OptiX (the Look configuration of the
+# denoiser studies) against a path-traced reference: no reuse, and 0 / 1 / 3 / 10 mutations at M cap 200.
+OPTIX_LABELS="bunnyswarm_d3 bunnypinback_g0.97 bunnypinback_g0.97_b2 bunnyclosebox_b2"
+LOOK="VR_NRD_SPLIT=1 VR_NRD_SH=1 VR_NRD_TAA=1 VR_TAA_LDR=1 VR_NRD_EMISSION=1 VR_NRD_VOLMASK=1 VR_VOL_NORMAL=gradient"
+case $STAGE in optix|all)
+    export STUDY_REF_FRAMES=2048
+    for L in $OPTIX_LABELS; do ok "$L" || continue
+        bash $O/run_study.sh refs "$L" 2>&1 | tee -a $LOG
+        # shellcheck disable=SC2086
+        run "$L" den_optix_c200_noreuse VR_DENOISER=optix $LOOK VR_NO_TEMPORAL=1 VR_NO_SPATIAL=1
+        # shellcheck disable=SC2086
+        for N in 0 1 3 10; do muts "$L" den_optix_c200 "$N" VR_DENOISER=optix $LOOK VR_MTHRESH=200; done
+    done ;;
+esac
 # shellcheck disable=SC2086
 python $O/count_curve.py $O $LABELS --json $O/counts_summary.json 2>&1 | tee -a $LOG
+# shellcheck disable=SC2086
+python $O/count_curve.py $O $OPTIX_LABELS --prefix den_optix_c200 --json $O/counts_optix_summary.json 2>&1 | tee -a $LOG
 echo "[$(date +%H:%M:%S)] counts $STAGE done" >> $LOG
