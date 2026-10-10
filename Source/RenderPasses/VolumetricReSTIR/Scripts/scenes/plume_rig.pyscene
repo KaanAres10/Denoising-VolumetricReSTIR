@@ -1,0 +1,60 @@
+# Film-style shot (spec V-C7): a concert LIGHTING RIG in stage haze -- the fire115 plume as fog-machine smoke, lit by 46
+# coloured fixtures, the look of a concert or music video (run with a forward phase function, label plumerig_g0.6):
+#   16 par cans on a truss above and behind the haze (backlight, the strongest), 2 side towers of 6 par cans,
+#   12 small LED bars inside the haze, and plume_concert's 6 narrow coloured beams fanned through it.
+# Six saturated colour families, shuffled over the fixtures so neighbours differ. A pixel shows the colour of the one
+# fixture its sample chose, and with 46 comparable fixtures re-selection rarely finds a better one: the lever that made
+# the mutation count matter on bunnyswarm (spec V-C7), in a real-world setting.
+# Geometry as plume_concert.pyscene: plume column x, z -0.83..0.83, y 0.03..3.29; camera (1.977, 2.412, 2.242), view d,
+# right r; aim centre C; truss T = C + 1.5 d + 2.2 up (behind and above the smoke).
+import random
+
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+C = (0.0, 1.8, 0.0)
+d = (-0.611, -0.192, -0.768)
+r = (0.783, 0.0, -0.623)
+up = (0.0, 1.0, 0.0)
+
+
+def comb(*terms):
+    return tuple(sum(w * v[i] for w, v in terms) for i in range(3))
+
+
+FAMILIES = [(1.0, 0.1, 0.6), (0.1, 0.8, 1.0), (1.0, 0.6, 0.05), (0.2, 0.3, 1.0), (0.2, 1.0, 0.2), (1.0, 0.15, 0.1)]
+rng = random.Random(46)
+colours = [FAMILIES[k % 6] for k in range(40)]
+rng.shuffle(colours)
+n = 0
+
+
+def point(name, pos, c, power):
+    global n
+    light = PointLight('%s%d' % (name, n))
+    light.intensity = float3(power * c[0], power * c[1], power * c[2])
+    light.position = float3(*pos)
+    sceneBuilder.addLight(light)
+    n += 1
+
+
+# 16 par cans on the back truss
+for k in range(16):
+    point('truss', comb((1, C), (1.5, d), (2.2, up), ((k - 7.5) * 0.22, r)), colours.pop(), 260)
+# 2 side towers of 6, left and right of the haze, a little in front of it
+for side in (-1, 1):
+    for k in range(6):
+        point('tower', comb((1, C), (-0.2, d), (side * 1.5, r), ((k - 2.5) * 0.45, up)), colours.pop(), 120)
+# 12 small LED bars inside the haze
+for k in range(12):
+    point('bar', (rng.uniform(-0.5, 0.5), rng.uniform(0.5, 3.0), rng.uniform(-0.5, 0.5)), colours.pop(), 5)
+# plume_concert's 6 narrow coloured beams
+for k, c in enumerate(FAMILIES):
+    pos = comb((1, C), (1.5, d), (2.2, up), ((k - 2.5) * 0.45, r))
+    aim = comb((1, C), (-0.3, d), ((2.5 - k) * 0.3, r), (-0.2 + 0.25 * (k % 2), up))
+    light = PointLight('beam%d' % k)
+    light.intensity = float3(900 * c[0], 900 * c[1], 900 * c[2])
+    light.position = float3(*pos)
+    light.direction = float3(*(aim[i] - pos[i] for i in range(3)))
+    light.openingAngle = 0.12
+    light.penumbraAngle = 0.015
+    sceneBuilder.addLight(light)

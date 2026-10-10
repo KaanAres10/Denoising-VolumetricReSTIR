@@ -229,6 +229,32 @@ class TestStressScenes(StudyEnv):
                 self.assertEqual(len(hues), 6)
             if name == "bunnybeam":  # far narrower than bunnyspot's 0.12 rad
                 self.assertLess(lights[0].openingAngle, 0.03)
+        # A concert lighting rig in stage haze (spec V-C7): many coloured fixtures, where the count matters.
+        vr, m = fresh_vr()
+        p = vr.SCENES["plumerig"]()["params"]
+        self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"]), (True, False, False))
+        lights, meshes = self.run_pyscene([c[1][0] for c in m.calls if c[0] == "loadScene"][0])
+        self.assertEqual((len(lights), len(meshes)), (46, 0))
+        beams = [l for l in lights if getattr(l, "openingAngle", 3.14) < 0.2]
+        self.assertEqual(len(beams), 6)
+        families = {tuple(round(c / max(l.intensity), 2) for c in l.intensity) for l in lights}
+        self.assertGreaterEqual(len(families), 6)
+        # More real-world shots (spec V-C7): an LED video wall behind the haze, a night thunderstorm over a city,
+        # a neon street in fog.
+        for name, n_lights, n_meshes, flags in (("plumewall", 0, 32, (False, False, True, True)),
+                                                ("wdasstorm", 36, 0, (True, False, False, False)),
+                                                ("emeraldneon", 40, 0, (True, True, True, True))):
+            vr, m = fresh_vr()
+            self.assertNotIn("_", name)
+            p = vr.SCENES[name]()["params"]
+            self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"],
+                              p.get("mUseSurfaceScene", False)), flags, name)
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            self.assertTrue(path.endswith(".pyscene"), name)
+            lights, meshes = self.run_pyscene(path)
+            self.assertEqual((len(lights), len(meshes)), (n_lights, n_meshes), name)
+            if name == "wdasstorm":  # a night scene: no sky
+                self.assertFalse([c for c in m.scene.calls if c[0] == "setEnvMap"], name)
         # Film-style shots (spec V-B10): concert beams through stage smoke, god rays in a stone room.
         for name, n_lights, n_meshes, flags in (("plumeconcert", 6, 0, (True, False, False, False)),
                                                 ("bunnycathedral", 1, 11, (True, False, False, True))):

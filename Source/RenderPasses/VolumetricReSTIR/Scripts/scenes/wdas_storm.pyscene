@@ -1,0 +1,23 @@
+# Film-style shot (spec V-C7): a THUNDERSTORM at night -- the Disney (WDAS) cumulus lit from inside by six lightning
+# flashes at different depths and from below by a city's lights, no sky (label wdasstorm_g0.5). The lights inside
+# the cloud make a steep, multimodal target along each view ray; the 30 city lights below (mostly warm sodium, some
+# white and neon) compete for the cloud's base. Real storms are lit like this; films stage them so.
+# The cloud (wdas_cloud_quarter_mip0.vbx: voxel 0.8333, origin (-217.5, -67.5, -298.33), 498 x 338 x 613 voxels) spans
+# x -217..198, y -68..214, z -298..213, centre about (-10, 73, -43); camera (258.8, 7.9, -265.7) looking along
+# (-0.797, 0.144, 0.587).
+import random
+
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+rng = random.Random(7)
+for k in range(6):
+    light = PointLight('lightning%d' % k)
+    light.intensity = float3(0.75 * 2.0e6, 0.82 * 2.0e6, 1.0 * 2.0e6)
+    light.position = float3(-10 + rng.uniform(-90, 90), 73 + rng.uniform(-50, 60), -43 + rng.uniform(-110, 110))
+    sceneBuilder.addLight(light)
+CITY = [(1.0, 0.55, 0.2)] * 20 + [(0.9, 0.92, 1.0)] * 6 + [(0.1, 0.8, 1.0), (1.0, 0.1, 0.6), (0.2, 1.0, 0.3), (1.0, 0.15, 0.1)]
+for k, c in enumerate(CITY):
+    light = PointLight('city%d' % k)
+    light.intensity = float3(4.0e5 * c[0], 4.0e5 * c[1], 4.0e5 * c[2])
+    light.position = float3(rng.uniform(-200, 190), -95 + rng.uniform(-5, 5), rng.uniform(-290, 200))
+    sceneBuilder.addLight(light)

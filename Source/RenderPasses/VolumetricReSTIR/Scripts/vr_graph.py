@@ -171,7 +171,7 @@ def _density(scale):
     return scale * env_float("VR_DENSITY_MULT", 1.0) if os.environ.get("VR_DENSITY_MULT") else scale
 
 
-def load_plume(frame="0198", pyscene=None):
+def load_plume(frame="0198", pyscene=None, params=None):
     """Plume on a bare ground plane, lit by the environment only (or, with `pyscene`, by that file's point
     lights and no environment: the stress scene plumeone).
 
@@ -239,7 +239,8 @@ def load_plume(frame="0198", pyscene=None):
         "scatterAlbedo": float3(0.7, 0.7, 0.7),
         # Daylight environment map: no compensation needed.
         "exposure": 0.0,
-        "params": dict(POINT_LIGHTS_ONLY) if pyscene else {"mUseEnvironmentLights": True, "mUseEmissiveLights": False},
+        # With `pyscene`: its lights as `params` says (point lights by default; plumewall's emissive tiles: EMISSIVE_ONLY).
+        "params": dict(params or POINT_LIGHTS_ONLY) if pyscene else {"mUseEnvironmentLights": True, "mUseEmissiveLights": False},
     }
 
 
@@ -345,10 +346,11 @@ def _pin_camera(position, target, up, far=1000.0):
     m.scene.camera.farPlane = far
 
 
-def load_emerald():
+def load_emerald(pyscene=None):
     """Emerald Square at dusk with a fog bank (run_emerald_square.py): surfaces, emissive geometry AND a
-    sky -- the one scene lit by both light kinds."""
-    m.loadScene(DATA_DIR + r"\EmeraldSquare_v4\EmeraldSquare_Dusk.fbx")
+    sky -- the one scene lit by both light kinds. With `pyscene`: that file (which imports the square) and its
+    point lights too."""
+    m.loadScene(pyscene or DATA_DIR + r"\EmeraldSquare_v4\EmeraldSquare_Dusk.fbx")
     m.scene.setEnvMap(DATA_DIR + r"\skylight-morn.exr")
     # Falcor 9: rotation and intensity are properties of the env map (4.x's setEnvMapRotation /
     # setEnvMapIntensity are gone).
@@ -387,12 +389,16 @@ def load_bunny(pyscene=None, params=None):
             "params": dict(params or POINT_LIGHTS_ONLY) if pyscene else {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
 
 
-def load_wdas():
-    """The Disney (WDAS) cloud, quarter resolution, at dawn (run_disney_cloud.py)."""
-    m.loadScene(DATA_DIR + r"\default.obj")
-    m.scene.setEnvMap(DATA_DIR + r"\kiara_1_dawn_8k.hdr")
-    m.scene.envMap.intensity = 1.1
-    m.scene.envMap.rotation = float3(-37.5, 93.5, 27)
+def load_wdas(pyscene=None):
+    """The Disney (WDAS) cloud, quarter resolution, at dawn (run_disney_cloud.py). With `pyscene`: that file's
+    point lights and no sky (wdasstorm)."""
+    if pyscene:
+        m.loadScene(pyscene)
+    else:
+        m.loadScene(DATA_DIR + r"\default.obj")
+        m.scene.setEnvMap(DATA_DIR + r"\kiara_1_dawn_8k.hdr")
+        m.scene.envMap.intensity = 1.1
+        m.scene.envMap.rotation = float3(-37.5, 93.5, 27)
     m.scene.addGVDBVolume(sigma_a=float3(1, 1, 1), sigma_s=float3(9, 9, 9), g=env_float("VR_PHASE_G", 0.0),
                           dataFile=DATA_DIR + r"\wdas_cloud_quarter", numMips=6, densityScale=_density(0.03),
                           hasVelocity=False, hasEmission=False, LeScale=1.0)
@@ -401,7 +407,7 @@ def load_wdas():
                 (0.003697, 0.999990, -0.002712), far=10000.0)
     return {"scatterAlbedo": float3(0.9, 0.9, 0.9),
             "exposure": 0.0,
-            "params": {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
+            "params": dict(POINT_LIGHTS_ONLY) if pyscene else {"mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
 
 
 def load_wdas_sunset():
@@ -419,6 +425,15 @@ def load_emerald_night():
     street lamps light the fog (halos, light cones); run with the fog thickened (label emeraldnight_d3)."""
     info = load_emerald()
     m.scene.envMap.intensity = 0.0003
+    return info
+
+
+def load_emerald_neon():
+    """Film-style shot (spec V-C7): emeraldnight plus 40 coloured neon signs in the fog (scenes/emerald_neon.pyscene);
+    run with the fog thickened (label emeraldneon_d3)."""
+    info = load_emerald(pyscene=SCENE_DIR + r"\emerald_neon.pyscene")
+    m.scene.envMap.intensity = 0.0003
+    info["params"] = dict(info["params"], mUseAnalyticLights=True)
     return info
 
 
@@ -449,6 +464,11 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           # Film-style shots: concert beams through stage smoke, god rays in a stone hall, a backlit sunset
           # cloudscape, a foggy street at night.
           "plumeconcert": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_concert.pyscene"),
+          # Spec V-C7: a concert lighting rig in stage haze, 46 coloured fixtures (where the mutation count matters).
+          "plumerig": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_rig.pyscene"),
+          "plumewall": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_wall.pyscene", params=EMISSIVE_ONLY),
+          "wdasstorm": lambda: load_wdas(pyscene=SCENE_DIR + r"\wdas_storm.pyscene"),
+          "emeraldneon": load_emerald_neon,
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}

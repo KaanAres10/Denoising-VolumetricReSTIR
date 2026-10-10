@@ -1,0 +1,25 @@
+# Film-style shot (spec V-C7): an LED VIDEO WALL behind stage haze, as at concerts and in TV studios -- the fire115 plume
+# as fog-machine smoke in front of an 8 x 4 wall of coloured emissive tiles, no other light (label plumewall_g0.6). Six
+# saturated colour families shuffled over the tiles. Which tile a sample chose sets its colour (light re-selection);
+# where on the tile, its brightness (the light-point move); the haze between the wall and the camera scatters both.
+# Plume column x, z -0.83..0.83, y 0.03..3.29; camera (1.977, 2.412, 2.242) on the +z side, so the wall stands behind
+# the column at z = -1.4 and faces +z, centred at x = -1.0, on the camera's line of sight through the smoke.
+import random
+
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+FAMILIES = [(1.0, 0.1, 0.6), (0.1, 0.8, 1.0), (1.0, 0.6, 0.05), (0.2, 0.3, 1.0), (0.2, 1.0, 0.2), (1.0, 0.15, 0.1)]
+rng = random.Random(32)
+colours = [FAMILIES[k % 6] for k in range(32)]
+rng.shuffle(colours)
+# createQuad: unit square in xz facing +y; +90 degrees about x turns +y into +z (toward the camera).
+for col in range(8):
+    for row in range(4):
+        k = col * 4 + row
+        tile = Material('Tile%d' % k)
+        tile.emissiveColor = float3(*colours[k])
+        tile.emissiveFactor = 6
+        node = sceneBuilder.addNode('Tile%d' % k, Transform(scaling=float3(0.36, 1, 0.76),
+                                                            translation=float3(-2.4 + 0.4 * col, 0.6 + 0.8 * row, -1.4),
+                                                            rotationEulerDeg=float3(90, 0, 0)))
+        sceneBuilder.addMeshInstance(node, sceneBuilder.addTriangleMesh(TriangleMesh.createQuad(), tile))

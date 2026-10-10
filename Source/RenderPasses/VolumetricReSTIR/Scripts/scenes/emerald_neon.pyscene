@@ -1,0 +1,27 @@
+# Film-style shot (spec V-C7): a NEON STREET in fog at night -- Emerald Square under a sky ten times dimmer than at dusk,
+# its own street lamps (emissive geometry) plus 40 coloured neon signs hung 1.5-4.5 m above the street along the
+# camera's view, run with the fog thickened (label emeraldneon_d3). The look of a rainy-night city in film. Six neon
+# colour families shuffled over the signs; signs that land inside a building are simply hidden.
+# The fog (Fog.0043, scaled 0.123, rotated -90 about x, moved by (0, 5.676, -1.149)) fills x -15.7..15.7, y -0.2..7.1,
+# z -16.8..14.5. Camera (-18.53, 8.40, 3.24) looking along d = (0.679, -0.185, -0.710); horizontal forward
+# f = (0.691, 0, -0.723), right r = (0.723, 0, 0.691). Sign k: 7..26 m along f, -6..6 m along r.
+import random
+
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\EmeraldSquare_v4\EmeraldSquare_Dusk.fbx')
+
+NEON = [(1.0, 0.1, 0.6), (0.1, 0.8, 1.0), (1.0, 0.6, 0.05), (0.2, 0.3, 1.0), (0.2, 1.0, 0.2), (1.0, 0.15, 0.1)]
+rng = random.Random(40)
+colours = [NEON[k % 6] for k in range(40)]
+rng.shuffle(colours)
+cam, f, r = (-18.527, 8.396, 3.235), (0.691, 0.0, -0.723), (0.723, 0.0, 0.691)
+k = 0
+for i in range(8):
+    t = 7.0 + i * 19.0 / 7
+    for s in (-6.0, -3.0, 0.0, 3.0, 6.0):
+        c = colours[k]
+        light = PointLight('neon%d' % k)
+        light.intensity = float3(8 * c[0], 8 * c[1], 8 * c[2])
+        light.position = float3(cam[0] + t * f[0] + s * r[0] + rng.uniform(-0.8, 0.8), 1.5 + (k % 4) + rng.uniform(-0.3, 0.3),
+                                cam[2] + t * f[2] + s * r[2] + rng.uniform(-0.8, 0.8))
+        sceneBuilder.addLight(light)
+        k += 1
