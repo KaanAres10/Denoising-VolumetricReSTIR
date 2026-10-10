@@ -189,6 +189,93 @@ def denoised_figure(root):
     plt.close(fig)
 
 
+COUNTS = (0, 1, 3, 10, 20, 64)
+
+
+def counts_denoiser_figure(root):
+    """The swarm's mutation counts through OptiX and Ray Reconstruction (run_counts_rr.sh): each count's denoised crop and
+    its brightness error against the reference (and RR's with its overall darkening divided out), plus relMSE in the
+    medium against the count for both denoisers (figs/swarm_counts_denoisers{,_curve}.png)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import artifacts as art
+    import equal_time_table as et
+    y0, y1, x0, x1 = 120, 330, 300, 680
+    med = np.load(os.path.join(root, LABEL, "noreuse", "c.medium.npy"))
+    ref = art.reference(root, LABEL)
+    ref_y = ref @ LUM[::-1]
+    g = lambda a: cv2.GaussianBlur(np.where(med, a, 0.0), (0, 0), 1.5) / np.maximum(cv2.GaussianBlur(med.astype(float), (0, 0), 1.5), 1e-3)  # noqa: E731
+    gr = g(ref_y)
+    ok = med & (gr > 0)
+    err = lambda img: np.where(ok, np.log(np.maximum(g(img @ LUM[::-1]), 1e-9) / np.where(ok, gr, 1)), np.nan)  # noqa: E731
+    k = np.percentile(ref[y0:y1, x0:x1], 99.5)
+    tone_ = lambda img: np.clip(img[y0:y1, x0:x1] / k, 0, 1) ** (1 / 2.2)  # noqa: E731
+    rows = (("OptiX", "den_optix", "img"), ("OptiX error", "den_optix", "err"), ("Ray Reconstruction", "den_rr", "img"),
+            ("RR error", "den_rr", "err"), ("RR error, mean matched", "den_rr", "matched"))
+    cols = [("plain ReSTIR" if n == 0 else "%d mutation%s" % (n, "" if n == 1 else "s"), n) for n in COUNTS] + [("reference", None)]
+    curve = {"den_optix": {}, "den_rr": {}}
+    fig, axes = plt.subplots(len(rows), len(cols), figsize=(3.5 * len(cols), 2.3 * len(rows)), facecolor="#fcfcfb", squeeze=False)
+    for c_, (cname, n) in enumerate(cols):
+        for r_, (rname, den, kind) in enumerate(rows):
+            ax = axes[r_][c_]
+            ax.set_xticks([]); ax.set_yticks([])
+            if r_ == 0:
+                ax.set_title(cname, fontsize=12)
+            if c_ == 0:
+                ax.set_ylabel(rname, fontsize=10, color="#52514e")
+            if n is None:
+                if kind == "img":
+                    ax.imshow(tone_(ref), interpolation="nearest")
+                else:
+                    ax.axis("off")
+                continue
+            cfg = "%s_c200_m%d" % (den, n)
+            d = os.path.join(root, LABEL, cfg)
+            if not os.path.exists(os.path.join(d, "c.corr.json")):
+                ax.text(0.5, 0.5, "not run", ha="center", va="center", transform=ax.transAxes, color="#52514e")
+                continue
+            img = (art.kept_all(d) or [None])[0]
+            if img is None:
+                continue
+            ratio = (img @ LUM[::-1])[med].mean() / ref_y[med].mean()
+            if kind == "img":
+                ax.imshow(tone_(img), interpolation="nearest")
+                rel = (et.scores(root, LABEL, ("%s_c200_noreuse" % den, "%s_c200_m0" % den, cfg)) or {}).get(cfg)
+                if rel is not None:
+                    curve[den][n] = (rel[0], ratio)
+                    ax.set_xlabel("relMSE %.3f · mean %.2fx" % (rel[0], ratio), fontsize=9, color="#52514e")
+            else:
+                e = err(img / ratio) if kind == "matched" else err(img)
+                ax.imshow(e[y0:y1, x0:x1], cmap="RdBu_r", vmin=-0.8, vmax=0.8, interpolation="nearest")
+    fig.tight_layout()
+    fig.savefig(os.path.join(root, "figs", "swarm_counts_denoisers.png"), dpi=95, facecolor="#fcfcfb")
+    plt.close(fig)
+    # relMSE against the count, both denoisers (categorical slots 1 and 2)
+    fig, ax = plt.subplots(figsize=(7.5, 4.4), facecolor="#fcfcfb")
+    ax.set_facecolor("#fcfcfb")
+    for (den, name), col in zip((("den_optix", "OptiX"), ("den_rr", "Ray Reconstruction")), ("#2a78d6", "#eb6834")):
+        ns = [n for n in COUNTS if n in curve[den]]
+        if ns:
+            ax.plot(range(len(ns)), [curve[den][n][0] for n in ns], color=col, linewidth=2, marker="o", markersize=8,
+                    markeredgecolor="#fcfcfb", markeredgewidth=2, label=name)
+            ax.set_xticks(range(len(ns)), [str(n) for n in ns])
+    for s_ in ("top", "right"):
+        ax.spines[s_].set_visible(False)
+    ax.yaxis.grid(True, color="#ebeae5")
+    ax.set_xlabel("mutations per pixel per frame (M cap 200)", color="#52514e")
+    ax.set_ylabel("relMSE in the medium", color="#52514e")
+    ax.set_title("192 coloured lights, dense cloud: denoised error against the reference", loc="left", fontsize=11)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(os.path.join(root, "figs", "swarm_counts_denoisers_curve.png"), dpi=120, facecolor="#fcfcfb")
+    plt.close(fig)
+    for den in curve:
+        print(den, "  ".join("m%d %.4f (%.2fx)" % (n, v[0], v[1]) for n, v in sorted(curve[den].items())))
+
+
 if __name__ == "__main__":
     main(sys.argv[1])
     denoised_figure(sys.argv[1])
+    counts_denoiser_figure(sys.argv[1])

@@ -604,7 +604,21 @@ divided out it still leaves large patches there, while 10 mutations give RR its 
 within 3-5% for every reuse configuration. So RR's ranking is RR's own behaviour on this input, not the inputs' quality
 (the raw frames: lag-1 spatial autocorrelation 0.27 plain, 0.039 after 10 mutations, 0.004 decoupled, 0 no reuse). Not
 yet tested: whether RR's temporal accumulation rejects the decoupled input's frame-to-frame changes (a burst run), or a
-guide buffer disagrees with the shaded reservoir when the history is decoupled. (The close panels' raw duplicates that stay at ~41 per tile are pixels seeing the panels or the
+guide buffer disagrees with the shaded reservoir when the history is decoupled.
+
+**The count through both denoisers, up to 64** (the UI maximum; `run_counts_rr.sh`, `figs/swarm_counts_denoisers{,_curve}.png`;
+relMSE in the medium, mean brightness over the reference's):
+
+| swarm, M cap 200 | 0 | 1 | 3 | 10 | 20 | 64 |
+|---|---|---|---|---|---|---|
+| OptiX | 0.216 | 0.071 | 0.055 | 0.050 | 0.049 | 0.045 |
+| RR | 0.201 (0.72x) | 0.128 (0.86x) | 0.096 (0.75x) | 0.156 (1.00x) | 0.100 (0.81x) | 0.119 (0.93x) |
+| raw rho(8), luminance / colour | 0.078 / 0.061 | 0.032 / 0.016 | 0.023 / 0.0078 | 0.017 / 0.0033 | 0.018 / 0.0018 | 0.018 / 0.0006 |
+
+OptiX falls monotonically, most of it by 3, with little after 10 (64: -9% on 10). RR's numbers are dominated by its
+overall brightness, which swings 0.72-1.00x between kept frames, so they do not rank the counts; with its darkening
+divided out its error maps grow more even with the count like OptiX's. In the raw frames the colour keeps decorrelating
+to 64 (0.0006, duplicates 0.03 per tile) while the luminance stays at 0.018 from 10 on: c_hat, as above. (The close panels' raw duplicates that stay at ~41 per tile are pixels seeing the panels or the
 background; in medium tiles they fall 223 -> 1.4.) So at a long history the decoupled history, not more mutations, is
 the remedy, as V-B9/V-B10 found on Phase B's scenes. On the close
 panels and the hidden backlight even ten mutations stay above no reuse at all: at a 200-frame history these artifacts
