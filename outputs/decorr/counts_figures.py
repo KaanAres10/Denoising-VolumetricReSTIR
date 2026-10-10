@@ -139,9 +139,65 @@ def gallery_figure(root, out):
     plt.close(fig)
 
 
+DENOISED = (("den_optix_c200_noreuse", "no reuse"), ("den_optix_c200_m0", "plain ReSTIR"), ("den_optix_c200_m1", "1 mutation"),
+            ("den_optix_c200_m3", "3 mutations"), ("den_optix_c200_m10", "10 mutations"), ("ref", "reference"))
+OPTIX_LABELS = ("bunnyswarm_d3", "bunnypinback_g0.97", "bunnypinback_g0.97_b2", "bunnyclosebox_b2")
+
+
+def denoised_gallery_figure(root, out):
+    """Per scene that needs more than one mutation: the OptiX output (first chain's first kept frame) of each config and
+    the path-traced reference, cropped where plain ReSTIR's denoised error against the reference is largest inside the
+    medium, one exposure per scene (from the reference). Under each: relMSE in the medium (equal_time_table.py's,
+    mean over the kept frames)."""
+    import artifacts as art
+    import equal_time_table as et
+    names = dict(LABELS)
+    rows = [l for l in OPTIX_LABELS if os.path.exists(os.path.join(root, l, "den_optix_c200_m0", "c.corr.json"))]
+    if not rows:
+        return
+    fig, axes = plt.subplots(len(rows), len(DENOISED), figsize=(3.3 * len(DENOISED), 2.35 * len(rows) + 0.4),
+                             facecolor=SURFACE, squeeze=False)
+    for r, label in enumerate(rows):
+        ref = art.reference(root, label)
+        imgs = {cfg: (art.kept_all(os.path.join(root, label, cfg)) or [None])[0] for cfg, _ in DENOISED if cfg != "ref"}
+        imgs["ref"] = ref
+        rel = et.scores(root, label, tuple(c for c, _ in DENOISED if c != "ref")) or {}
+        mpath = os.path.join(root, label, "noreuse", "c.medium.npy")
+        med = np.load(mpath) if os.path.exists(mpath) else np.ones(ref.shape[:2], bool)
+        inner = cv2.erode(med.astype(np.uint8), np.ones((15, 15), np.uint8)).astype(bool)
+        lumw = np.array([0.2126, 0.7152, 0.0722])  # RGB
+        err = cv2.GaussianBlur(np.abs((imgs["den_optix_c200_m0"] - ref) @ lumw), (0, 0), 3) * (inner if inner.mean() > 0.01 else med)
+        h, w = ref.shape[0] // 4, ref.shape[1] // 4
+        y, x = best_window(err, w, h)
+        cm = med[y:y + h, x:x + w]
+        rc = ref[y:y + h, x:x + w]
+        scale = np.percentile(rc[cm] if cm.sum() > 50 else rc, 99.5) + 1e-12
+        for c, (cfg, title) in enumerate(DENOISED):
+            ax = axes[r][c]
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for s in ax.spines.values():
+                s.set_color(RULE)
+            img = imgs.get(cfg)
+            if img is None:
+                ax.set_facecolor(SURFACE)
+            else:
+                ax.imshow(tone(img[y:y + h, x:x + w], scale), interpolation="nearest")
+            if r == 0:
+                ax.set_title(title, color=INK, fontsize=12)
+            if c == 0:
+                ax.set_ylabel(names.get(label, label), color=INK2, fontsize=10)
+            if cfg in rel:
+                ax.set_xlabel("relMSE in the medium %.3f" % rel[cfg][0], color=INK2, fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out, dpi=110, facecolor=SURFACE)
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     root = sys.argv[1]
     os.makedirs(os.path.join(root, "figs"), exist_ok=True)
     curve_figure(root, os.path.join(root, "figs", "mutation_counts_curve.png"))
     gallery_figure(root, os.path.join(root, "figs", "mutation_counts_gallery.png"))
-    print("wrote figs/mutation_counts_curve.png, figs/mutation_counts_gallery.png")
+    denoised_gallery_figure(root, os.path.join(root, "figs", "mutation_counts_optix.png"))
+    print("wrote figs/mutation_counts_curve.png, figs/mutation_counts_gallery.png, figs/mutation_counts_optix.png")

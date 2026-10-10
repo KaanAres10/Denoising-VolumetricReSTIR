@@ -31,6 +31,18 @@ class TestCountCurve(unittest.TestCase):
         self.assertAlmostEqual(series[10]["dup"], 1.0)
         self.assertIsNone(series[0]["relmse"])  # no reference yet
 
+    def test_denoised_runs_without_a_medium_mask_use_the_whole_image(self):
+        with tempfile.TemporaryDirectory() as root:
+            d = os.path.join(root, "s", "den_optix_c200_m1")
+            os.makedirs(d)
+            with open(os.path.join(d, "c.corr.json"), "w") as fh:
+                json.dump({"robust": {"rho": {"8": 0.18}}, "color_rb": {"rho": {"8": 0.16}},
+                           "color_gm": {"rho": {"8": 0.14}}, "reference": {"relmse": 0.023}}, fh)
+            series = count_curve.load_counts(root, "s", "den_optix_c200")
+        self.assertAlmostEqual(series[1]["medium"], 0.18)
+        self.assertAlmostEqual(series[1]["relmse"], 0.023)
+        self.assertIsNone(series[1]["dup"])
+
     def test_reads_the_error_against_the_reference(self):
         with tempfile.TemporaryDirectory() as root:
             write(root, "s", "den_optix_c200_m3", 0.1, 0.02, 0.04, relmse=0.012)

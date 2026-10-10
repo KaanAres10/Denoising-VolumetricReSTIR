@@ -29,7 +29,8 @@ def load_counts(root, label, prefix):
         with open(p) as fh:
             d = json.load(fh)
         ref = d.get("reference") or {}
-        out[int(m.group(1))] = {"medium": d["medium"]["rho"]["8"],
+        # A denoised run has no medium mask of its own baseline: its whole-image (robust) rho stands in.
+        out[int(m.group(1))] = {"medium": (d.get("medium") or d["robust"])["rho"]["8"],
                                 "colour": 0.5 * (d["color_rb"]["rho"]["8"] + d["color_gm"]["rho"]["8"]),
                                 "dup": d.get("duplicates", {}).get("sample_mean"),
                                 "relmse": ref.get("relmse"), "blur8": (ref.get("blur_rms") or {}).get("8")}

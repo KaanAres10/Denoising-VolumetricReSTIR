@@ -503,3 +503,51 @@ on the sunset, but only z = 0.5-0.8 on the backlit rim, whose chains are too noi
 within 2 except the soft box's blue at 1 bounce (-2.0), with its luminance at -1.35. The queue was cut off once,
 during the 2-bounce soft box's mutated capture; `run_bias_final.sh` now keeps a capture that finished (all 768
 frames, no errors), so the rerun reused its plain capture.
+
+### V-C7 — scenes where one mutation is not enough (2026-10-10)
+
+The user: "one mutation is enough; create scenes where multiple mutations are required to get rid of significant
+artifacts". On the first-round scenes one step already breaks most duplicates (V-C5 C: 3 mutations within 2-12% of 5).
+A pixel stops sharing its neighbours' artifact only when a step changes what it shows, so a count matters where that
+chance per step is small: (1) a target sharply peaked against the step (most proposals rejected); (2) an artifact
+carried by a choice only one rare move changes (which coloured light: re-selection is the move in about one step in
+four under the coherent choice, and accepts rarely among many lights); (3) a long correlation length (M cap 200).
+Judged mainly at M cap 200 (user's choice), the pass as shipped, 960x540, run_study.sh's capture (100 frames per
+config). Scenes (`Scripts/scenes/`, b81b723): **bunnyswarm** (192 point lights of six shuffled hue families in a jittered
+grid through the cloud, density x3), **bunnybeam** (one 1.4-degree beam), **bunnypinback** (one light hidden behind the
+cloud on the camera axis, g = 0.97, 1 and 2 bounces), **bunnyclosebox** (24 x 24 warm and cool panels 2 units from the
+cloud, 2 bounces). `run_counts.sh` (smoke, pilot, fill, ship, optix), `count_curve.py`, `counts_figures.py` ->
+`figs/mutation_counts_{curve,gallery,optix}.png`.
+
+**Raw frames, M cap 200** (rho(8): medium; colour for the coloured scenes; duplicates per 20x20 tile):
+
+| scene | 0 | 1 | 2 | 3 | 5 | 10 | 20 | one leaves, vs 20 |
+|---|---|---|---|---|---|---|---|---|
+| swarm, colour | 0.0612 | 0.0157 | 0.0104 | 0.0078 | 0.0057 | 0.0033 | 0.0018 | 8.9x |
+| swarm, medium | 0.0776 | 0.0319 | 0.0262 | 0.0226 | 0.0203 | 0.0169 | 0.0178 | 1.8x |
+| swarm, duplicates | 67.5 | 21.1 | 11.9 | 7.4 | 3.4 | 0.8 | 0.15 | |
+| close panels b2, colour | 0.0304 | 0.0168 | 0.0155 | 0.0124 | 0.0103 | 0.0066 | 0.0056 | 3.0x |
+| close panels b2, medium | 0.0856 | 0.0365 | 0.0295 | 0.0275 | 0.0229 | 0.0204 | 0.0225 | 1.6x |
+| hidden backlight, medium | 0.1410 | 0.0869 | 0.0775 | 0.0719 | 0.0665 | 0.0583 | 0.0557 | 1.6x |
+| hidden backlight b2, medium | 0.1594 | 0.1336 | 0.1188 | 0.1164 | 0.1126 | 0.1030 | 0.0997 | 1.3x |
+| beam, medium | 0.0808 | 0.0089 | 0.0145 | 0.0126 | 0.0101 | 0.0150 | 0.0022 | (noise) |
+
+Light re-selection accepts 17% on the swarm. The beam lights only 390 medium pixels, so its CIs (m1: -0.004..0.024)
+are wider than the effect: one mutation already takes it to noise level, and it is left out of the OptiX stage.
+
+**Through OptiX, M cap 200, against a path-traced reference** (2048 x 16 spp; relMSE in the medium, clipped at its
+brightest 0.5%, mean over the two kept frames, so rough):
+
+| scene | no reuse | 0 | 1 | 3 | 10 | one vs ten |
+|---|---|---|---|---|---|---|
+| large close panels, 2 bounces | 0.023 | 0.127 | 0.062 | 0.048 | 0.034 | +82% |
+| hidden backlight, 2 bounces | 0.079 | 0.196 | 0.094 | 0.084 | 0.071 | +32% |
+| 192 coloured lights, dense | 0.345 | 0.225 | 0.086 | 0.072 | 0.067 | +29% |
+| hidden backlight | 0.027 | 0.101 | 0.040 | 0.041 | 0.031 | +28% |
+
+One mutation is 28-82% worse than ten after the denoiser on all four, and the strip shows why: plain ReSTIR's blotches
+become wormy streaks after one mutation (close panels) or colour streaks (swarm) and fade with the count. On the close
+panels and the hidden backlight even ten mutations stay above no reuse at all: at a 200-frame history these artifacts
+outlast ten steps. At the shipped cap the effect is small: rho(8) 0.004-0.10 without mutations, five mutations cut it
+3-14% except the swarm's colour (-48%; one mutation takes 37% of that) and the beam (-44%, noisy). So the count matters
+with a long history and a hard-to-change choice, which is where the long history is wanted for its low noise.
