@@ -120,5 +120,75 @@ def figure(root, maps, ref_y, med):
     fig.savefig(os.path.join(root, "figs", "swarm_chat_maps.png"), dpi=110, facecolor="#fcfcfb")
     plt.close(fig)
 
+DENOISED_COLS = (("plain ReSTIR", "chatz_c200_m0", "c200_m0"), ("10 mutations", "chatz_c200_m10", "c200_m10"),
+                 ("decoupled history", "chatz_dec200_m0", "dec200_m0"))
+
+
+def denoised_figure(root):
+    """The same three configurations raw, through OptiX and through DLSS Ray Reconstruction, each denoiser's brightness
+    error against the reference beneath it (blur, then log ratio, as figure()), and the reference; relMSE in the medium
+    (equal_time_table.py's) under each denoised crop."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import artifacts as art
+    import equal_time_table as et
+    y0, y1, x0, x1 = 120, 330, 300, 680
+    med = np.load(os.path.join(root, LABEL, "noreuse", "c.medium.npy"))
+    ref = art.reference(root, LABEL)  # RGB
+    ref_y = ref @ LUM[::-1]
+    g = lambda a: cv2.GaussianBlur(np.where(med, a, 0.0), (0, 0), 1.5) / np.maximum(cv2.GaussianBlur(med.astype(float), (0, 0), 1.5), 1e-3)  # noqa: E731
+    gr = g(ref_y)
+    ok = med & (gr > 0)
+    err = lambda img: np.where(ok, np.log(np.maximum(g(img @ LUM[::-1]), 1e-9) / np.where(ok, gr, 1)), np.nan)  # noqa: E731
+    k = np.percentile(ref[y0:y1, x0:x1], 99.5)
+    tone_ = lambda img: np.clip(img[y0:y1, x0:x1] / k, 0, 1) ** (1 / 2.2)  # noqa: E731
+    rows = [("raw frame", None), ("OptiX", "den_optix"), ("OptiX error", "den_optix"), ("Ray Reconstruction", "den_rr"),
+            ("RR error", "den_rr"), ("RR error, mean matched", "den_rr")]
+    fig, axes = plt.subplots(len(rows), len(DENOISED_COLS) + 1, figsize=(4.4 * (len(DENOISED_COLS) + 1), 2.6 * len(rows)),
+                             facecolor="#fcfcfb", squeeze=False)
+    for c_, (name, raw_cfg, tail) in enumerate(DENOISED_COLS + (("reference", None, None),)):
+        for r_, (rname, den) in enumerate(rows):
+            ax = axes[r_][c_]
+            ax.set_xticks([]); ax.set_yticks([])
+            if r_ == 0:
+                ax.set_title(name, fontsize=12)
+            if c_ == 0:
+                ax.set_ylabel(rname, fontsize=10, color="#52514e")
+            if raw_cfg is None:  # the reference column
+                if "error" not in rname:
+                    ax.imshow(tone_(ref), interpolation="nearest")
+                else:
+                    ax.axis("off")
+                continue
+            if den is None:
+                fs = frames(os.path.join(root, LABEL, raw_cfg))
+                img = fs[0][0][..., ::-1] if fs else None
+                rel = None
+            else:
+                cfg = "%s_%s" % (den, tail)  # e.g. den_rr_c200_m10, den_optix_dec200_m0
+                d = os.path.join(root, LABEL, cfg)
+                if not os.path.exists(os.path.join(d, "c.corr.json")):
+                    ax.text(0.5, 0.5, "running", ha="center", va="center", transform=ax.transAxes, color="#52514e")
+                    continue
+                img = (art.kept_all(d) or [None])[0]
+                rel = (et.scores(root, LABEL, ("%s_c200_noreuse" % den, "%s_c200_m0" % den, cfg)) or {}).get(cfg)
+            if img is None:
+                continue
+            ratio = (img @ LUM[::-1])[med].mean() / ref_y[med].mean()  # the frame's mean brightness over the reference's
+            if "error" in rname:
+                e = err(img / ratio) if "matched" in rname else err(img)  # matched: RR's overall darkening divided out
+                ax.imshow(e[y0:y1, x0:x1], cmap="RdBu_r", vmin=-0.8, vmax=0.8, interpolation="nearest")
+            else:
+                ax.imshow(tone_(img), interpolation="nearest")
+                if rel is not None:
+                    ax.set_xlabel("relMSE in the medium %.3f · mean %.2fx the reference" % (rel[0], ratio), fontsize=9, color="#52514e")
+    fig.tight_layout()
+    fig.savefig(os.path.join(root, "figs", "swarm_denoised_maps.png"), dpi=100, facecolor="#fcfcfb")
+    plt.close(fig)
+
+
 if __name__ == "__main__":
     main(sys.argv[1])
+    denoised_figure(sys.argv[1])

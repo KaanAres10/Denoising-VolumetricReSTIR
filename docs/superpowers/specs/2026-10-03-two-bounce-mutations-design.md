@@ -586,7 +586,25 @@ identity, `run_chatz.sh`): split against the reference, 97-98% of the brightness
 medium) is in c_hat for every config, and that variance is 0.89 plain, 0.59 after 10 mutations (they act on c_hat only
 indirectly, through the samples later reuse weighs), 0.30 decoupled (mostly independent noise there). Map:
 `figs/swarm_chat_maps.png` -- the blotches left after 10 mutations sit exactly where c_hat's are. (An earlier reading of
-the light-sharing count as the cause was wrong.) (The close panels' raw duplicates that stay at ~41 per tile are pixels seeing the panels or the
+the light-sharing count as the cause was wrong.)
+
+**Through DLSS Ray Reconstruction** (`run_rr_swarm.sh`; `chat_maps.py` -> `figs/swarm_denoised_maps.png`, raw / OptiX / RR
+and their error maps). relMSE in the medium, and the kept frames' mean brightness in the medium over the reference's:
+
+| swarm, M cap 200 | OptiX relMSE | OptiX mean | RR relMSE | RR mean |
+|---|---|---|---|---|
+| no reuse | 0.331 | 0.75-0.82 | 0.254 | 0.70-0.71 |
+| plain ReSTIR | 0.216 | 0.95-0.96 | 0.201 | 0.69-0.72 |
+| 10 mutations | 0.050 | 0.96-0.98 | 0.156 | 0.77-1.00 |
+| decoupled history | 0.027 | 0.97 | 0.493 | 0.32-0.33 |
+| decoupled + 10 | 0.028 | | 0.481 | 0.33-0.34 |
+
+RR darkens every input here, and the decoupled history's by two thirds, with horizontal streaks; with its darkening
+divided out it still leaves large patches there, while 10 mutations give RR its most even result. OptiX keeps the mean
+within 3-5% for every reuse configuration. So RR's ranking is RR's own behaviour on this input, not the inputs' quality
+(the raw frames: lag-1 spatial autocorrelation 0.27 plain, 0.039 after 10 mutations, 0.004 decoupled, 0 no reuse). Not
+yet tested: whether RR's temporal accumulation rejects the decoupled input's frame-to-frame changes (a burst run), or a
+guide buffer disagrees with the shaded reservoir when the history is decoupled. (The close panels' raw duplicates that stay at ~41 per tile are pixels seeing the panels or the
 background; in medium tiles they fall 223 -> 1.4.) So at a long history the decoupled history, not more mutations, is
 the remedy, as V-B9/V-B10 found on Phase B's scenes. On the close
 panels and the hidden backlight even ten mutations stay above no reuse at all: at a 200-frame history these artifacts
