@@ -56,7 +56,7 @@ class TestFilmFigures(unittest.TestCase):
 
     def test_summaries_hold_four_shots_each_in_shot_order(self):
         labels = [l for l, _ in film_figures.SHOTS]
-        sets = film_figures.summary_sets({l: None for l in labels[4:]})  # only the second four rendered
+        sets = film_figures.summary_sets({l: None for l in labels[4:8]})  # only the second four rendered
         self.assertEqual([(name, [l for l, _ in shots]) for name, shots in sets], [("film_summary_2.png", labels[4:8])])
         sets = film_figures.summary_sets({labels[0]: None, labels[5]: None})
         self.assertEqual([(name, [l for l, _ in shots]) for name, shots in sets],
