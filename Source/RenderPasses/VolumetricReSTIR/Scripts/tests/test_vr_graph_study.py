@@ -153,6 +153,42 @@ class TestLoaders(StudyEnv):
         self.assertGreaterEqual(sum(1 for l in lights if l.position[2] < -14.0), 3)  # behind the ring
         self.assertEqual(sum(1 for l in lights if getattr(l, "openingAngle", 3.14) < 0.2), 2)  # the beams
 
+    def test_the_renderman_swatch_teapot_on_fire(self):
+        # The user's reference (2026-10-11): RenderMan's swatch teapot (hollow, on its stand, before the swatch's floor
+        # sweep; exported from Prman_Swatch.blend) with EmberGen's fire rising from it, the fire's light on the pot.
+        vr, m = fresh_vr()
+        info = vr.SCENES["teapotfire"]()
+        v = volume_call(m)
+        self.assertTrue(v["dataFile"].endswith("swatch\\embergen_fire_a_67"), v["dataFile"])
+        self.assertTrue(v["hasEmission"])
+        self.assertEqual(v["worldRotation"], (-90, 0, 0))  # the VDB is z-up, as Blender
+        p = info["params"]
+        self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"],
+                          p["mUseSurfaceScene"]), (True, True, False, True))
+        cam = m.scene.camera
+        self.assertEqual((cam.position, cam.focalLength), ((0.0, 39.5, 150.0), 100.0))  # the .blend's RenderManCam
+        path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+        self.assertTrue(path.endswith("teapot_fire.pyscene") and os.path.exists(path), path)
+        builder = Recorder()
+        env = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+               "Material": lambda n: types.SimpleNamespace(name=n), "PBRTDiffuseMaterial": lambda n: types.SimpleNamespace(name=n),
+               "float3": lambda *a: tuple(a), "float4": lambda *a: tuple(a)}
+        with open(path) as fh:
+            exec(fh.read(), env)
+        imported = [c[1][0] for c in builder.calls if c[0] == "importScene"]
+        self.assertTrue(imported and imported[0].endswith("teapot_swatch.obj") and os.path.exists(imported[0]), imported)
+        swapped = [c[1][0] for c in builder.calls if c[0] == "getMaterial"]
+        self.assertEqual(sorted(swapped), ["clear_glass_mat", "mesurament_mat"])  # the swatch's glass and card, replaced
+        self.assertEqual(sum(1 for c in builder.calls if c[0] == "replaceMaterial"), 2)
+        lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
+        flames = [l for l in lights if l.name.startswith("flame")]
+        self.assertGreaterEqual(len(flames), 4)
+        self.assertTrue(all(l.intensity[0] > l.intensity[2] for l in flames))  # warm
+        # inside the flames: above the pot's rim (21.8 cm) and over its opening
+        self.assertTrue(all(abs(l.position[0]) < 8 and 18 < l.position[1] < 40 and abs(l.position[2]) < 8 for l in flames))
+        fill, = [l for l in lights if not l.name.startswith("flame")]
+        self.assertGreater(fill.intensity[2], fill.intensity[0])  # the cool fill
+
     def test_loaders_return_the_graph_settings(self):
         for name in self.ALL:
             vr, _ = fresh_vr()

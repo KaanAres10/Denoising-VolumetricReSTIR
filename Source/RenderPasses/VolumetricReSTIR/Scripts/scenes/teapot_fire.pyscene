@@ -1,0 +1,32 @@
+# Film-style shot (user, 2026-10-11, a reference render from RenderMan's swatch scene): the swatch teapot -- hollow, on
+# its burner stand, before the swatch's floor sweep (exported from RenderMan_Swatch_Blender/Prman_Swatch.blend by
+# Blender: centimetres, y up) -- with EmberGen's fire rising from its opening (vr_graph.load_teapot_fire). The swatch
+# file's glass teapot and grey card become a dark red-brown cast-iron pot and a matte mauve sweep, as in the reference.
+# This renderer's surfaces take no light from a glowing volume, so six red-orange point lights inside the flames carry
+# the fire's light to the pot's rim and the sweep -- lights inside a medium, where the mutation count matters -- and a
+# cool fill from the front left, the reference's blue-grey lower left. The pot's rim tops out at y = 21.8 cm over
+# (0.2, -0.6) in x, z; the fire runs from y = 14.5 to 31.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\swatch\teapot_swatch.obj')
+
+metal = Material('TeapotMetal')
+metal.baseColor = float4(0.09, 0.045, 0.035, 1)  # dark red-brown cast iron
+metal.metallic = 0.5
+metal.roughness = 0.6
+sceneBuilder.replaceMaterial(sceneBuilder.getMaterial('clear_glass_mat'), metal)
+sweep = PBRTDiffuseMaterial('SweepGrey')
+sweep.baseColor = float4(0.45, 0.25, 0.34, 1)  # a mauve sweep: the fire's light turns it the reference's red-pink
+sceneBuilder.replaceMaterial(sceneBuilder.getMaterial('mesurament_mat'), sweep)
+
+FIRE = (1.0, 0.2, 0.1)  # the fire's red-orange light, which turns the mauve sweep red-pink
+for k, (x, y, z, i) in enumerate(((0.2, 23.5, -0.6, 1.0), (-1.5, 25.0, 0.8, 0.8), (1.8, 26.0, -1.5, 0.8),
+                                  (0.5, 27.0, 0.0, 0.6), (2.5, 30.0, -0.5, 0.4), (1.0, 33.0, 0.5, 0.3))):
+    light = PointLight('flame%d' % k)
+    light.intensity = float3(*(240000.0 * i * c for c in FIRE))
+    light.position = float3(x, y, z)
+    sceneBuilder.addLight(light)
+
+# a cool fill from the front left, low: the reference's blue-grey floor at its lower left
+light = PointLight('fill')
+light.intensity = float3(110000.0, 130000.0, 170000.0)
+light.position = float3(-120.0, 25.0, 120.0)
+sceneBuilder.addLight(light)

@@ -555,9 +555,37 @@ def load_dust_lights():
     """The studio look with green and amber point lights inside the dust, in its hole, behind it and grazing across
     it (scenes/dust_lights.pyscene), the studio dimmed so they read: a complex shot where the mutation count matters.
     The dust as in the studio look (the user preferred it to a thin greenish one); the green lights carry the colour."""
-    info = load_dust_studio(pyscene=SCENE_DIR + r"\dust_lights.pyscene", sky=0.35)
+    info = load_dust_studio(pyscene=SCENE_DIR + r"\dust_lights.pyscene", sky=0.08)  # dim: the green lights carry the shot
     info["params"] = dict(info["params"], mUseAnalyticLights=True)
     return info
+
+
+def load_teapot_fire():
+    """The user's RenderMan swatch reference (2026-10-11): the swatch teapot on its stand before the floor sweep
+    (scenes/teapot_fire.pyscene; centimetres) with EmberGen's fire (RenderMan_Swatch_Blender/VDB/embergen_fire_a_67.vdb,
+    its 'flames' grid renamed to density, converted to VolumetricReSTIRData/swatch) rising from the pot's opening and
+    leaning right, as in the reference: z-up like the .blend, so stood upright by -90 degrees about x (voxel (x, y, z)
+    to world T + s (x, z, -y)), 0.13 cm a voxel (16 cm tall), its base (voxel z -128.5) at y = 14.5 inside the pot,
+    its middle over the opening (0.2, -0.6). Flames, not smoke: dense (3x the grid), absorbing little, barely
+    scattering (a scattering fire catches the studio light and goes grey), glowing by temperature (0..1.27 in the grid,
+    x 2600, to about 3300 K: a white-yellow core, orange edges) at 100x. The camera is the .blend's RenderManCam (150
+    cm out, 39.5 cm up, 10 degrees down, 100 mm on a 23.01 mm frame; render it square)."""
+    m.loadScene(SCENE_DIR + r"\teapot_fire.pyscene")
+    s, base_y = 0.13, 14.5
+    m.scene.addGVDBVolume(sigma_a=float3(0.2, 0.2, 0.2), sigma_s=float3(0.002, 0.002, 0.002), g=env_float("VR_PHASE_G", 0.0),
+                          dataFile=DATA_DIR + r"\swatch\embergen_fire_a_67", numMips=4, densityScale=_density(3.0),
+                          hasVelocity=False, hasEmission=True, LeScale=100.0,
+                          temperatureCutoff=0.0, temperatureScale=2600.0,
+                          worldTranslation=float3(0.2 + 1.5 * s, base_y + 128.5 * s, -0.6 - 33.5 * s),
+                          worldRotation=float3(-90, 0, 0), worldScaling=s)
+    m.scene.setEnvMap(DATA_DIR + r"\authored\studio_softbox.exr")
+    m.scene.envMap.intensity = 0.15
+    _pin_camera((0.0, 39.5, 150.0), (0.0, 13.45, 2.28), (0.0, 1.0, 0.0))
+    m.scene.camera.focalLength = 100.0
+    m.scene.camera.frameHeight = 23.01
+    return {"scatterAlbedo": float3(0.01, 0.01, 0.01), "exposure": 0.0,
+            "params": {"mUseAnalyticLights": True, "mUseEnvironmentLights": True, "mUseEmissiveLights": False,
+                       "mUseSurfaceScene": True}}
 
 
 # The JangaFX EmberGen fire plume (FirePlumeVDB) is deliberately not here: the user excluded it from the
@@ -596,6 +624,8 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "stage": load_stage, "lanterns": load_lanterns, "fireworks": load_fireworks, "wdasdusk": load_wdas_dusk,
           # The dust shockwave (user, 2026-10-11): their reference look first.
           "duststudio": load_dust_studio, "dustlights": load_dust_lights,
+          # The RenderMan swatch teapot with EmberGen fire rising from it (user, 2026-10-11).
+          "teapotfire": load_teapot_fire,
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}

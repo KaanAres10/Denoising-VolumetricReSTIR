@@ -9,7 +9,7 @@
 # Many lights of two colours in and around a medium: which light a pixel's sample chose, and where along the ray, is
 # what reuse spreads and the mutations' light re-selection and depth moves change. Ring (frame 50, vr_graph.load_dust):
 # centred on the origin, base y = 0, outer radius ~13.3 m, the hole ~4.6 m, 5 m tall. Intensities: the version the
-# user chose, at three times its first strength.
+# user chose, at three times its first strength; the green lights three times more again.
 import math
 import random
 
@@ -21,7 +21,8 @@ rng = random.Random(27)
 
 def point(name, colour, intensity, pos):
     light = PointLight(name)
-    light.intensity = float3(*(intensity * c for c in colour))
+    gain = 3.0 if colour == GREEN else 1.0  # green three times its first strength: the user's "more green"
+    light.intensity = float3(*(intensity * gain * c for c in colour))
     light.position = float3(*pos)
     sceneBuilder.addLight(light)
     return light
