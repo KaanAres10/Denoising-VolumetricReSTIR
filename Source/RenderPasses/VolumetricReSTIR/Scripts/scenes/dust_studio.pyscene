@@ -1,0 +1,14 @@
+# The dust shockwave's studio floor (spec V-C7; the user's reference render, 2026-10-11): the ring stands on a slate
+# floor, and the key behind it throws the ring's shadow forward onto it -- the reference's darker lower backdrop is
+# that shadow, the lighter band at the top of its frame the floor behind the ring, still lit. A 1 km square at y = 0
+# (the ring's base, vr_graph.load_dust), far beyond the camera's view.
+FLOOR_ALBEDO = 0.008  # dark slate: the lit floor behind the ring as the reference's (41 of 255 displayed)
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+# Lambertian (PBRT's diffuse): no specular at all. Falcor's standard material keeps Schlick's Fresnel, which rises to 1
+# at grazing angles whatever its IoR -- seen edge-on, beyond the ring, it mirrored the low key behind the ring and the
+# floor glowed, where the reference's floor stays dark.
+floor = PBRTDiffuseMaterial('StudioFloor')
+floor.baseColor = float4(0.86 * FLOOR_ALBEDO, 0.93 * FLOOR_ALBEDO, FLOOR_ALBEDO, 1)
+node = sceneBuilder.addNode('Floor', Transform(scaling=float3(1000, 1, 1000), translation=float3(0, -0.02, 0)))
+sceneBuilder.addMeshInstance(node, sceneBuilder.addTriangleMesh(TriangleMesh.createQuad(), floor))

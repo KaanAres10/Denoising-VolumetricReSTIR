@@ -149,6 +149,181 @@ def smoke_puffs(voxel=None):
 BUILDERS = {"stagehaze": stage_haze, "groundmist": ground_mist, "smokepuffs": smoke_puffs}
 
 
+# The EmberGen dust shockwave, reshaped toward the user's reference render (2026-10-11: "keep frame 50's data, but
+# clear the dust carpet out of the hole and rebuild the density at billow scale: smooth it coarsely, then sharpen it
+# back into separate round puffs with fine fuzz on top"). The exported density is nearly binary -- active voxels sit at
+# its 0.1 cap -- so every surface is a hard edge (the popcorn look), and a 12-voxel carpet covers the hole's floor.
+
+def _column_radii(d):
+    """The z-up volume's column density (x, y) and each column's distance from its centre of mass."""
+    top = d.sum(2, dtype=np.float64)
+    w = top / max(top.sum(), 1e-12)
+    X, Y = np.meshgrid(np.arange(top.shape[0]), np.arange(top.shape[1]), indexing="ij")
+    return top, np.hypot(X - (w * X).sum(), Y - (w * Y).sum())
+
+
+def hole_radius(d, frac=0.1, step=1.0):
+    """Where the ring's wall starts: the first radius (from the ring's axis) at which the column density has risen
+    `frac` of the way from the carpet's level (the innermost tenth of the dust's radius) to the ring's peak."""
+    top, r = _column_radii(d)
+    edges = np.arange(0.0, r.max() + step, step)
+    idx = np.digitize(r.ravel(), edges) - 1
+    prof = np.bincount(idx, weights=top.ravel(), minlength=len(edges)) / np.maximum(np.bincount(idx, minlength=len(edges)), 1)
+    r_max = edges[np.nonzero(prof > 0)[0].max()]
+    carpet = prof[edges < 0.1 * r_max].mean()
+    rise = np.nonzero((prof > carpet + frac * (prof.max() - carpet)) & (edges > 0.1 * r_max))[0]
+    return float(edges[rise[0]]) if rise.size else 0.0
+
+
+def clear_hole(d, r_hole, width):
+    """The hole emptied: every column inside r_hole - width cleared, fading back in to the full dust at r_hole."""
+    _, r = _column_radii(d)
+    return (d * smoothstep(r_hole - width, r_hole, r)[..., None]).astype(np.float32)
+
+
+def billows(d, coarse, level=0.5, softness=0.1, fuzz=0.5, fine=1.0):
+    """The density rebuilt at billow scale (0..1): smoothed by `coarse` voxels (thin bridges and crumbs melt away,
+    lumps round off), plus `fuzz` times the frame's own detail finer than that (its smoothing by `fine` voxels less
+    the coarse one -- zero in the cores and in clear air, so it only roughens the edges), then sharpened back into
+    puffs by a soft step `softness` wide at `level`."""
+    n = d / max(float(d.max()), 1e-12)
+    g = ndimage.gaussian_filter(n, coarse)
+    s = g + fuzz * (ndimage.gaussian_filter(n, fine) - g) if fuzz else g
+    return smoothstep(level - softness, level + softness, s).astype(np.float32)
+
+
+def balls(shape, centres, radii):
+    """The union (0..1) of soft balls: 1 out to 0.6 of each radius, falling to 0 at it."""
+    out = np.zeros(shape, np.float32)
+    for c, rad in zip(centres, radii):
+        lo = [max(0, int(c[a] - rad - 1)) for a in range(3)]
+        hi = [min(shape[a], int(c[a] + rad + 2)) for a in range(3)]
+        ax = [np.arange(lo[a], hi[a], dtype=np.float32) - c[a] for a in range(3)]
+        dist = np.sqrt(ax[0][:, None, None] ** 2 + ax[1][None, :, None] ** 2 + ax[2][None, None, :] ** 2)
+        win = out[lo[0]:hi[0], lo[1]:hi[1], lo[2]:hi[2]]
+        np.maximum(win, 1 - smoothstep(0.6 * rad, rad, dist), out=win)
+    return out
+
+
+def puffs(d, scale, size=1.0, min_mass=0.2):
+    """Round puffs where the frame's dust is massed: one at each local maximum of its density smoothed by `scale`
+    voxels (above `min_mass`), a soft ball of radius size * scale * (0.6 + 0.8 * that smoothed density) -- more dust,
+    a bigger puff. Returns their union (0..1), the centres (voxel indices) and the radii."""
+    n = d / max(float(d.max()), 1e-12)
+    g = ndimage.gaussian_filter(n, scale)
+    centres = np.argwhere((g == ndimage.maximum_filter(g, size=int(2 * scale) + 1)) & (g > min_mass))
+    radii = np.array([size * scale * (0.6 + 0.8 * float(g[tuple(c)])) for c in centres])
+    return balls(n.shape, centres, radii), centres, radii
+
+
+def puffed(d, scale, size=2.0, mix=0.35, fuzz=0.6, level=0.5, softness=0.15, coarse=6.0, fine=1.0,
+           detail_scale=None, detail_size=1.5):
+    """The frame rebuilt as puffs (0..1): puffs() at `scale`; with `detail_scale`, cauliflower -- smaller puffs at that
+    scale wherever one's centre lies on a big puff's shell (its value there 0.15-0.85), none in the gaps; blended with
+    `mix` of the frame's own density smoothed by `coarse` voxels (so the puffs keep the dust's shape, not perfect
+    spheres); fuzzed by `fuzz` times its detail finer than that, only where there is a puff (no crumbs in the gaps);
+    then a soft step `softness` wide at `level`."""
+    n = d / max(float(d.max()), 1e-12)
+    p, centres, _ = puffs(d, scale, size)
+    if detail_scale:
+        _, sc, sr = puffs(d, detail_scale, detail_size)
+        on_shell = np.array([0.15 <= p[tuple(c)] <= 0.85 for c in sc], bool) if len(sc) else np.zeros(0, bool)
+        p = np.maximum(p, balls(p.shape, sc[on_shell], sr[on_shell]))
+    g = ndimage.gaussian_filter(n, coarse)
+    s = (1 - mix) * p + mix * g
+    if fuzz:
+        s = s + fuzz * (ndimage.gaussian_filter(n, fine) - g) * smoothstep(0.05, 0.3, p)
+    return smoothstep(level - softness, level + softness, s).astype(np.float32), len(centres)
+
+
+def fur(d, depth=3.0, reach=4.0, strand=1.5, seed=0, soft=0.08, thin=0.6):
+    """The frame's surfaces made fluffy (0..1), its shape kept: the exported dust is binary (every active voxel at the
+    0.1 cap), so each billow is a hard wall that light cannot enter. Measured by the signed distance to that wall,
+    voxels deeper than `depth` stay solid; across the shell from `depth` inside to `reach` outside, fine noise
+    (strands about `strand` voxels thick) decides which are dust -- all at the inner edge, about half at the surface,
+    none at the reach -- and the strands thin toward their tips (`thin`), so the fringe is translucent."""
+    solid = d > 0.5 * float(d.max())
+    s = (ndimage.distance_transform_edt(solid) - ndimage.distance_transform_edt(~solid)).astype(np.float32)
+    t = np.clip((depth - s) / (depth + reach), 0.0, 1.0)  # 0 at `depth` inside, 1 at `reach` outside
+    noise = fbm(d.shape, cell=2.0 * strand, octaves=2, seed=seed)
+    # the noise's own distribution mapped to uniform, so a threshold t keeps a fraction 1 - t of the voxels
+    sample = noise.ravel()[np.random.default_rng(seed).integers(0, noise.size, 200000)]
+    q = np.percentile(sample, np.linspace(0, 100, 201))
+    u = np.interp(noise, q, np.linspace(0.0, 1.0, 201)).astype(np.float32)
+    keep = smoothstep(t * (1 + 2 * soft) - 2 * soft, t * (1 + 2 * soft), u)
+    return (keep * (1 - thin * t)).astype(np.float32)
+
+
+DUST_SOURCE = REPO / "DustShockwaveVDB" / "DustShockwave" / "DustShockwaveVDB"
+DUST_OUT = REPO / "VolumetricReSTIRData" / "dustShockwave"
+RESHAPE = {"coarse": 6.0, "level": 0.5, "softness": 0.15, "fuzz": 0.6, "fine": 1.0, "hole_width": 25.0}
+
+
+def dust_reshaped(frame=50, work=None, **kw):
+    """Frame `frame` of the EmberGen dust shockwave read back from its .vdb (VdbToRaw.exe), its hole cleared and its
+    density rebuilt by billows(); returns the 0..1 density (x, y, z: z up, as the data)."""
+    p = dict(RESHAPE, **kw)
+    raw = Path(work) / ("dust%04d.raw" % frame)
+    out = run([RELEASE / "VdbToRaw.exe", DUST_SOURCE / ("dustshockwave_%04d.vdb" % frame), "density", raw], cwd=RELEASE).split()
+    dims = tuple(int(v) for v in out[5:8])
+    d = np.fromfile(str(raw), dtype=np.float32).reshape(dims)
+    r_hole = hole_radius(d)
+    d = clear_hole(d, r_hole, p["hole_width"])
+    print("  frame %d: %s voxels, hole radius %.0f" % (frame, "x".join(map(str, dims)), r_hole))
+    return billows(d, p["coarse"], p["level"], p["softness"], p["fuzz"], p["fine"])
+
+
+def latlong_dir(u, v):
+    """The world direction of lat-long texture coordinates in Falcor's convention (world_to_latlong_map:
+    u = atan2(x, -z) / 2pi + 0.5, v = acos(y) / pi), so u = 0.5 looks down -z and v = 0 straight up."""
+    phi, theta = (np.asarray(u, float) - 0.5) * 2 * np.pi, np.asarray(v, float) * np.pi
+    return np.stack(np.broadcast_arrays(np.sin(theta) * np.sin(phi), np.cos(theta), -np.sin(theta) * np.cos(phi)), axis=-1)
+
+
+# The dust shockwave's studio, matched to the user's reference render (2026-10-11; outputs/decorr/match_reference.py,
+# swept over key directions, heights, fills and ambients, the version the user chose): a soft box low behind the ring,
+# a little to the left (18 degrees up, 20 degrees off straight behind) -- its tops lit, its near faces in shadow, its
+# long shadow across the studio floor before it (scenes/dust_studio.pyscene) -- a weak fill behind the camera and a
+# soft ambient sky that keeps that shadow from going black. Light from 99 degrees in the picture (the reference: 103),
+# shading 102 (104), contrast and colour ratio as the reference's. The camera looks down -z.
+def studio_dir(az_deg, el_deg):
+    """A direction from the scene: `az_deg` around from straight behind the ring (-z) toward the camera's left (-x),
+    `el_deg` up."""
+    a, e = np.radians(az_deg), np.radians(el_deg)
+    return (-np.sin(a) * np.cos(e), np.sin(e), -np.cos(a) * np.cos(e))
+
+
+STUDIO_KEY = studio_dir(20, 18)
+STUDIO_FILL = None  # the key's other side, behind the camera
+
+
+def studio_sky(key=STUDIO_KEY, width=1024, key_radiance=320.0, key_radius=5.0, fill_radiance=0.5,
+               backdrop=(0.0025, 0.006), fill=STUDIO_FILL, ambient=0.15):
+    """A photo studio as an environment map (RGB, rows from the zenith): a slate cyclorama whose brightness runs from
+    backdrop[0] (the floor, 33 degrees down and below) to backdrop[1] (7 degrees down and up) -- the camera, 20
+    degrees down with a 70 mm lens, sees that range -- one large soft box toward `key` (soft-edged, `key_radius`
+    degrees, a little brighter at its centre) and a fill toward `fill` (None: the key's other side, behind the
+    camera), both out of shot; `ambient`: a uniform sky over the upper hemisphere (the soft light a studio's walls and
+    ceiling give, which keeps a cast shadow from going black)."""
+    h = width // 2
+    d = latlong_dir(((np.arange(width) + 0.5) / width)[None, :], ((np.arange(h) + 0.5) / h)[:, None])
+    k = np.asarray(key, float) / np.linalg.norm(key)
+    c = d @ k
+    r = np.radians(key_radius)
+    box = smoothstep(np.cos(1.4 * r), np.cos(0.7 * r), c) + 0.05 * smoothstep(np.cos(0.7 * r), 1.0, c)
+    # the fill: by default the key's other side, behind the camera too (out of shot)
+    f = np.array([-k[0], 0.3, abs(k[2])]) if fill is None else np.asarray(fill, float)
+    fill = smoothstep(np.cos(np.radians(40)), np.cos(np.radians(20)), d @ (f / np.linalg.norm(f)))
+    base = backdrop[0] + (backdrop[1] - backdrop[0]) * smoothstep(-0.55, -0.12, d[..., 1])
+    sky = base[..., None] * np.array([0.78, 0.88, 1.0]) + (key_radiance * box)[..., None] * np.array([1.0, 0.98, 0.95]) \
+        + (fill_radiance * fill)[..., None] * np.array([0.9, 0.95, 1.0]) \
+        + (ambient * smoothstep(-0.05, 0.1, d[..., 1]))[..., None] * np.array([0.9, 0.95, 1.0])
+    return sky.astype(np.float32)
+
+
+SKIES = {"studio_softbox": studio_sky}
+
+
 def write_raw(d, path):
     """C order, x slowest: VolFromRaw reads data[(i * ny + j) * nz + k] as voxel (i, j, k)."""
     np.ascontiguousarray(d, dtype=np.float32).tofile(str(path))
@@ -161,9 +336,10 @@ def run(cmd, cwd):
     return r.stdout
 
 
-def convert(name, d, work):
-    """density -> VolumetricReSTIRData/authored/<name>/ (.vbx mips)."""
-    voxel = vb.BOXES[name][2]
+def convert(name, d, work, voxel=None, out_dir=None):
+    """density -> <out_dir, default VolumetricReSTIRData/authored>/<name>/ (.vbx mips); voxel size from volume_boxes."""
+    voxel = voxel or vb.BOXES[name][2]
+    out_dir = Path(out_dir) if out_dir else OUT_DIR
     raw, vdb = Path(work) / (name + ".raw"), Path(work) / (name + ".vdb")
     write_raw(d, raw)
     print(run([RELEASE / "VolFromRaw.exe", raw, *d.shape, voxel, vdb], cwd=RELEASE).strip())
@@ -171,19 +347,41 @@ def convert(name, d, work):
     if staged.exists():
         shutil.rmtree(staged)
     run([GIMPORT_DIR / "gImportVDB.exe", vdb, NUM_MIPS], cwd=GIMPORT_DIR)
-    dest = OUT_DIR / name
+    dest = out_dir / name
     if dest.exists():
         shutil.rmtree(dest)
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     shutil.move(str(staged), str(dest))
     if not vp.vbx_complete(dest, name, NUM_MIPS):
         raise SystemExit("FAILED: %s is missing .vbx files after import" % dest)
     return dest
 
 
+def write_sky(name):
+    """VolumetricReSTIRData/authored/<name>.exr (OpenEXR, float)."""
+    import os
+    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+    import cv2
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUT_DIR / (name + ".exr")
+    if not cv2.imwrite(str(path), SKIES[name]()[..., ::-1].copy()):  # OpenCV writes BGR
+        raise SystemExit("FAILED: could not write %s" % path)
+    return path
+
+
 def main(argv):
-    names = argv[1:] or list(BUILDERS)
+    names = argv[1:] or list(BUILDERS) + list(SKIES)
     for name in names:
+        if name in SKIES:
+            print("%s -> %s" % (name, write_sky(name)))
+            continue
+        if name.startswith("dust") and name.endswith("r"):  # dust0050r: frame 50 of the shockwave, reshaped
+            t0 = time.time()
+            with tempfile.TemporaryDirectory() as work:
+                d = dust_reshaped(int(name[4:-1]), work)
+                print("%s: mean %.3f, %.0f%% above 0.01 (%.0fs)" % (name, d.mean(), 100 * (d > 0.01).mean(), time.time() - t0))
+                print("  ->", convert("dustshockwave_%sr" % name[4:-1], d, work, voxel=1.0, out_dir=DUST_OUT))
+            continue
         t0 = time.time()
         d = BUILDERS[name]()
         print("%s: %s voxels, mean %.3f, %.0f%% above 0.01 (%.0fs)" % (name, "x".join(map(str, d.shape)), d.mean(),

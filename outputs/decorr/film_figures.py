@@ -76,6 +76,13 @@ def noise_floor(relmse, half):
     return relmse(half)
 
 
+def error_mask(med, ref_y):
+    """Where the error maps and the crop look: the medium (the no-reuse run's pixels whose sample scattered in it),
+    or, where that covers under 1% of the frame, the reference's lit pixels -- in thin haze over a floor (the stage)
+    most samples reach the surface first, so no pixel counts as medium though the beams fill the shot."""
+    return med if med.mean() >= 0.01 else ref_y > 0.02 * np.percentile(ref_y, 99.5)
+
+
 def score_label(rels, ratio):
     return "relMSE %.3f (%.3f-%.3f) · mean %.2fx" % (np.mean(rels), min(rels), max(rels), ratio)
 
@@ -90,8 +97,8 @@ def scene_figure(root, label, name, out):
     floor = noise_floor(p.relmse, art.reference(root, label, override=half)[p.crop]) if half else None
     ref = art.reference(root, label)
     ref_y = ref @ LUM
-    med = np.load(os.path.join(d0, "noreuse", "c.medium.npy")) if os.path.exists(os.path.join(d0, "noreuse", "c.medium.npy")) \
-        else ref_y > 0.02 * np.percentile(ref_y, 99.5)
+    mp = os.path.join(d0, "noreuse", "c.medium.npy")
+    med = error_mask(np.load(mp) if os.path.exists(mp) else np.zeros(ref_y.shape, bool), ref_y)
     g = lambda a: cv2.GaussianBlur(np.where(med, a, 0.0), (0, 0), 1.5) / np.maximum(cv2.GaussianBlur(med.astype(float), (0, 0), 1.5), 1e-3)  # noqa: E731
     gr = g(ref_y)
     ok = med & (gr > 0)

@@ -500,8 +500,68 @@ def load_wdas_dusk():
     return info
 
 
-# The JangaFX EmberGen datasets (FirePlumeVDB, DustShockwaveVDB) are deliberately not here: the user
-# excluded them from the decorrelation study. run_volume_dataset.py still plays them back.
+# The JangaFX EmberGen dust shockwave (CC0; the user asked for it on 2026-10-11, after excluding both EmberGen datasets
+# on 2026-09-27): one held frame. The data is z-up, so it is laid flat by -90 degrees about x, which maps voxel
+# (x, y, z) to world T + s (x, z, -y). Per frame (voxels, from the .vbx bounds): ring centre (x, y), base z, mips,
+# half the ring's width.
+DUST_FRAMES = {"0020": (3.5, 0.5, -95.5, 4, 274.0), "0025": (2.0, 3.0, -95.5, 4, 290.5),
+               "0030": (3.0, 5.0, -95.5, 4, 304.5), "0040": (-0.5, 8.0, -95.5, 4, 337.0), "0050": (0.5, 9.0, -95.5, 4, 370.0),
+               "0060": (1.0, 12.5, -95.5, 4, 400.5), "0072": (-2.5, 18.0, -95.5, 4, 434.0),
+               "0091": (-3.0, 22.5, -95.5, 4, 474.5), "0110": (-6.5, 22.5, -95.5, 4, 504.0),
+               # from frame 120 on a frame's full-resolution brick atlas (frame 154: 160 x 160 x 4460) does not fit two
+               # 2048-deep Texture3D parts; 154h is frame 154 at half resolution (its mips 1-3 as 0-2)
+               "0154h": (-12.5, 27.0, -94.5, 3, 562.0)}
+DUST_SCALE = 0.036  # metres per voxel: frame 50's ring is 27 m across and 5 m tall
+
+
+DUST_ALBEDO = (0.95, 0.51, 0.285)  # salmon, matched to the user's reference
+
+
+def load_dust(pyscene=None, frame="0050", density=0.3, albedo=DUST_ALBEDO):
+    """The dust ring, centred on the origin with its base on y = 0, with the given single-scattering albedo over the
+    scalar extinction SceneGVDB derives (sigma_t = sigma_s.x + sigma_a.x = 20 per unit density)."""
+    m.loadScene(pyscene or DATA_DIR + r"\default.obj")
+    cx, cy, base, mips, half = DUST_FRAMES[frame]
+    s = DUST_SCALE
+    sigma_s = [20.0 * a for a in albedo]
+    m.scene.addGVDBVolume(sigma_a=float3(20.0 - sigma_s[0], 1.0, 1.0), sigma_s=float3(*sigma_s), g=env_float("VR_PHASE_G", 0.0),
+                          dataFile=DATA_DIR + r"\dustShockwave\dustshockwave_" + frame, numMips=mips,
+                          densityScale=_density(density), hasVelocity=False, hasEmission=False, LeScale=1.0,
+                          worldTranslation=float3(-cx * s, -base * s, cy * s), worldRotation=float3(-90, 0, 0),
+                          worldScaling=s)
+    # 20 degrees above the ring with a long (70 mm) lens, as in the user's reference, far enough back that the ring
+    # spans 85% of the frame's width (2 half s = 0.85 * 2 dist * 21.33 / 70), aimed 2.5 m below the ring's base so the
+    # ring sits in the frame's upper half with the floor and its shadow before it
+    dist = 3.85 * half * s
+    _pin_camera((0.0, 1.0 + 0.342 * dist, 0.940 * dist), (0.0, -1.5, 0.0), (0.0, 1.0, 0.0))
+    m.scene.camera.focalLength = 70.0
+    return {"scatterAlbedo": float3(*albedo), "exposure": 0.0, "params": {}}
+
+
+def load_dust_studio(pyscene=SCENE_DIR + r"\dust_studio.pyscene", sky=1.0, density=0.3, albedo=DUST_ALBEDO):
+    """The user's reference look (2026-10-11), matched by measurement: frame 50 of the dust shockwave on a matte slate
+    floor (scenes/dust_studio.pyscene) in a studio lit by a soft box low behind the ring and a soft ambient sky
+    (authored/studio_softbox.exr, make_volumes.py), the studio at `sky` times its brightness. Run with g = 0.3 and two
+    bounces (label duststudio_g0.3_b2)."""
+    info = load_dust(pyscene=pyscene, density=density, albedo=albedo)
+    m.scene.setEnvMap(DATA_DIR + r"\authored\studio_softbox.exr")
+    m.scene.envMap.intensity = sky
+    info["params"] = {"mUseEnvironmentLights": True, "mUseAnalyticLights": False, "mUseEmissiveLights": False,
+                      "mUseSurfaceScene": True}  # the floor that catches the ring's shadow
+    return info
+
+
+def load_dust_lights():
+    """The studio look with green and amber point lights inside the dust, in its hole, behind it and grazing across
+    it (scenes/dust_lights.pyscene), the studio dimmed so they read: a complex shot where the mutation count matters.
+    The dust as in the studio look (the user preferred it to a thin greenish one); the green lights carry the colour."""
+    info = load_dust_studio(pyscene=SCENE_DIR + r"\dust_lights.pyscene", sky=0.35)
+    info["params"] = dict(info["params"], mUseAnalyticLights=True)
+    return info
+
+
+# The JangaFX EmberGen fire plume (FirePlumeVDB) is deliberately not here: the user excluded it from the
+# decorrelation study. run_volume_dataset.py still plays it back.
 SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion, "explosiondusk": load_explosion_dusk,
           "emerald": load_emerald, "bunny": load_bunny, "wdas": load_wdas,
           # Stress scenes (spec V-B9), point lights only; names without "_" (run_study.sh's label suffixes).
@@ -534,6 +594,8 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "emeraldneon": load_emerald_neon,
           # Backdrop and palette (user, 2026-10-11): a concert stage, sky lanterns, fireworks over a city, a storm at dusk.
           "stage": load_stage, "lanterns": load_lanterns, "fireworks": load_fireworks, "wdasdusk": load_wdas_dusk,
+          # The dust shockwave (user, 2026-10-11): their reference look first.
+          "duststudio": load_dust_studio, "dustlights": load_dust_lights,
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}

@@ -62,6 +62,15 @@ class TestFilmFigures(unittest.TestCase):
         self.assertEqual([(name, [l for l, _ in shots]) for name, shots in sets],
                          [("film_summary.png", labels[:1]), ("film_summary_2.png", labels[5:6])])
 
+    def test_error_mask_falls_back_to_the_lit_pixels_in_thin_haze(self):
+        ref_y = np.zeros((100, 100))
+        ref_y[40:60, 40:60] = 1.0  # a lit beam
+        empty = np.zeros_like(ref_y, bool)  # thin haze over a floor: no pixel's sample scattered in the medium
+        self.assertTrue(np.array_equal(film_figures.error_mask(empty, ref_y), ref_y > 0.5))
+        med = np.zeros_like(ref_y, bool)
+        med[10:30, 10:30] = True  # 4% of the frame: the medium mask stands
+        self.assertTrue(np.array_equal(film_figures.error_mask(med, ref_y), med))
+
     def test_chain_label_gives_the_mean_and_the_range(self):
         self.assertEqual(film_figures.score_label([0.0223, 0.0182], 1.024), "relMSE 0.020 (0.018-0.022) · mean 1.02x")
 

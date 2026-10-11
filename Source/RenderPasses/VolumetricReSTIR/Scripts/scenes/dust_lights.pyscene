@@ -1,0 +1,42 @@
+# Film-style shot (spec V-C7; user, 2026-10-11: "add green light, have transmission, put lights in different places,
+# make the scene complex so that mutation can be used"; then "make the light at the centre, as you did"): the dust
+# shockwave in its studio (dust_studio.pyscene: the floor; the dust as in the studio look), lit besides the studio's
+# dimmed key by green and amber point lights:
+#   two bright green ones low in the hole -- the green glow at the centre, on the ring's inner walls;
+#   twenty inside the ring's body, alternating green and amber;
+#   three behind the ring, low, shining through and around its far wall;
+#   two narrow green spots on the floor left and right, grazing across the ring.
+# Many lights of two colours in and around a medium: which light a pixel's sample chose, and where along the ray, is
+# what reuse spreads and the mutations' light re-selection and depth moves change. Ring (frame 50, vr_graph.load_dust):
+# centred on the origin, base y = 0, outer radius ~13.3 m, the hole ~4.6 m, 5 m tall. Intensities: the version the
+# user chose, at three times its first strength.
+import math
+import random
+
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\dust_studio.pyscene').read())
+
+GREEN, AMBER = (0.25, 1.0, 0.35), (1.0, 0.55, 0.15)
+rng = random.Random(27)
+
+
+def point(name, colour, intensity, pos):
+    light = PointLight(name)
+    light.intensity = float3(*(intensity * c for c in colour))
+    light.position = float3(*pos)
+    sceneBuilder.addLight(light)
+    return light
+
+
+for k in range(20):  # inside the ring's body
+    a = 2 * math.pi * (k + rng.uniform(-0.3, 0.3)) / 20
+    r = rng.uniform(6.5, 11.5)
+    point('inside%d' % k, GREEN if k % 2 == 0 else AMBER, rng.uniform(90, 270), (r * math.cos(a), rng.uniform(0.8, 3.0), r * math.sin(a)))
+for k in range(2):  # low in the hole: the green glow at the centre
+    point('hole%d' % k, GREEN, 450, (rng.uniform(-1.5, 1.5), 0.5, rng.uniform(-1.5, 1.5)))
+for k, x in enumerate((-6.0, 0.0, 6.0)):  # behind the ring, through its far wall
+    point('behind%d' % k, GREEN if k == 1 else AMBER, 1200, (x, 1.0, -16.0))
+for k, side in enumerate((-1.0, 1.0)):  # two green beams grazing across the ring
+    light = point('beam%d' % k, GREEN, 9000, (side * 22.0, 0.6, 4.0))
+    light.direction = float3(-side * 22.0, 1.6, -6.0)
+    light.openingAngle = 0.06
+    light.penumbraAngle = 0.02

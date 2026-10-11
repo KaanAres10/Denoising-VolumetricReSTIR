@@ -62,6 +62,121 @@ class TestFields(unittest.TestCase):
         self.assertTrue(0.0 <= d.min() and d.max() <= 1.0)
 
 
+class TestStudioSky(unittest.TestCase):
+    def test_latlong_round_trip_in_falcors_convention(self):
+        # Falcor's world_to_latlong_map: u = atan2(x, -z) / 2pi + 0.5, v = acos(y) / pi (u = 0.5 looks down -z)
+        for d in ((0.0, 0.0, -1.0), (-0.6, 0.6, 0.5), (0.3, -0.8, 0.1)):
+            d = np.array(d) / np.linalg.norm(d)
+            u, v = np.arctan2(d[0], -d[2]) / (2 * np.pi) + 0.5, np.arccos(d[1]) / np.pi
+            self.assertTrue(np.allclose(mv.latlong_dir(u, v), d, atol=1e-9), d)
+
+    def test_the_soft_box_lands_on_its_direction(self):
+        key = np.array([-0.6, 0.6, 0.5])
+        sky = mv.studio_sky(key, width=512)
+        self.assertEqual(sky.shape, (256, 512, 3))
+        j, i = np.unravel_index(np.argmax(sky[..., 0]), sky.shape[:2])
+        d = mv.latlong_dir((i + 0.5) / 512, (j + 0.5) / 256)
+        self.assertGreater(float(d @ key / np.linalg.norm(key)), np.cos(np.radians(4)))
+
+    def test_ambient_lights_only_the_upper_hemisphere(self):
+        key = np.array([-0.6, 0.6, 0.5])
+        plain, lit = mv.studio_sky(key, width=512, ambient=0.0), mv.studio_sky(key, width=512, ambient=0.2)
+        self.assertTrue(np.allclose(lit[200:], plain[200:]))  # the floor directions: unchanged
+        self.assertAlmostEqual(float((lit[20:60] - plain[20:60]).mean()), 0.2 * np.mean([0.9, 0.95, 1.0]), places=3)
+
+    def test_the_studio_floor_is_darker_than_its_walls(self):
+        sky = mv.studio_sky(np.array([-0.6, 0.6, 0.5]), width=512)
+        self.assertLess(sky[200:, :, 0].mean(), sky[90:120, :, 0].mean())  # below the horizon vs just above
+        self.assertGreater(sky.min(), 0.0)
+
+
+def ring_with_carpet():
+    """A z-up dust ring like the EmberGen shockwave's: an annulus r 20-40 voxels, 16 tall, at the data's 0.1 cap,
+    and a 3-voxel carpet of dust on the floor of its hole."""
+    x, y, z = np.meshgrid(np.arange(100), np.arange(100), np.arange(24), indexing="ij")
+    r = np.hypot(x - 50.0, y - 50.0)
+    d = np.where((r >= 20) & (r <= 40) & (z < 16), 0.1, 0.0)
+    d = np.where((r < 20) & (z < 3), 0.09, d)
+    return d.astype(np.float32), r, z
+
+
+class TestReshapeDust(unittest.TestCase):
+    def test_the_hole_radius_is_where_the_ring_wall_rises(self):
+        d, _, _ = ring_with_carpet()
+        self.assertAlmostEqual(mv.hole_radius(d), 20.0, delta=3.0)
+
+    def test_clearing_the_hole_removes_the_carpet_and_keeps_the_ring(self):
+        d, r, z = ring_with_carpet()
+        c = mv.clear_hole(d, 20.0, width=4.0)
+        self.assertEqual(float(c[r < 15].max()), 0.0)
+        self.assertTrue(np.array_equal(c[r > 21], d[r > 21]))
+
+    def test_billows_break_a_thin_bridge_into_round_puffs(self):
+        # two balls joined by a thin bridge: at billow scale the bridge goes, the balls stay
+        x, y, z = np.meshgrid(np.arange(60), np.arange(30), np.arange(30), indexing="ij")
+        ball = lambda cx: (x - cx) ** 2 + (y - 15) ** 2 + (z - 15) ** 2 < 8 ** 2  # noqa: E731
+        bridge = (np.hypot(y - 15, z - 15) < 1.5) & (x > 18) & (x < 42)
+        d = np.where(ball(15) | ball(45) | bridge, 0.1, 0.0).astype(np.float32)
+        b = mv.billows(d, coarse=3.0, level=0.5, softness=0.1, fuzz=0.0)
+        self.assertTrue(0.0 <= b.min() and b.max() <= 1.0)
+        from scipy import ndimage
+        _, n = ndimage.label(b > 0.5)
+        self.assertEqual(n, 2)
+        self.assertGreater(b[15, 15, 15], 0.9)
+        self.assertLess(b[30, 15, 15], 0.1)  # the bridge's middle
+
+    def test_puffs_sit_where_the_dust_is_massed_and_stand_apart(self):
+        # two balls that touch, merged at the neck when smoothed: one round puff on each, a gap between them
+        x, y, z = np.meshgrid(np.arange(70), np.arange(40), np.arange(40), indexing="ij")
+        ball = lambda cx: (x - cx) ** 2 + (y - 20) ** 2 + (z - 20) ** 2 < 11 ** 2  # noqa: E731
+        d = np.where(ball(24) | ball(44), 0.1, 0.0).astype(np.float32)
+        from scipy import ndimage
+        self.assertEqual(ndimage.label(mv.billows(d, coarse=3.0, level=0.5, fuzz=0.0) > 0.5)[1], 1)
+        p, centres, _ = mv.puffs(d, scale=4.0, size=2.0)
+        self.assertTrue(0.0 <= p.min() and p.max() <= 1.0)
+        self.assertEqual(sorted(tuple(c) for c in centres), [(24, 20, 20), (44, 20, 20)])
+        self.assertEqual(ndimage.label(p > 0.5)[1], 2)
+        self.assertLess(p[34, 20, 20], 0.5)  # the gap where the neck was
+        self.assertEqual(float(p[np.sqrt((x - 34.0) ** 2 + (y - 20.0) ** 2 + (z - 20.0) ** 2) > 30].max()), 0.0)
+
+    def test_cauliflower_puffs_add_bumps_on_the_puffs_and_nothing_in_the_gaps(self):
+        x, y, z = np.meshgrid(np.arange(70), np.arange(40), np.arange(40), indexing="ij")
+        ball = lambda cx: (x - cx) ** 2 + (y - 20) ** 2 + (z - 20) ** 2 < 11 ** 2  # noqa: E731
+        rng = np.random.default_rng(2)
+        d = np.where(ball(24) | ball(44), 0.1, 0.0).astype(np.float32) * (rng.random((70, 40, 40)) > 0.3)
+        plain, _ = mv.puffed(d, scale=4.0, size=2.0, mix=0.0, fuzz=0.0)
+        cauli, _ = mv.puffed(d, scale=4.0, size=2.0, mix=0.0, fuzz=0.6, detail_scale=2.0, detail_size=1.5)
+        far = np.sqrt((x - 34.0) ** 2 + (y - 20.0) ** 2 + (z - 20.0) ** 2) > 30
+        self.assertEqual(float(cauli[far].max()), 0.0)  # no crumbs floating away from the puffs
+        self.assertLess(cauli[34, 20, 20], 0.5)  # the gap stays open
+        self.assertGreater(np.abs(cauli - plain).max(), 0.2)  # the surfaces changed
+
+    def test_fur_keeps_the_core_and_grows_a_thin_fringe(self):
+        # a hard ball (the exported dust is binary at its 0.1 cap): fur keeps its core solid, softens a shell inside its
+        # surface and grows partly filled strands out to `reach` voxels beyond it, nothing further
+        x, y, z = np.meshgrid(np.arange(60), np.arange(60), np.arange(60), indexing="ij")
+        rr = np.sqrt((x - 30.0) ** 2 + (y - 30.0) ** 2 + (z - 30.0) ** 2)
+        d = np.where(rr < 15, 0.1, 0.0).astype(np.float32)
+        f = mv.fur(d, depth=3.0, reach=4.0, strand=1.5, seed=3)
+        self.assertTrue(0.0 <= f.min() and f.max() <= 1.0)
+        self.assertGreater(f[rr < 10].min(), 0.99)  # the core
+        fringe = (rr > 15.5) & (rr < 18.5)
+        filled = (f[fringe] > 0.05).mean()
+        self.assertTrue(0.15 < filled < 0.75, filled)  # strands, not a solid shell
+        self.assertEqual(float(f[rr > 19.5].max()), 0.0)  # nothing beyond the reach
+        self.assertGreater(f[(rr > 12.5) & (rr < 14.5)].std(), 0.05)  # the shell under the surface is broken up too
+
+    def test_fuzz_moves_only_the_edges(self):
+        rng = np.random.default_rng(1)
+        x, y, z = np.meshgrid(np.arange(40), np.arange(40), np.arange(40), indexing="ij")
+        rr = np.sqrt((x - 20.0) ** 2 + (y - 20.0) ** 2 + (z - 20.0) ** 2)
+        d = np.where(rr + rng.normal(0, 1.5, rr.shape) < 12, 0.1, 0.0).astype(np.float32)
+        smooth, fuzzy = mv.billows(d, coarse=3.0, fuzz=0.0), mv.billows(d, coarse=3.0, fuzz=0.6)
+        changed = np.abs(fuzzy - smooth) > 0.05
+        self.assertTrue(changed.any())
+        self.assertFalse(changed[rr < 6].any() or changed[rr > 18].any())  # not the core, not far outside
+
+
 class TestRaw(unittest.TestCase):
     def test_raw_is_x_slowest(self):
         # VolFromRaw reads data[(i * ny + j) * nz + k] as voxel (i, j, k)

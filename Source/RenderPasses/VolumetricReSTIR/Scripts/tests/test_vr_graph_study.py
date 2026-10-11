@@ -82,10 +82,76 @@ class TestLoaders(StudyEnv):
         vr, _ = fresh_vr()
         self.assertTrue(set(self.ALL).issubset(vr.SCENES), sorted(vr.SCENES))
 
-    def test_embergen_datasets_are_not_used(self):
-        # The user excluded the JangaFX EmberGen datasets (FirePlumeVDB, DustShockwaveVDB) from the study.
+    def test_the_fire_plume_dataset_is_not_used(self):
+        # The user excluded the JangaFX EmberGen datasets from the study (2026-09-27), then asked for the dust
+        # shockwave by name for film shots (2026-10-11): the fire plume stays out.
         vr, _ = fresh_vr()
-        self.assertFalse({"fireplume", "dust"} & set(vr.SCENES), sorted(vr.SCENES))
+        self.assertNotIn("fireplume", vr.SCENES)
+        for name in vr.SCENES:
+            vr, m = fresh_vr()
+            vr.SCENES[name]()
+            self.assertNotIn("firePlume", str(volume_call(m).get("dataFile", "")), name)
+
+    def test_the_dust_shockwave_in_its_studio(self):
+        # The user's reference (2026-10-11): a salmon dust ring in a slate studio, its shadow on the floor. Frame 50 as
+        # EmberGen exported it, laid flat (the data is z-up), coloured scattering over a scalar extinction.
+        vr, m = fresh_vr()
+        info = vr.SCENES["duststudio"]()
+        v = volume_call(m)
+        self.assertTrue(v["dataFile"].endswith("dustShockwave\\dustshockwave_0050"), v["dataFile"])
+        self.assertAlmostEqual(v["densityScale"], 0.3)
+        self.assertEqual(v["worldRotation"], (-90, 0, 0))
+        self.assertAlmostEqual(v["sigma_s"][0] + v["sigma_a"][0], 20.0)  # SceneGVDB: sigma_t = sigma_s.x + sigma_a.x
+        self.assertGreater(v["sigma_s"][0], v["sigma_s"][2])  # warmer than grey
+        skies = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
+        self.assertEqual([os.path.basename(s) for s in skies], ["studio_softbox.exr"])
+        self.assertTrue(os.path.exists(skies[0]), skies[0])  # the full path, not just its name
+        p = info["params"]
+        self.assertEqual((p["mUseEnvironmentLights"], p["mUseAnalyticLights"], p["mUseEmissiveLights"]), (True, False, False))
+        self.assertFalse(m.scene.camera.animated)
+        # the reference's darker lower backdrop is the ring's shadow on a studio floor: a floor under the ring
+        self.assertTrue(p["mUseSurfaceScene"])
+        path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+        self.assertTrue(path.endswith("dust_studio.pyscene"), path)
+        _, meshes = TestStressScenes.run_pyscene(self, path)
+        self.assertEqual(len(meshes), 1)
+
+    def test_the_dust_shockwave_lit_by_coloured_lights(self):
+        # Where the mutation count should matter (user, 2026-10-11: "add green light, have transmission, put lights in
+        # different places, make the scene complex"): the studio look plus green and amber point lights inside the
+        # dust (their light comes out through it), in the hole, behind the ring, and two green beams across it.
+        hue = lambda c: tuple(round(v / max(c), 2) for v in c)  # noqa: E731
+        vr, m = fresh_vr()
+        info = vr.SCENES["dustlights"]()
+        v = volume_call(m)
+        self.assertTrue(v["dataFile"].endswith("dustshockwave_0050"))
+        # the studio's dust unchanged (the user preferred it to a thin greenish one): the green lights carry the colour
+        vs, ms = fresh_vr()
+        vs.SCENES["duststudio"]()
+        studio = volume_call(ms)
+        self.assertEqual((v["sigma_s"], v["sigma_a"], v["densityScale"]), (studio["sigma_s"], studio["sigma_a"], studio["densityScale"]))
+        skies = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
+        self.assertEqual([os.path.basename(s) for s in skies], ["studio_softbox.exr"])
+        self.assertLess(m.scene.envMap.intensity, 1.0)  # the studio key dimmed so the coloured lights read
+        p = info["params"]
+        self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"],
+                          p["mUseSurfaceScene"]), (True, True, False, True))
+        path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+        lights, meshes = TestStressScenes.run_pyscene(self, path)
+        self.assertEqual(len(meshes), 1)  # the studio floor
+        self.assertEqual(len(lights), 27)
+        hues = {hue(l.intensity) for l in lights}
+        self.assertEqual(len(hues), 2)
+        self.assertTrue(any(h[1] == 1.0 and h[0] < 0.5 for h in hues))  # green
+        r = [(l.position[0] ** 2 + l.position[2] ** 2) ** 0.5 for l in lights]
+        inside = [k for k, l in enumerate(lights) if 6.0 <= r[k] <= 12.0 and 0.5 <= l.position[1] <= 3.5]
+        self.assertGreaterEqual(len(inside), 20)  # in the ring's body
+        # the green glow at the centre (the user chose it): green lights low in the hole
+        hole = [k for k in range(len(lights)) if r[k] < 3.0]
+        self.assertGreaterEqual(len(hole), 2)
+        self.assertTrue(all(lights[k].intensity[1] > lights[k].intensity[0] and lights[k].position[1] < 1.0 for k in hole))
+        self.assertGreaterEqual(sum(1 for l in lights if l.position[2] < -14.0), 3)  # behind the ring
+        self.assertEqual(sum(1 for l in lights if getattr(l, "openingAngle", 3.14) < 0.2), 2)  # the beams
 
     def test_loaders_return_the_graph_settings(self):
         for name in self.ALL:
@@ -188,6 +254,7 @@ class TestStressScenes(StudyEnv):
         builder = Recorder()
         env = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
                "Material": lambda n: types.SimpleNamespace(name=n), "Transform": lambda **k: k,
+               "PBRTDiffuseMaterial": lambda n: types.SimpleNamespace(name=n),
                "TriangleMesh": types.SimpleNamespace(createCube=lambda *a, **k: "cube", createQuad=lambda *a, **k: "quad",
                                                      createSphere=lambda *a, **k: "sphere"),
                "float3": lambda *a: tuple(a), "float4": lambda *a: tuple(a)}
