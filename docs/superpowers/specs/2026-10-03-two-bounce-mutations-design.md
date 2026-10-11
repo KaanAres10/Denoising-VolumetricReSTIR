@@ -625,3 +625,41 @@ panels and the hidden backlight even ten mutations stay above no reuse at all: a
 outlast ten steps. At the shipped cap the effect is small: rho(8) 0.004-0.10 without mutations, five mutations cut it
 3-14% except the swarm's colour (-48%; one mutation takes 37% of that) and the beam (-44%, noisy). So the count matters
 with a long history and a hard-to-change choice, which is where the long history is wanted for its low noise.
+
+**Real-world shots** (user: "a scene representative of movies or real life where mutation, or multiple mutations,
+matters; run OptiX and RR on it; multiple different scenes"; d0a1145, `run_film.sh`, `film_figures.py` ->
+`figs/film_<label>.png`, `figs/film_summary.png`): a concert lighting rig in stage haze (**plumerig_g0.6**, 46 coloured
+fixtures), an LED video wall behind thin haze (**plumewall_g0.6_d0.3**, 32 emissive tiles), a night thunderstorm
+(**wdasstorm_g0.5**, six lightning lights inside the cumulus, city lights below), a neon street in fog
+(**emeraldneon_d3**, 40 signs). M cap 200, the pass as shipped, 960x540, the Look configuration; relMSE in the medium
+(equal_time_table's), mean of the two kept frames (separate chains; the figures give their range). The reference's own
+noise, its 1024-frame accumulation against its 2048-frame one (their difference has the 2048-frame mean's variance, so
+this is what each score carries from the reference): 0.0008, 0.0001, 0.0010 and **0.016** -- over half of every neon
+score.
+
+| shot | denoiser | no reuse | 0 | 1 | 3 | 10 | one vs ten |
+|---|---|---|---|---|---|---|---|
+| concert rig | OptiX | 0.100 | 0.067 | 0.020 | 0.017 | 0.017 | +20% |
+| | RR | 0.024 | 0.067 | 0.023 | 0.018 | 0.017 | +36% |
+| LED wall | OptiX | 0.053 | 0.042 | 0.024 | 0.028 | 0.025 | -4% |
+| | RR | 0.025 | 0.036 | 0.028 | 0.032 | 0.029 | -2% |
+| thunderstorm | OptiX | 0.104 | 0.108 | 0.037 | 0.030 | 0.025 | +48% |
+| | RR | 0.021 | 0.090 | 0.027 | 0.025 | 0.019 | +39% |
+| neon street | OptiX | 0.265 | 0.064 | 0.031 | 0.031 | 0.028 | +8% |
+| | RR | 0.104 | 0.052 | 0.035 | 0.026 | 0.027 | +26% |
+
+One mutation is where most of the gain is in every shot: it removes 42-70% of plain ReSTIR's OptiX error and 20-70% of
+its RR error. More than one: the **thunderstorm** keeps paying to 10 (OptiX -33% and RR -28% on one mutation, falling
+at every step in both kept frames); like the swarm, its lights sit inside a dense cloud. The **concert rig** gains at 3
+(-16% OptiX, -22% RR, in both frames) and nothing after. The **LED wall** (area lights behind the haze) needs one: 3 and
+10 are no better, 3 above 1 in both frames. The **neon street** cannot rank the counts after denoising until its
+reference is longer (the frames' ranges overlap and 0.016 of each score is the reference's). In the raw frames all four
+pass count_curve's "needs more than one": the colour rho(8) one mutation leaves is 7.1x / 4.0x / 3.9x / 3.0x what ten
+leave (luminance 1.9x / 1.2x / 1.8x / 2.1x), but only the storm's and the rig's survive a denoiser.
+
+Through RR plain ReSTIR is the worst input in all four shots (0.036-0.090), worse than no reuse (0.021-0.025 on the rig,
+wall and storm); with mutations it gets back to about no reuse (rig 0.017 vs 0.024, storm 0.019 vs 0.021, wall 0.029 vs
+0.025), at the cost of reuse (not equal time). RR's mean brightness is 0.83-0.97x the reference's, darkest on plain
+ReSTIR (0.83-0.95x); OptiX's 0.97-1.04x except no reuse on the storm (0.93x) and the neon street (0.57x, a frame too
+sparse for it). The solid red patch at the top left of every storm RR error map is RR brightening a nearly black part of
+the cloud, the same for every input.
