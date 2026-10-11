@@ -1,0 +1,31 @@
+# Film-style shot (spec V-C7; user, 2026-10-11: "more aesthetically pleasant scenes"): SKY LANTERNS at night -- 36
+# warm paper lanterns (emissive spheres, one colour, glowing more or less) being released from a field in ground mist
+# under the starry savanna sky (the loader's satara_night). Fourteen just released, in and just above the mist 6-30 m ahead,
+# light it from inside; twenty-two rising and drifting away, higher the farther. The mist is authored for it
+# (make_volumes.py groundmist: banks 0.4-1.6 m deep, x, z -40..40). Camera (0, 3, 18), above it, looking toward -z.
+import random
+
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+WARM = (1.0, 0.45, 0.12)
+rng = random.Random(36)
+
+
+def lantern(k, pos, glow):
+    mat = Material('Lantern%d' % k)
+    mat.baseColor = float4(0, 0, 0, 1)
+    mat.emissiveColor = float3(*WARM)
+    mat.emissiveFactor = glow
+    node = sceneBuilder.addNode('Lantern%d' % k, Transform(translation=float3(*pos), scaling=float3(1, 1.25, 1)))
+    sceneBuilder.addMeshInstance(node, sceneBuilder.addTriangleMesh(TriangleMesh.createSphere(0.18, 12, 8), mat))
+
+
+k = 0
+for _ in range(14):  # just released
+    dist = rng.uniform(6, 30)
+    lantern(k, (rng.uniform(-0.5, 0.5) * dist, rng.uniform(0.4, 2.2), 18 - dist), rng.uniform(60, 150))
+    k += 1
+for _ in range(22):  # rising and drifting away
+    dist = rng.uniform(12, 70)
+    lantern(k, (rng.uniform(-0.45, 0.45) * dist, 4 + 0.5 * dist * rng.random() ** 0.7, 18 - dist), rng.uniform(60, 150))
+    k += 1

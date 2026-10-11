@@ -54,6 +54,14 @@ class TestFilmFigures(unittest.TestCase):
         med[:10] = True  # the fog is the dim half; the bright half is a building
         self.assertAlmostEqual(film_figures.exposure(y, med) * film_figures.EXPOSURE_KEY, 0.5, places=6)
 
+    def test_summaries_hold_four_shots_each_in_shot_order(self):
+        labels = [l for l, _ in film_figures.SHOTS]
+        sets = film_figures.summary_sets({l: None for l in labels[4:]})  # only the second four rendered
+        self.assertEqual([(name, [l for l, _ in shots]) for name, shots in sets], [("film_summary_2.png", labels[4:8])])
+        sets = film_figures.summary_sets({labels[0]: None, labels[5]: None})
+        self.assertEqual([(name, [l for l, _ in shots]) for name, shots in sets],
+                         [("film_summary.png", labels[:1]), ("film_summary_2.png", labels[5:6])])
+
     def test_chain_label_gives_the_mean_and_the_range(self):
         self.assertEqual(film_figures.score_label([0.0223, 0.0182], 1.024), "relMSE 0.020 (0.018-0.022) · mean 1.02x")
 

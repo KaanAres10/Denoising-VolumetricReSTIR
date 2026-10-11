@@ -437,6 +437,69 @@ def load_emerald_neon():
     return info
 
 
+# Film shots with a real backdrop and a restrained palette (spec V-C7; user, 2026-10-11: "more aesthetically pleasant
+# scenes ... you can also create your own volumetrics"): three in volumes authored for them (make_volumes.py).
+
+def _authored(name, sigma_s, sigma_a, density):
+    """An authored volume (VolumetricReSTIRData/authored/<name>), placed at its box's min corner at scale 1
+    (volume_boxes.py); density 0..1 times densityScale times sigma is the extinction per metre."""
+    import volume_boxes
+    m.scene.addGVDBVolume(sigma_a=float3(sigma_a, sigma_a, sigma_a), sigma_s=float3(sigma_s, sigma_s, sigma_s),
+                          g=env_float("VR_PHASE_G", 0.0), dataFile=DATA_DIR + "\\authored\\" + name, numMips=4,
+                          densityScale=_density(density), hasVelocity=False, hasEmission=False, LeScale=1.0,
+                          worldTranslation=float3(*volume_boxes.BOXES[name][0]), worldRotation=float3(0, 0, 0),
+                          worldScaling=1.0)
+
+
+def load_stage():
+    """A concert stage in authored haze, ten crossing beams in two colours and blue wall washers (scenes/stage.pyscene);
+    run with a forward phase function (label stage_g0.6)."""
+    m.loadScene(SCENE_DIR + r"\stage.pyscene")
+    _authored("stagehaze", sigma_s=0.95, sigma_a=0.05, density=0.48)
+    _pin_camera((0.0, 1.6, 12.0), (0.0, 4.2, -6.0), (0.0, 1.0, 0.0))
+    m.scene.camera.focalLength = 30.0
+    return {"scatterAlbedo": float3(0.95, 0.95, 0.95), "exposure": 0.0, "params": dict(POINT_LIGHTS_OCCLUDED)}
+
+
+def load_lanterns():
+    """Sky lanterns released from a misty field under the starry savanna sky (scenes/lanterns.pyscene)."""
+    m.loadScene(SCENE_DIR + r"\lanterns.pyscene")
+    m.scene.setEnvMap(DATA_DIR + r"\satara_night_8k.hdr")
+    m.scene.envMap.rotation = float3(0, 270, 0)  # the tree line and the village lights ahead, the stars above
+    m.scene.envMap.intensity = 0.25  # a darker night, so the lanterns light the mist
+    _authored("groundmist", sigma_s=0.95, sigma_a=0.05, density=0.25)
+    _pin_camera((0.0, 3.0, 18.0), (0.0, 4.0, -10.0), (0.0, 1.0, 0.0))  # above the mist, looking just over it
+    m.scene.camera.focalLength = 28.0
+    return {"scatterAlbedo": float3(0.95, 0.95, 0.95), "exposure": 0.0,
+            "params": {"mUseAnalyticLights": False, "mUseEnvironmentLights": True, "mUseEmissiveLights": True,
+                       "mUseSurfaceScene": True}}
+
+
+def load_fireworks():
+    """Fireworks over the hansaplatz night square: five bursts of sparks inside their own smoke (scenes/fireworks.pyscene)."""
+    m.loadScene(SCENE_DIR + r"\fireworks.pyscene")
+    m.scene.setEnvMap(DATA_DIR + r"\hansaplatz_8k.hdr")
+    m.scene.envMap.rotation = float3(0, 180, 0)  # the open square: a lamp post, the monument, trees, sky
+    _authored("smokepuffs", sigma_s=0.8, sigma_a=0.2, density=0.05)  # thin: the star trails show through
+    _pin_camera((0.0, 1.7, 60.0), (0.0, 30.0, 0.0), (0.0, 1.0, 0.0))
+    m.scene.camera.focalLength = 24.0
+    # the star trails are emissive geometry: they show, and light the smoke along with the sparks
+    return {"scatterAlbedo": float3(0.8, 0.8, 0.8), "exposure": 0.0,
+            "params": {"mUseAnalyticLights": True, "mUseEnvironmentLights": True, "mUseEmissiveLights": True,
+                       "mUseSurfaceScene": True}}
+
+
+def load_wdas_dusk():
+    """A storm at dusk: the Disney cloud over the dawn hills with the low sun to one side, lightning inside it
+    (scenes/wdas_dusk.pyscene)."""
+    info = load_wdas(pyscene=SCENE_DIR + r"\wdas_dusk.pyscene")
+    m.scene.setEnvMap(DATA_DIR + r"\kiara_1_dawn_8k.hdr")
+    m.scene.envMap.intensity = 1.1
+    m.scene.envMap.rotation = float3(0, 125, 0)  # the low sun behind the cloud's right side
+    info["params"] = dict(POINT_LIGHTS_ONLY, mUseEnvironmentLights=True)
+    return info
+
+
 # The JangaFX EmberGen datasets (FirePlumeVDB, DustShockwaveVDB) are deliberately not here: the user
 # excluded them from the decorrelation study. run_volume_dataset.py still plays them back.
 SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion, "explosiondusk": load_explosion_dusk,
@@ -469,6 +532,8 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "plumewall": lambda: load_plume(pyscene=SCENE_DIR + r"\plume_wall.pyscene", params=EMISSIVE_ONLY),
           "wdasstorm": lambda: load_wdas(pyscene=SCENE_DIR + r"\wdas_storm.pyscene"),
           "emeraldneon": load_emerald_neon,
+          # Backdrop and palette (user, 2026-10-11): a concert stage, sky lanterns, fireworks over a city, a storm at dusk.
+          "stage": load_stage, "lanterns": load_lanterns, "fireworks": load_fireworks, "wdasdusk": load_wdas_dusk,
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}

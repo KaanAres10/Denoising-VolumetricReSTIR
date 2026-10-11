@@ -188,7 +188,8 @@ class TestStressScenes(StudyEnv):
         builder = Recorder()
         env = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
                "Material": lambda n: types.SimpleNamespace(name=n), "Transform": lambda **k: k,
-               "TriangleMesh": types.SimpleNamespace(createCube=lambda *a, **k: "cube", createQuad=lambda *a, **k: "quad"),
+               "TriangleMesh": types.SimpleNamespace(createCube=lambda *a, **k: "cube", createQuad=lambda *a, **k: "quad",
+                                                     createSphere=lambda *a, **k: "sphere"),
                "float3": lambda *a: tuple(a), "float4": lambda *a: tuple(a)}
         with open(path) as fh:
             exec(fh.read(), env)
@@ -280,6 +281,49 @@ class TestStressScenes(StudyEnv):
         _, meshes = self.run_pyscene(vr.SCENE_DIR + r"\bunny_softbox.pyscene")
         colours = {tuple(mat.emissiveColor) for _, mat in meshes}
         self.assertEqual(len(colours), 2)
+
+    def test_pleasant_shots(self):
+        # Film shots with a real backdrop and a restrained palette (user, 2026-10-11: "more aesthetically pleasant
+        # scenes"), each still lit from inside or through the medium so the mutation count matters:
+        # (name, lights, meshes, (analytic, env, emissive, surfaces), sky map or None, light colours)
+        hue = lambda c: tuple(round(v / max(c), 2) for v in c)  # noqa: E731
+        for name, n_lights, n_meshes, flags, sky, n_hues in (
+                ("wdasdusk", 5, 0, (True, True, False, False), "kiara_1_dawn_8k.hdr", 1),
+                ("lanterns", 0, 36, (False, True, True, True), "satara_night_8k.hdr", 1),
+                ("fireworks", 40, 150, (True, True, True, True), "hansaplatz_8k.hdr", 3),
+                ("stage", 14, 15, (True, False, False, True), None, 2)):
+            vr, m = fresh_vr()
+            self.assertNotIn("_", name)
+            info = vr.SCENES[name]()
+            p = info["params"]
+            self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"],
+                              p.get("mUseSurfaceScene", False)), flags, name)
+            skies = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
+            self.assertEqual([os.path.basename(s) for s in skies], [sky] if sky else [], name)
+            self.assertFalse(m.scene.camera.animated, name)
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            self.assertTrue(path.endswith(".pyscene") and os.path.exists(path), name)
+            lights, meshes = self.run_pyscene(path)
+            self.assertEqual((len(lights), len(meshes)), (n_lights, n_meshes), name)
+            colours = {hue(l.intensity) for l in lights} | {hue(mat.emissiveColor) for _, mat in meshes
+                                                             if hasattr(mat, "emissiveColor")}
+            self.assertEqual(len(colours), n_hues, (name, colours))
+        # Three of them in volumes authored for them (make_volumes.py), placed at their box's min corner.
+        import volume_boxes as vb
+        for name, volume in (("stage", "stagehaze"), ("lanterns", "groundmist"), ("fireworks", "smokepuffs")):
+            vr, m = fresh_vr()
+            vr.SCENES[name]()
+            v = volume_call(m)
+            self.assertTrue(v["dataFile"].endswith("authored\\" + volume), (name, v["dataFile"]))
+            self.assertEqual((v["worldTranslation"], v["worldScaling"]), (vb.BOXES[volume][0], 1.0), name)
+        # The stage's ten truss beams are narrow spots.
+        lights, _ = self.run_pyscene(vr.SCENE_DIR + r"\stage.pyscene")
+        self.assertEqual(sum(1 for l in lights if l.openingAngle < 0.15), 10)
+        # The firework sparks sit on the bursts the smoke was built around.
+        lights, _ = self.run_pyscene(vr.SCENE_DIR + r"\fireworks.pyscene")
+        for c, radius in vb.BURSTS:
+            near = [l for l in lights if sum((a - b) ** 2 for a, b in zip(l.position, c)) ** 0.5 <= radius + 1e-6]
+            self.assertEqual(len(near), 8, c)
 
     def test_falcor4_env_rotation(self):
         # Falcor 4 applied Rz Ry Rx; Falcor 9's envMap.rotation applies Rx Ry Rz. A single-axis rotation

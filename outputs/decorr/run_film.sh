@@ -5,6 +5,12 @@
 #   plumewall_g0.6_d0.3  an LED video wall behind thin stage haze (32 coloured emissive tiles)
 #   wdasstorm_g0.5       a night thunderstorm: lightning inside the cumulus, city lights below
 #   emeraldneon_d3       a neon street in fog at night (40 coloured signs and the square's lamps)
+# and, with a real backdrop and a restrained palette (user, 2026-10-11: "more aesthetically pleasant scenes ... you can
+# also create your own volumetrics"; three in volumes from Scripts/make_volumes.py):
+#   stage_g0.6           a concert stage in authored haze: ten crossing beams in warm white and deep blue, wall washers
+#   lanterns_g0.5        36 sky lanterns released from a field of authored ground mist under a starry sky
+#   fireworks_g0.4       five bursts of star trails and sparks in their own authored smoke over a night city square
+#   wdasdusk_g0.6        a storm at dusk: the Disney cloud over the dawn hills, five lightning flashes inside it
 # Per scene, one at a time: its reference, then raw / OptiX / Ray Reconstruction without reuse and with 0, 1, 3 and 10
 # mutations at M cap 200 (the pass as shipped), 960x540, the Look configuration. A finished config is skipped.
 #   run_film.sh [labels...]      Log: film_counts.log.

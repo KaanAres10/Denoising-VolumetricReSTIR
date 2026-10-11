@@ -1,0 +1,51 @@
+# Film-style shot (spec V-C7; user, 2026-10-11: "more aesthetically pleasant scenes"): a CONCERT STAGE -- a dark
+# stage floor and back wall, a truss with ten moving-head beams fanning down through the haze toward the front of the
+# stage, crossing, in two colours (warm white, deep blue), and four blue washers at the foot of the back wall. The
+# haze is authored for it (make_volumes.py stagehaze: even, drifting, x -13..13, y 0..10, z -14..8). Run with a
+# forward phase function (label stage_g0.6): the beams come toward the audience.
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+floor = Material('StageFloor')
+floor.baseColor = float4(0.04, 0.04, 0.045, 1)
+floor.roughness = 0.35
+wall = Material('BackWall')
+wall.baseColor = float4(0.05, 0.05, 0.055, 1)
+wall.roughness = 0.9
+metal = Material('Truss')
+metal.baseColor = float4(0.2, 0.2, 0.22, 1)
+metal.roughness = 0.4
+
+
+def block(name, centre, size, mat):
+    node = sceneBuilder.addNode(name, Transform(scaling=float3(*size), translation=float3(*centre)))
+    sceneBuilder.addMeshInstance(node, sceneBuilder.addTriangleMesh(TriangleMesh.createCube(), mat))
+
+
+block('Floor', (0, -0.1, -3), (26, 0.2, 22), floor)
+block('BackWall', (0, 6, -13.5), (26, 12, 1), wall)
+block('TrussBar', (0, 7.8, -7), (22, 0.3, 0.3), metal)
+for x in (-11, 11):
+    block('TrussLeg%d' % x, (x, 3.9, -7), (0.3, 7.8, 0.3), metal)
+
+WARM, BLUE = (1.0, 0.8, 0.55), (0.15, 0.3, 1.0)
+for i in range(10):
+    x = -9.0 + 2.0 * i
+    block('Head%d' % i, (x, 7.3, -7), (0.4, 0.45, 0.4), metal)  # the fixture, above its light
+    c = WARM if i % 2 == 0 else BLUE
+    pos = (x, 7.0, -7.0)
+    aim = (-0.55 * x, 0.0, 2.5)  # crossing to the other side, landing at the front of the stage
+    light = PointLight('beam%d' % i)
+    light.intensity = float3(500 * c[0], 500 * c[1], 500 * c[2])
+    light.position = float3(*pos)
+    light.direction = float3(*(aim[k] - pos[k] for k in range(3)))
+    light.openingAngle = 0.06
+    light.penumbraAngle = 0.02
+    sceneBuilder.addLight(light)
+for i, x in enumerate((-9.0, -3.0, 3.0, 9.0)):
+    light = PointLight('washer%d' % i)
+    light.intensity = float3(80 * BLUE[0], 80 * BLUE[1], 80 * BLUE[2])
+    light.position = float3(x, 0.3, -12.6)
+    light.direction = float3(0, 1, 0.15)
+    light.openingAngle = 0.55
+    light.penumbraAngle = 0.2
+    sceneBuilder.addLight(light)

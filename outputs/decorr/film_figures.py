@@ -27,7 +27,9 @@ import counts_figures as cf  # noqa: E402
 import paper_figure as pf  # noqa: E402
 
 SHOTS = (("plumerig_g0.6", "concert lighting rig in stage haze"), ("plumewall_g0.6_d0.3", "LED video wall behind thin haze"),
-         ("wdasstorm_g0.5", "night thunderstorm over a city"), ("emeraldneon_d3", "neon street in fog"))
+         ("wdasstorm_g0.5", "night thunderstorm over a city"), ("emeraldneon_d3", "neon street in fog"),
+         ("stage_g0.6", "concert stage in haze"), ("lanterns_g0.5", "sky lanterns over ground mist"),
+         ("fireworks_g0.4", "fireworks over a city square"), ("wdasdusk_g0.6", "storm at dusk"))
 COUNTS = (0, 1, 3, 10)
 LUM = np.array([0.2126, 0.7152, 0.0722])  # RGB (artifacts' frames are RGB)
 SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
@@ -161,13 +163,23 @@ def scene_figure(root, label, name, out):
     return scores, floor
 
 
-def summary_figure(results, out):
+def summary_sets(results):
+    """[(file name, shots)]: one summary per run of four SHOTS (one colour each, never cycled), holding those rendered."""
+    sets = []
+    for i in range(0, len(SHOTS), len(SERIES)):
+        shots = [s for s in SHOTS[i:i + len(SERIES)] if s[0] in results]
+        if shots:
+            sets.append(("film_summary.png" if i == 0 else "film_summary_%d.png" % (i // len(SERIES) + 1), shots))
+    return sets
+
+
+def summary_figure(results, out, shots):
     fig, axes = plt.subplots(1, 2, figsize=(13, 4.8), facecolor="#fcfcfb")
     xs = {None: 0, **{n: i + 1 for i, n in enumerate(COUNTS)}}
     floored = []
     for ax, (prefix, title) in zip(axes, (("den_optix_", "OptiX"), ("den_rr_", "Ray Reconstruction"))):
         ax.set_facecolor("#fcfcfb")
-        for (label, name), col in zip(SHOTS, SERIES):
+        for (label, name), col in zip(shots, SERIES):
             s, floor = results.get(label) or ({}, None)
             ns = [n for n in COUNTS if (prefix, n) in s]
             for n in ([None] if (prefix, None) in s else []) + ns:  # the two chains' range
@@ -226,7 +238,8 @@ def main(argv):
                                                     max(s[(prefix, n)][0]), s[(prefix, n)][1])
                    for n in (None,) + COUNTS if (prefix, n) in s]
             print("    %-6s %s" % (prefix[4:-1], "  ".join(row)))
-    summary_figure(results, os.path.join(root, "figs", "film_summary.png"))
+    for name, shots in summary_sets(results):
+        summary_figure(results, os.path.join(root, "figs", name), shots)
 
 
 if __name__ == "__main__":

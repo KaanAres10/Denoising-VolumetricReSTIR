@@ -1,0 +1,46 @@
+# Film-style shot (spec V-C7; user, 2026-10-11: "more aesthetically pleasant scenes"): FIREWORKS over a city square
+# at night -- five bursts high above the hansaplatz night square (the loader's sky), in gold, crimson and white. Each
+# burst is thirty glowing star trails radiating from its centre (thin emissive streaks, 0.4-1.1 burst radii out) with
+# eight bright sparks at the shell (point lights), inside the smoke ball it leaves. The smoke is authored for it
+# (make_volumes.py smokepuffs, built around volume_boxes.BURSTS, which also places the bursts here). Camera in the square.
+import math
+import sys
+
+sys.path.insert(0, r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts')
+import volume_boxes as vb  # noqa: E402
+
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+
+GOLD, CRIMSON, WHITE = (1.0, 0.62, 0.22), (1.0, 0.12, 0.08), (1.0, 0.94, 0.85)
+COLOURS = (GOLD, CRIMSON, WHITE, GOLD, CRIMSON)
+
+
+def shell(n, twist):
+    """n directions spread evenly over the sphere (a Fibonacci lattice), turned by `twist` about the vertical."""
+    for s in range(n):
+        yy = 1 - 2 * (s + 0.5) / n
+        rr = math.sqrt(1 - yy * yy)
+        phi = s * 2.39996 + twist
+        yield rr * math.cos(phi), yy, rr * math.sin(phi)
+
+
+for b, ((cx, cy, cz), radius) in enumerate(vb.BURSTS):
+    c = COLOURS[b]
+    trail = Material('Trail%d' % b)
+    trail.baseColor = float4(0, 0, 0, 1)
+    trail.emissiveColor = float3(*c)
+    trail.emissiveFactor = 1000
+    for s, (dx, dy, dz) in enumerate(shell(30, 0.7 * b)):
+        mid = 0.75 * radius
+        centre = (cx + mid * dx, cy + mid * dy, cz + mid * dz)
+        tip = (cx + 1.1 * radius * dx, cy + 1.1 * radius * dy, cz + 1.1 * radius * dz)
+        up = (1.0, 0.0, 0.0) if abs(dy) > 0.95 else (0.0, 1.0, 0.0)
+        # a unit cube stretched along its local z, which lookAt turns onto the trail's direction
+        node = sceneBuilder.addNode('Trail%d_%d' % (b, s), Transform(position=float3(*centre), target=float3(*tip),
+                                                                     up=float3(*up), scaling=float3(0.12, 0.12, 0.7 * radius)))
+        sceneBuilder.addMeshInstance(node, sceneBuilder.addTriangleMesh(TriangleMesh.createCube(), trail))
+    for s, (dx, dy, dz) in enumerate(shell(8, b)):  # the sparks at the shell: the bursts' main light
+        light = PointLight('burst%d_spark%d' % (b, s))
+        light.intensity = float3(300 * c[0], 300 * c[1], 300 * c[2])
+        light.position = float3(cx + radius * dx, cy + radius * dy, cz + radius * dz)
+        sceneBuilder.addLight(light)
