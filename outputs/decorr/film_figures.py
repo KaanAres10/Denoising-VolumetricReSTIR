@@ -29,7 +29,8 @@ import paper_figure as pf  # noqa: E402
 SHOTS = (("plumerig_g0.6", "concert lighting rig in stage haze"), ("plumewall_g0.6_d0.3", "LED video wall behind thin haze"),
          ("wdasstorm_g0.5", "night thunderstorm over a city"), ("emeraldneon_d3", "neon street in fog"),
          ("stage_g0.6", "concert stage in haze"), ("lanterns_g0.5", "sky lanterns over ground mist"),
-         ("fireworks_g0.4", "fireworks over a city square"), ("wdasdusk_g0.6", "storm at dusk"))
+         ("fireworks_g0.4", "fireworks over a city square"), ("wdasdusk_g0.6", "storm at dusk"),
+         ("dustlights_g0.3_b2", "dust ring with green lights"), ("duststudio_g0.3_b2", "dust ring in the studio"))
 COUNTS = (0, 1, 3, 10)
 LUM = np.array([0.2126, 0.7152, 0.0722])  # RGB (artifacts' frames are RGB)
 SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100")

@@ -11,6 +11,9 @@
 #   lanterns_g0.5        36 sky lanterns released from a field of authored ground mist under a starry sky
 #   fireworks_g0.4       five bursts of star trails and sparks in their own authored smoke over a night city square
 #   wdasdusk_g0.6        a storm at dusk: the Disney cloud over the dawn hills, five lightning flashes inside it
+# and the EmberGen dust shockwave (user, 2026-10-11), two bounces:
+#   duststudio_g0.3_b2   frame 50 in a studio matched to the user's reference render (env light only)
+#   dustlights_g0.3_b2   the same with green and amber point lights in its hole, inside it, behind it, beams across it
 # Per scene, one at a time: its reference, then raw / OptiX / Ray Reconstruction without reuse and with 0, 1, 3 and 10
 # mutations at M cap 200 (the pass as shipped), 960x540, the Look configuration. A finished config is skipped.
 #   run_film.sh [labels...]      Log: film_counts.log.
@@ -24,9 +27,14 @@ while tasklist 2>/dev/null | grep -qi mogwai; do sleep 60; done
 echo "[$(date +%H:%M:%S)] film start: $LABELS" >> $LOG
 export STUDY_DISPLAY=960x540 STUDY_SPACING=5 STUDY_TIMEOUT=10800 STUDY_REF_FRAMES=2048
 LOOK="VR_NRD_SPLIT=1 VR_NRD_SH=1 VR_NRD_TAA=1 VR_TAA_LDR=1 VR_NRD_EMISSION=1 VR_NRD_VOLMASK=1 VR_VOL_NORMAL=gradient"
-MUT="VR_MUT_STRAT=light,depth,select,flight VR_MUT_AFTER_SPATIAL=1"
 run() { bash $O/run_study.sh one "$@" 2>&1 | tee -a $LOG; }
 for L in $LABELS; do
+    # the moves the pass has at the label's bounce count, as run_counts.sh's strat(): two bounces add the second
+    # vertex's direction, distance and rebounce moves
+    case $L in
+        *_b2) MUT="VR_MUT_STRAT=light,depth,select,flight,direction,distance,rebounce VR_MUT_AFTER_SPATIAL=1" ;;
+        *) MUT="VR_MUT_STRAT=light,depth,select,flight VR_MUT_AFTER_SPATIAL=1" ;;
+    esac
     bash $O/run_study.sh refs "$L" 2>&1 | tee -a $LOG
     for P in "" "den_optix_" "den_rr_"; do
         DEN=""
