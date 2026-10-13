@@ -324,6 +324,93 @@ def studio_sky(key=STUDIO_KEY, width=1024, key_radiance=320.0, key_radius=5.0, f
 SKIES = {"studio_softbox": studio_sky}
 
 
+def cast_iron_normals(size=4096, seed=7, strength=1.0, features=(9, 90), pits=0.0):
+    """A seamless tangent-space normal map (unit vectors, z out of the surface) of cast iron, for the swatch teapot
+    (user's reference, 2026-10-11): a height field made periodic by building it in the Fourier domain (random phases
+    under a power-law spectrum, band-limited to `features` texels), optionally deepened into casting pits (`pits`), its
+    gradient by wrapped differences, scaled by `strength`. The teapot's UVs run 45 cm a unit, so at 4096 texels the
+    default band is 0.1..1 cm -- the soft hammered dents of RenderMan's fractal bump (rman_teapot_fire.py: PxrFractal,
+    frequency 1.2 a cm, six octaves); grains of a few texels shrink below a pixel in the shot and glitter."""
+    rng = np.random.default_rng(seed)
+    fx = np.fft.fftfreq(size)[None, :]
+    fy = np.fft.fftfreq(size)[:, None]
+    f = np.hypot(fx, fy)
+    band = (f > 1.0 / features[1]) & (f < 1.0 / features[0])
+    amp = np.where(band, 1.0 / np.maximum(f, 1e-6) ** 1.2, 0.0)
+    spectrum = amp * np.exp(2j * np.pi * rng.random((size, size)))
+    h = np.real(np.fft.ifft2(spectrum))
+    h = (h - h.mean()) / (h.std() + 1e-12)
+    h = h + pits * (np.minimum(h, -0.8) + 0.8)  # deepen the low spots
+    dx = (np.roll(h, -1, axis=1) - np.roll(h, 1, axis=1)) * 0.5
+    dy = (np.roll(h, -1, axis=0) - np.roll(h, 1, axis=0)) * 0.5
+    k = 0.35 * strength * features[0] / 3.0  # the slope of the bumps, not of the texels, kept as the band moves
+    n = np.stack([-k * dx, -k * dy, np.ones_like(h)], axis=-1)
+    return (n / np.linalg.norm(n, axis=-1, keepdims=True)).astype(np.float32)
+
+
+def encode_normals(n):
+    """Unit normals -> an 8-bit RGB normal map (0.5 + 0.5 n), as Falcor's normal slot reads it (linear, not sRGB)."""
+    return np.clip(np.round((0.5 + 0.5 * np.asarray(n)) * 255), 0, 255).astype(np.uint8)
+
+
+def write_texture(name):
+    import cv2
+    path = REPO / "VolumetricReSTIRData" / "swatch" / (name + ".png")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(path), encode_normals(TEXTURES[name]())[..., ::-1].copy()):  # OpenCV writes BGR
+        raise SystemExit("FAILED: could not write %s" % path)
+    return path
+
+
+# half strength: the target pot's level and matte look (the full slope sheens and darkens its lower half)
+TEXTURES = {"castiron_normal": lambda: cast_iron_normals(strength=0.5)}
+
+
+# The swatch fire's colour as RenderMan renders it: its PxrBlackBody reads the grid's temperature (0..1.27) as kelvin,
+# below the node's 1000 K floor, so the whole flame emits the floor's colour -- its Rec.709 table's first knot -- times
+# 2^exposure (rman_teapot_fire.py: measured on the render, green / red 0.0087, no blue). Deep red: the clipped display
+# turns the dense core yellow (green past 1), the thin edges red.
+RMAN_FIRE_RGB = (1.0, 0.008654, 0.0)
+SWATCH_FIRE = REPO / "RenderMan_Swatch_Blender" / "VDB" / "embergen_fire_a_67.vdb"
+FIRE_OFFSET = (-96.5, -96.5, -128.5)  # the VDB's index -> its .vbx coordinates (its grid transform)
+
+
+def write_fire_lights(n=1024):
+    """VolumetricReSTIRData/swatch/fire_lights.json: fire_light_table() on the swatch fire's 'flames' grid (read with
+    VdbToRaw.exe), positions in the .vbx's voxel coordinates (swatch_fire.to_world places them). 1024 lights: with 256
+    the pot's inner wall came out patchy, each light's 1 / r^2 where the target's flame lights it evenly."""
+    import json
+    with tempfile.TemporaryDirectory() as work:
+        raw = Path(work) / "flames.raw"
+        out = run([RELEASE / "VdbToRaw.exe", SWATCH_FIRE, "flames", raw], cwd=RELEASE).split()
+        lo, dims = [int(v) for v in out[1:4]], [int(v) for v in out[5:8]]
+        flames = np.fromfile(str(raw), dtype=np.float32).reshape(dims)
+    table = fire_light_table(flames, n=n)
+    for l in table["lights"]:  # array index -> the VDB's index -> its .vbx coordinates, at the voxel's centre
+        l["p"] = [l["p"][a] + lo[a] + FIRE_OFFSET[a] + 0.5 for a in range(3)]
+    path = REPO / "VolumetricReSTIRData" / "swatch" / "fire_lights.json"
+    path.write_text(json.dumps(table, indent=1))
+    return path
+
+
+def fire_light_table(flames, n=64, seed=0):
+    """Point lights standing in for the fire's light on the surfaces around it (this renderer's surfaces take no light
+    from a glowing volume; RenderMan renders the fire as a light, emitting density x colour per unit length): `n`
+    voxels drawn in proportion to their flame density (array index coordinates), each carrying an equal share `w`.
+    With the fire's total density `flames_sum` (summed over voxels) and its colour `rgb`, the scene gives each light
+    the intensity w x flames_sum x (voxel size)^3 x 2^exposure x rgb: what its share of the volume emits."""
+    flat = np.maximum(flames, 0.0).ravel().astype(np.float64)
+    lights = []
+    if flat.sum() > 0:
+        rng = np.random.default_rng(seed)
+        # stratified draws over the cumulative density: an even spread of the fire's power
+        cdf = np.cumsum(flat) / flat.sum()
+        for i in np.searchsorted(cdf, (np.arange(n) + rng.random(n)) / n):
+            idx = np.unravel_index(int(min(i, flat.size - 1)), flames.shape)
+            lights.append({"p": [float(v) for v in idx], "w": 1.0 / n})
+    return {"rgb": list(RMAN_FIRE_RGB), "flames_sum": float(flat.sum()), "lights": lights}
+
+
 def write_raw(d, path):
     """C order, x slowest: VolFromRaw reads data[(i * ny + j) * nz + k] as voxel (i, j, k)."""
     np.ascontiguousarray(d, dtype=np.float32).tofile(str(path))
@@ -374,6 +461,9 @@ def main(argv):
     for name in names:
         if name in SKIES:
             print("%s -> %s" % (name, write_sky(name)))
+            continue
+        if name in TEXTURES:
+            print("%s -> %s" % (name, write_texture(name)))
             continue
         if name.startswith("dust") and name.endswith("r"):  # dust0050r: frame 50 of the shockwave, reshaped
             t0 = time.time()

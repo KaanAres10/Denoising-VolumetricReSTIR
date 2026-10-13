@@ -155,24 +155,38 @@ class TestLoaders(StudyEnv):
 
     def test_the_renderman_swatch_teapot_on_fire(self):
         # The user's reference (2026-10-11): RenderMan's swatch teapot (hollow, on its stand, before the swatch's floor
-        # sweep; exported from Prman_Swatch.blend) with EmberGen's fire rising from it, the fire's light on the pot.
+        # sweep; exported from Prman_Swatch.blend) with EmberGen's fire rising from it, matched to RenderMan rendering
+        # the same shot (swatch/rman_teapot_fire.py): the fire's emission and light as RenderMan's shader makes them.
         vr, m = fresh_vr()
         info = vr.SCENES["teapotfire"]()
         v = volume_call(m)
         self.assertTrue(v["dataFile"].endswith("swatch\\embergen_fire_a_67"), v["dataFile"])
         self.assertTrue(v["hasEmission"])
-        self.assertEqual(v["worldRotation"], (-90, 0, 0))  # the VDB is z-up, as Blender
+        self.assertEqual(v["worldRotation"], (-90, 0, 90))  # the VDB is z-up, as Blender; turned to lean right
+        # RenderMan's flame: extinction = density per cm (densityScale = the voxel's cm), every voxel the 818 K LUT
+        # colour (its blackbody floor's red), its red 2^10 per unit density per cm, and 8% more for its self-scattering
+        self.assertEqual(v["densityScale"], 0.12)
+        self.assertEqual((v["temperatureCutoff"], v["temperatureScale"]), (-818.0, 1.0))
+        self.assertAlmostEqual(v["sigma_a"][0] * v["LeScale"] * vr.blackbody_lut(818.0)[0], 1.08 * 2 ** 10, places=6)
         p = info["params"]
         self.assertEqual((p["mUseAnalyticLights"], p["mUseEnvironmentLights"], p["mUseEmissiveLights"],
-                          p["mUseSurfaceScene"]), (True, True, False, True))
+                          p["mUseSurfaceScene"]), (True, True, True, True))
         cam = m.scene.camera
         self.assertEqual((cam.position, cam.focalLength), ((0.0, 39.5, 150.0), 100.0))  # the .blend's RenderManCam
         path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
         self.assertTrue(path.endswith("teapot_fire.pyscene") and os.path.exists(path), path)
+
+        def named(n):
+            r = Recorder()
+            r.name = n
+            return r
         builder = Recorder()
-        env = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
-               "Material": lambda n: types.SimpleNamespace(name=n), "PBRTDiffuseMaterial": lambda n: types.SimpleNamespace(name=n),
-               "float3": lambda *a: tuple(a), "float4": lambda *a: tuple(a)}
+        meshes = []
+        builder.addTriangleMesh = lambda mesh, material: meshes.append(material)
+        env = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n), "Material": named,
+               "PBRTDiffuseMaterial": named, "TriangleMesh": Recorder,
+               "MaterialTextureSlot": types.SimpleNamespace(Normal="normal"),
+               "float2": lambda *a: tuple(a), "float3": lambda *a: tuple(a), "float4": lambda *a: tuple(a)}
         with open(path) as fh:
             exec(fh.read(), env)
         imported = [c[1][0] for c in builder.calls if c[0] == "importScene"]
@@ -180,14 +194,31 @@ class TestLoaders(StudyEnv):
         swapped = [c[1][0] for c in builder.calls if c[0] == "getMaterial"]
         self.assertEqual(sorted(swapped), ["clear_glass_mat", "mesurament_mat"])  # the swatch's glass and card, replaced
         self.assertEqual(sum(1 for c in builder.calls if c[0] == "replaceMaterial"), 2)
+        # the night rig's four soft boxes, emissive squares
+        self.assertEqual(len(meshes), 4)
+        self.assertTrue(all(mat.emissiveFactor > 0 for mat in meshes))
         lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
-        flames = [l for l in lights if l.name.startswith("flame")]
-        self.assertGreaterEqual(len(flames), 4)
-        self.assertTrue(all(l.intensity[0] > l.intensity[2] for l in flames))  # warm
-        # inside the flames: above the pot's rim (21.8 cm) and over its opening
-        self.assertTrue(all(abs(l.position[0]) < 8 and 18 < l.position[1] < 40 and abs(l.position[2]) < 8 for l in flames))
-        fill, = [l for l in lights if not l.name.startswith("flame")]
-        self.assertGreater(fill.intensity[2], fill.intensity[0])  # the cool fill
+        self.assertTrue(lights and all(l.name.startswith("flame") for l in lights))
+        self.assertTrue(all(l.intensity[0] > 0 and l.intensity[2] == 0 for l in lights))  # deep red, as RenderMan's
+        # in the flames: from inside the pot (its bottom at 14 cm, the rim at 21.8) up, over the opening
+        self.assertTrue(all(abs(l.position[0]) < 8 and 14 < l.position[1] < 30 and abs(l.position[2]) < 8 for l in lights))
+        inside = [l for l in lights if l.position[1] < 21.8]
+        above = [l for l in lights if l.position[1] >= 21.8]
+        self.assertTrue(inside and above)
+        self.assertAlmostEqual(inside[0].intensity[0] / above[0].intensity[0], 2.75, places=9)
+        # the fire's power, as its volume emits it: 2^10 x (0.12 cm)^3 x the summed density, the lights inside 2.75x
+        table = env["table"]
+        total = sum(l.intensity[0] for l in above) + sum(l.intensity[0] for l in inside) / 2.75
+        self.assertAlmostEqual(total / (2 ** 10 * 0.12 ** 3 * table["flames_sum"]), 1.0, places=9)
+
+    def test_blackbody_lut_reads_as_the_shader_samples_it(self):
+        # VolumeBase.slang ConvertTempToColor: a 128-texel 1D texture, linear filtering, texel i at 50 + 50 i kelvin
+        vr, _ = fresh_vr()
+        self.assertEqual(vr.blackbody_lut(800.0), (7.7e-05, 1e-06, 0.0))  # row 15, as the file has it
+        r, g, b = vr.blackbody_lut(818.0)  # 36% of the way to row 16 (3.03e-4, 2e-6, 0)
+        self.assertAlmostEqual(r, 7.7e-05 + 0.36 * (3.03e-04 - 7.7e-05), places=12)
+        self.assertAlmostEqual(g, 1e-06 + 0.36 * 1e-06, places=12)
+        self.assertEqual(b, 0.0)
 
     def test_loaders_return_the_graph_settings(self):
         for name in self.ALL:

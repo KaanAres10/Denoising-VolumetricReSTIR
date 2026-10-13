@@ -560,31 +560,55 @@ def load_dust_lights():
     return info
 
 
+def blackbody_lut(kelvin):
+    """The emission colour GVDB volumes read at `kelvin` (VolumeBase.slang ConvertTempToColor, before LeScale): the
+    128-row table data/LUT/BlackBodyRadiationRGB_50K-6400K.txt, row i at 50 + 50 i kelvin, filtered linearly."""
+    with open(REPO + r"\data\LUT\BlackBodyRadiationRGB_50K-6400K.txt") as fh:
+        rows = [tuple(float(v) for v in line.split()) for line in fh if line.strip()][:128]
+    x = min(max((min(kelvin, 6400.0) - 50.0) / 50.0, 0.0), 127.0)
+    i = min(int(x), 126)
+    f = x - i
+    if f == 0.0:
+        return rows[i]
+    return tuple(a + f * (b - a) for a, b in zip(rows[i], rows[i + 1]))
+
+
 def load_teapot_fire():
-    """The user's RenderMan swatch reference (2026-10-11): the swatch teapot on its stand before the floor sweep
-    (scenes/teapot_fire.pyscene; centimetres) with EmberGen's fire (RenderMan_Swatch_Blender/VDB/embergen_fire_a_67.vdb,
-    its 'flames' grid renamed to density, converted to VolumetricReSTIRData/swatch) rising from the pot's opening and
-    leaning right, as in the reference: z-up like the .blend, so stood upright by -90 degrees about x (voxel (x, y, z)
-    to world T + s (x, z, -y)), 0.13 cm a voxel (16 cm tall), its base (voxel z -128.5) at y = 14.5 inside the pot,
-    its middle over the opening (0.2, -0.6). Flames, not smoke: dense (3x the grid), absorbing little, barely
-    scattering (a scattering fire catches the studio light and goes grey), glowing by temperature (0..1.27 in the grid,
-    x 2600, to about 3300 K: a white-yellow core, orange edges) at 100x. The camera is the .blend's RenderManCam (150
-    cm out, 39.5 cm up, 10 degrees down, 100 mm on a 23.01 mm frame; render it square)."""
+    """The user's RenderMan swatch reference (2026-10-11), matched to RenderMan rendering the same shot
+    (swatch/rman_teapot_fire.py; outputs/decorr/match_teapot.py measures the two light by light): the swatch teapot on
+    its stand before the floor sweep (scenes/teapot_fire.pyscene; centimetres) with EmberGen's fire
+    (RenderMan_Swatch_Blender/VDB/embergen_fire_a_67.vdb, its 'flames' grid renamed to density, converted to
+    VolumetricReSTIRData/swatch) rising from the pot's opening, placed by swatch_fire.py (0.12 cm a voxel, its bottom
+    inside the pot, leaning right as in the reference). The camera is the .blend's RenderManCam (150 cm out, 39.5 cm
+    up, 10 degrees down, 100 mm on a 23.01 mm frame; render it square). One bounce: the pyscene's fire lights carry
+    the flame's light to the surfaces, which a second bounce would add again by seeing the flame."""
     m.loadScene(SCENE_DIR + r"\teapot_fire.pyscene")
-    s, base_y = 0.13, 14.5
-    m.scene.addGVDBVolume(sigma_a=float3(0.2, 0.2, 0.2), sigma_s=float3(0.002, 0.002, 0.002), g=env_float("VR_PHASE_G", 0.0),
-                          dataFile=DATA_DIR + r"\swatch\embergen_fire_a_67", numMips=4, densityScale=_density(3.0),
-                          hasVelocity=False, hasEmission=True, LeScale=100.0,
-                          temperatureCutoff=0.0, temperatureScale=2600.0,
-                          worldTranslation=float3(0.2 + 1.5 * s, base_y + 128.5 * s, -0.6 - 33.5 * s),
-                          worldRotation=float3(-90, 0, 0), worldScaling=s)
-    m.scene.setEnvMap(DATA_DIR + r"\authored\studio_softbox.exr")
-    m.scene.envMap.intensity = 0.15
+    import swatch_fire
+    s = swatch_fire.SCALE
+    # As RenderMan renders the fire (rman_teapot_fire.py, measured): extinction = the flame density per cm, emission =
+    # density x 2^10 per cm in its blackbody floor's deep red (make_volumes.RMAN_FIRE_RGB, green / red 0.0087), whatever
+    # the temperature. GVDB's extinction is sigma x density x densityScale per voxel (SceneGVDB divides it by the world
+    # scaling), so densityScale = the voxel's centimetres; it emits sigma_a x that x LeScale x the LUT at
+    # (T - cutoff) x scale kelvin: every voxel at 818 K, where the LUT's green / red is 0.0086 (no blue), LeScale
+    # bringing its red to 2^10 -- and 8% past it: the target's flame, white (PxrVolume diffuse colour 1), also scatters
+    # its own light, 8% of its brightness (measured: the target at albedo 0); this one barely scatters, its light on
+    # the surfaces being the pyscene's point lights'.
+    fire_k = 818.0
+    m.scene.addGVDBVolume(sigma_a=float3(0.998, 0.998, 0.998), sigma_s=float3(0.002, 0.002, 0.002), g=env_float("VR_PHASE_G", 0.0),
+                          dataFile=DATA_DIR + r"\swatch\embergen_fire_a_67", numMips=4, densityScale=_density(s),
+                          hasVelocity=False, hasEmission=True, LeScale=1.08 * 2.0 ** 10 / 0.998 / blackbody_lut(fire_k)[0],
+                          temperatureCutoff=-fire_k, temperatureScale=1.0,
+                          worldTranslation=float3(*swatch_fire.translation()),
+                          worldRotation=float3(-90, 0, swatch_fire.YAW), worldScaling=s)
+    # the .blend's night dome: PxrDomeLight, Loading_Bay_Night.exr (the 2k copy) at exposure 1 (x 2), at half its
+    # intensity as the target has it
+    m.scene.setEnvMap(DATA_DIR + r"\swatch\Loading_Bay_Night.exr")
+    m.scene.envMap.intensity = 1.0
     _pin_camera((0.0, 39.5, 150.0), (0.0, 13.45, 2.28), (0.0, 1.0, 0.0))
     m.scene.camera.focalLength = 100.0
     m.scene.camera.frameHeight = 23.01
     return {"scatterAlbedo": float3(0.01, 0.01, 0.01), "exposure": 0.0,
-            "params": {"mUseAnalyticLights": True, "mUseEnvironmentLights": True, "mUseEmissiveLights": False,
+            "params": {"mUseAnalyticLights": True, "mUseEnvironmentLights": True, "mUseEmissiveLights": True,
                        "mUseSurfaceScene": True}}
 
 

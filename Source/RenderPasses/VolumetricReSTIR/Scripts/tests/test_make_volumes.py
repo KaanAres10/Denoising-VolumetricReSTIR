@@ -177,6 +177,57 @@ class TestReshapeDust(unittest.TestCase):
         self.assertFalse(changed[rr < 6].any() or changed[rr > 18].any())  # not the core, not far outside
 
 
+class TestCastIron(unittest.TestCase):
+    def test_normal_map_is_unit_tileable_and_mostly_up(self):
+        n = mv.cast_iron_normals(size=256, seed=4)
+        self.assertEqual(n.shape, (256, 256, 3))
+        self.assertTrue(np.allclose(np.linalg.norm(n, axis=-1), 1.0, atol=1e-5))
+        self.assertGreater(n[..., 2].mean(), 0.9)  # bumps, not a crumpled sheet
+        self.assertLess(n[..., 2].min(), 0.95)  # but real bumps
+        # seamless: the wrap-around step is no larger than an ordinary neighbour step
+        inner = np.abs(np.diff(n, axis=0)).mean()
+        seam = np.abs(n[0] - n[-1]).mean()
+        self.assertLess(seam, 2.0 * inner)
+
+    def test_feature_size_sets_the_bump_scale(self):
+        # broad dents (RenderMan's fractal bump: 0.1..0.8 cm) change little from one texel to the next; grains do
+        fine = mv.cast_iron_normals(size=256, seed=4, features=(3, 40))
+        broad = mv.cast_iron_normals(size=256, seed=4, features=(16, 120))
+        step = lambda n: np.abs(np.diff(n, axis=1)).mean()  # noqa: E731
+        self.assertLess(step(broad), 0.5 * step(fine))
+
+    def test_normal_map_encodes_to_8bit_rgb(self):
+        rgb = mv.encode_normals(np.array([[[0.0, 0.0, 1.0]]]))
+        self.assertEqual(rgb.dtype, np.uint8)
+        self.assertEqual(tuple(rgb[0, 0]), (128, 128, 255))
+
+
+class TestFireLights(unittest.TestCase):
+    def test_the_fire_glows_in_renderman_blackbody_floor_colour(self):
+        # PxrBlackBody clamps below 1000 K to its table's first knot; the grid's temperatures (0..1.27) all fall there
+        self.assertEqual(mv.RMAN_FIRE_RGB, (1.0, 0.008654, 0.0))
+
+    def test_lights_follow_the_flame_density(self):
+        flames = np.zeros((20, 20, 20), np.float32)
+        flames[4:8, 4:8, 4:8] = 0.1  # 64 voxels: 8/9 of the density
+        flames[14:16, 14:16, 14:16] = 0.1  # 8 voxels: 1/9
+        table = mv.fire_light_table(flames, n=18, seed=1)
+        lights = table["lights"]
+        self.assertEqual(len(lights), 18)
+        big = sum(all(4 <= c < 8 for c in l["p"]) for l in lights)
+        small = sum(all(14 <= c < 16 for c in l["p"]) for l in lights)
+        self.assertEqual(big + small, 18)
+        self.assertIn(big, (15, 16, 17))  # stratified: the shares to within a light
+        self.assertAlmostEqual(sum(l["w"] for l in lights), 1.0, places=6)
+
+    def test_table_carries_the_fires_total_density_and_colour(self):
+        flames = np.zeros((6, 6, 6), np.float32)
+        flames[2, 3, 4], flames[1, 1, 1] = 0.25, 0.5
+        table = mv.fire_light_table(flames, n=3, seed=0)
+        self.assertAlmostEqual(table["flames_sum"], 0.75, places=6)
+        self.assertEqual(tuple(table["rgb"]), mv.RMAN_FIRE_RGB)
+
+
 class TestRaw(unittest.TestCase):
     def test_raw_is_x_slowest(self):
         # VolFromRaw reads data[(i * ny + j) * nz + k] as voxel (i, j, k)
