@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import blackbody as bb  # noqa: E402
 import make_volumes as mv  # noqa: E402
 import volume_boxes as vb  # noqa: E402
 
@@ -226,6 +227,37 @@ class TestFireLights(unittest.TestCase):
         table = mv.fire_light_table(flames, n=3, seed=0)
         self.assertAlmostEqual(table["flames_sum"], 0.75, places=6)
         self.assertEqual(tuple(table["rgb"]), mv.RMAN_FIRE_RGB)
+
+
+class TestEmissionLights(unittest.TestCase):
+    """Point lights standing in for an authored fire's glow: placed by what each voxel emits, in its colour."""
+
+    def setUp(self):
+        self.density = np.zeros((16, 16, 16), np.float32)
+        self.temp = np.zeros_like(self.density)
+        self.density[2:6, 2:6, 2:6], self.temp[2:6, 2:6, 2:6] = 0.5, 1.0  # hot: 3000 K
+        self.density[10:14, 10:14, 10:14], self.temp[10:14, 10:14, 10:14] = 0.5, 0.25  # cool: 1237.5 K
+        self.density[0, 15, 15] = 1.0  # smoke: no temperature, no glow
+        self.kw = dict(cutoff=-650.0 / 2350.0, scale=2350.0, voxel=0.1, sigma_a=0.3, le_scale=2.0)
+
+    def test_lights_sit_where_the_volume_glows(self):
+        table = mv.emission_light_table(self.density, self.temp, n=40, seed=3, **self.kw)
+        hot = sum(all(2 <= c < 6 for c in l["p"]) for l in table["lights"])
+        self.assertGreaterEqual(hot, 39)  # the cool blob emits ~1/1000 as much
+        self.assertFalse(any(l["p"] == [0.0, 15.0, 15.0] for l in table["lights"]))
+
+    def test_lights_carry_the_volumes_emission_in_its_colour(self):
+        table = mv.emission_light_table(self.density, self.temp, n=40, seed=3, **self.kw)
+        rgb3000 = np.array(bb.lut(bb.kelvin(1.0, self.kw['cutoff'], self.kw['scale'])))  # 3000 K
+        # what the volume emits: sigma_a x density x LeScale x the LUT, times a voxel's volume, summed
+        hot = 64 * 0.3 * 0.5 * 2.0 * rgb3000 * 0.1 ** 3
+        cool = 64 * 0.3 * 0.5 * 2.0 * np.array(bb.lut(bb.kelvin(0.25, self.kw['cutoff'], self.kw['scale']))) * 0.1 ** 3
+        np.testing.assert_allclose(table["total"], hot + cool, rtol=1e-6)
+        Y = np.array([0.2126, 0.7152, 0.0722])
+        total_y = sum(np.dot(l["intensity"], Y) for l in table["lights"])
+        self.assertAlmostEqual(total_y / np.dot(hot + cool, Y), 1.0, places=6)  # the power, shared out exactly
+        l0 = next(l for l in table["lights"] if all(2 <= c < 6 for c in l["p"]))
+        np.testing.assert_allclose(np.array(l0["intensity"]) / l0["intensity"][0], rgb3000 / rgb3000[0], rtol=1e-6)
 
 
 class TestRaw(unittest.TestCase):

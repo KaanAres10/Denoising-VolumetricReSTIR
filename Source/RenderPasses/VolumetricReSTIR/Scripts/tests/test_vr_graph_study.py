@@ -211,6 +211,39 @@ class TestLoaders(StudyEnv):
         total = sum(l.intensity[0] for l in above) + sum(l.intensity[0] for l in inside) / 2.75
         self.assertAlmostEqual(total / (2 ** 10 * 0.12 ** 3 * table["flames_sum"]), 1.0, places=9)
 
+    def test_the_other_teapot_fires_glow_and_light_as_their_tables_say(self):
+        # the authored fire and the gasoline explosion (user, 2026-10-13): emissive volumes over the teapot's stage, lit
+        # by point lights made from what they emit; TEAPOT_FRAME picks the explosion's frame
+        import swatch_fire
+        import volume_boxes
+        for name, cfg in (("teapotflame", volume_boxes.TEAPOT_FIRE), ("teapotgasoline", swatch_fire.GASOLINE)):
+            vr, m = fresh_vr()
+            info = vr.SCENES[name]()
+            v = volume_call(m)
+            self.assertTrue(v["hasEmission"], name)
+            self.assertEqual((v["LeScale"], v["temperatureCutoff"]), (cfg["le_scale"], cfg["cutoff"]), name)
+            self.assertTrue(info["params"]["mUseEmissiveLights"] and info["params"]["mUseAnalyticLights"], name)
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            builder = Recorder()
+            env = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+                   "Material": lambda n: Recorder(), "PBRTDiffuseMaterial": lambda n: Recorder(), "TriangleMesh": Recorder,
+                   "MaterialTextureSlot": types.SimpleNamespace(Normal="normal"),
+                   "float2": lambda *a: tuple(a), "float3": lambda *a: tuple(a), "float4": lambda *a: tuple(a)}
+            with open(path) as fh:
+                exec(fh.read(), env)
+            self.assertTrue(any(c[0] == "importScene" for c in builder.calls), name)  # the stage ran first
+            lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
+            self.assertEqual(len(lights), cfg["lights"], name)
+            total = [sum(l.intensity[c] for l in lights) for c in range(3)]
+            self.assertAlmostEqual(sum(total) / sum(env["table"]["total"]), 1.0, delta=0.02)  # its emission, shared out
+        os.environ["TEAPOT_FRAME"] = "55"
+        try:
+            vr, m = fresh_vr()
+            vr.SCENES["teapotgasoline"]()
+            self.assertTrue(volume_call(m)["dataFile"].endswith("gasoline55"))
+        finally:
+            del os.environ["TEAPOT_FRAME"]
+
     def test_blackbody_lut_reads_as_the_shader_samples_it(self):
         # VolumeBase.slang ConvertTempToColor: a 128-texel 1D texture, linear filtering, texel i at 50 + 50 i kelvin
         vr, _ = fresh_vr()

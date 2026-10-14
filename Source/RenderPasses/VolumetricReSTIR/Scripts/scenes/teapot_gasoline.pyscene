@@ -1,0 +1,20 @@
+# The swatch teapot (the stage: teapot_stage.pyscene) with a frame of EmberGen's gasoline explosion bursting from it
+# (user's dataset, 2026-10-13: a complicated volume where the mutation count matters; vr_graph.load_teapot_gasoline): a
+# fireball in rolling smoke, the smoke's soot glowing by its temperature. The fire's light on the surfaces and in its
+# own smoke is point lights where it glows, each in its voxel's blackbody colour, carrying what its share of the volume
+# emits (make_volumes.py write_gasoline) -- lights inside a scattering medium. Render it at one bounce, for the reason
+# teapot_fire.pyscene gives.
+import json
+import sys
+
+sys.path.insert(0, r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts')
+import swatch_fire  # noqa: E402
+
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\teapot_stage.pyscene').read())
+
+table = json.load(open(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\gasoline\gasoline%d_lights.json' % swatch_fire.frame(swatch_fire.GASOLINE['frame'])))
+for k, l in enumerate(table['lights']):
+    light = PointLight('flame%d' % k)
+    light.intensity = float3(*l['intensity'])
+    light.position = float3(*l['p'])
+    sceneBuilder.addLight(light)

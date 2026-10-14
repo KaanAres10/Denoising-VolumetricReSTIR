@@ -1,79 +1,19 @@
-# Film-style shot (user, 2026-10-11, a reference render from RenderMan's swatch scene): the swatch teapot -- hollow, on
-# its burner stand, before the swatch's floor sweep (exported from RenderMan_Swatch_Blender/Prman_Swatch.blend by
-# Blender: centimetres, y up) -- with EmberGen's fire rising from its opening (vr_graph.load_teapot_fire), matched to
-# RenderMan rendering the same shot (swatch/rman_teapot_fire.py: the target, VolumetricReSTIRData/swatch/rman_target,
-# measured light by light with outputs/decorr/match_teapot.py), lit as the .blend's night rig lights it:
-#   four PxrRectLights -- soft boxes, invisible to the camera -- as emissive squares;
-#   the fire, which RenderMan renders as a light (PxrVolume islight = 1): this renderer's surfaces take no light from a
-#   glowing volume by light sampling, so deep red point lights inside the flames carry its light -- lights inside a
-#   medium, where the mutation count matters;
-#   the night dome (the loader's).
+# Film-style shot (user, 2026-10-11, a reference render from RenderMan's swatch scene): the swatch teapot (the stage:
+# teapot_stage.pyscene) with EmberGen's fire rising from its opening (vr_graph.load_teapot_fire), matched to RenderMan
+# rendering the same shot (swatch/rman_teapot_fire.py: the target, VolumetricReSTIRData/swatch/rman_target, measured
+# light by light with outputs/decorr/match_teapot.py), lit as the .blend's night rig lights it: the stage's soft boxes,
+# the night dome (the loader's), and the fire, which RenderMan renders as a light (PxrVolume islight = 1): this
+# renderer's surfaces take no light from a glowing volume by light sampling, so deep red point lights inside the flames
+# carry its light -- lights inside a medium, where the mutation count matters.
 # Render it at one bounce: a second bounce sees the glowing flame along its rays, the light these point lights already
 # carry (twice the fire's light on the sweep), and loses the GPU with the emissive squares.
-# The sweep is the file's light grey (PxrSurface diffuse 0.69); the pot cast iron, as the target's (rman_teapot_fire.py
-# castIron_mat, the reference's own shader not being in the file).
 import json
-import math
-import os
 import sys
 
 sys.path.insert(0, r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts')
 import swatch_fire  # noqa: E402
 
-SWATCH = r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\swatch'
-sceneBuilder.importScene(SWATCH + r'\teapot_swatch.obj')
-
-# The target's iron: diffuse (0.1, 0.05, 0.04), a rough reddish specular (face 0.1, 0.08, 0.07), roughness 0.35. Here
-# metallic 0.44 splits the base colour into about that diffuse and specular (base x 0.56 and 0.04 x 0.56 + base x 0.44),
-# darkened to the target's level on the pot; its bumps a normal map of the target's dent sizes (make_volumes.py
-# castiron_normal).
-iron = Material('CastIron')
-iron.baseColor = float4(0.14, 0.063, 0.05, 1)
-iron.metallic = 0.44
-iron.roughness = 0.35
-iron.loadTexture(MaterialTextureSlot.Normal, SWATCH + r'\castiron_normal.png', False)
-sceneBuilder.replaceMaterial(sceneBuilder.getMaterial('clear_glass_mat'), iron)
-sweep = PBRTDiffuseMaterial('SweepGrey')
-sweep.baseColor = float4(0.6925, 0.6925, 0.6925, 1)  # the swatch's floor (PxrSurface diffuseColor)
-sceneBuilder.replaceMaterial(sceneBuilder.getMaterial('mesurament_mat'), sweep)
-
-
-def blender_to_falcor(v):
-    return (v[0], v[2], -v[1])
-
-
-def euler_xyz(rx, ry, rz, v):
-    """Blender's XYZ Euler rotation (Rz Ry Rx) applied to v."""
-    x, y, z = v
-    y, z = y * math.cos(rx) - z * math.sin(rx), y * math.sin(rx) + z * math.cos(rx)
-    x, z = x * math.cos(ry) + z * math.sin(ry), -x * math.sin(ry) + z * math.cos(ry)
-    x, y = x * math.cos(rz) - y * math.sin(rz), x * math.sin(rz) + y * math.cos(rz)
-    return (x, y, z)
-
-
-# The night rig's rect lights: Blender location, XYZ Euler rotation, scale (the square's side, cm) and intensity. A
-# PxrRectLight is a unit square in its local xy plane emitting along local -z, its radiance intensity x the soft-box map
-# (sourceimages/softBox_512.exr: 0.425 on average, measured), at a quarter of the file's intensity as the target has them.
-SOFTBOX_MEAN = 0.425
-RECT_GAIN = 0.25
-RECTS = (((53.8507, -21.1033, 41.9848), (1.0996, 0.2618, 1.0996), 24.8162, 20.0),
-         ((36.3727, 48.0346, 23.3836), (1.4573, -0.1047, 2.6281), 15.0, 15.0),
-         ((-39.0339, 22.6956, 17.3332), (1.4486, -0.1047, 3.9385), 27.48, 5.0),
-         ((11.3576, -5.3051, 57.6152), (0.0524, 0.2443, 6.4926), 16.6844, 50.0))
-for k, (loc, rot, side, intensity) in enumerate(RECTS):
-    mesh = TriangleMesh()
-    normal = blender_to_falcor(euler_xyz(*rot, (0.0, 0.0, -1.0)))
-    for u, v in ((-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)):
-        p = euler_xyz(*rot, (u * side, v * side, 0.0))
-        mesh.addVertex(float3(*blender_to_falcor((loc[0] + p[0], loc[1] + p[1], loc[2] + p[2]))), float3(*normal), float2(u + 0.5, v + 0.5))
-    # wound so the geometric normal is the emitting one (-z local), toward the teapot
-    mesh.addTriangle(0, 2, 1)
-    mesh.addTriangle(0, 3, 2)
-    light = Material('RectLight%d' % k)
-    light.baseColor = float4(0, 0, 0, 1)
-    light.emissiveColor = float3(1, 1, 1)
-    light.emissiveFactor = SOFTBOX_MEAN * intensity * RECT_GAIN
-    sceneBuilder.addMeshInstance(sceneBuilder.addNode('RectLight%d' % k), sceneBuilder.addTriangleMesh(mesh, light))
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\teapot_stage.pyscene').read())
 
 # The fire's light: point lights drawn from its flame density (make_volumes.py write_fire_lights), each at its voxel,
 # placed as the volume is, carrying its share of what RenderMan's fire emits: density x 2^10 (the PxrBlackBody exposure
@@ -86,7 +26,7 @@ for k, (loc, rot, side, intensity) in enumerate(RECTS):
 FIRE_EXPOSURE = 10.0
 RIM = 21.8  # the pot's rim, cm
 INSIDE = 2.75
-table = json.load(open(SWATCH + r'\fire_lights.json'))
+table = json.load(open(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData' + swatch_fire.fire01_lights()))
 power = 2.0 ** FIRE_EXPOSURE * swatch_fire.SCALE ** 3 * table['flames_sum']
 for k, l in enumerate(table['lights']):
     light = PointLight('flame%d' % k)

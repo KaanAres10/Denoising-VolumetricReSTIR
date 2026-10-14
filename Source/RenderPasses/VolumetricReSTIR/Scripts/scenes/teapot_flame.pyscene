@@ -1,0 +1,16 @@
+# The swatch teapot (the stage: teapot_stage.pyscene) with an authored fire (user, 2026-10-13: our own fire, a
+# complicated volume where the mutation count matters; make_volumes.py teapot_flame, vr_graph.load_teapot_flame): flame
+# tongues glowing by temperature, grey smoke billowing out of their tips, embers. The fire's light on the surfaces and
+# in its own smoke is point lights where it glows, each in its voxel's blackbody colour, carrying what its share of the
+# volume emits (make_volumes.py emission_light_table) -- lights inside a scattering medium.
+# Render it at one bounce, for the reason teapot_fire.pyscene gives.
+import json
+
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\teapot_stage.pyscene').read())
+
+table = json.load(open(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\authored\teapotflame_lights.json'))
+for k, l in enumerate(table['lights']):
+    light = PointLight('flame%d' % k)
+    light.intensity = float3(*l['intensity'])
+    light.position = float3(*l['p'])
+    sceneBuilder.addLight(light)

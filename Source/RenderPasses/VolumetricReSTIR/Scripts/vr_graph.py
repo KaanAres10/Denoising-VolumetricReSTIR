@@ -561,16 +561,9 @@ def load_dust_lights():
 
 
 def blackbody_lut(kelvin):
-    """The emission colour GVDB volumes read at `kelvin` (VolumeBase.slang ConvertTempToColor, before LeScale): the
-    128-row table data/LUT/BlackBodyRadiationRGB_50K-6400K.txt, row i at 50 + 50 i kelvin, filtered linearly."""
-    with open(REPO + r"\data\LUT\BlackBodyRadiationRGB_50K-6400K.txt") as fh:
-        rows = [tuple(float(v) for v in line.split()) for line in fh if line.strip()][:128]
-    x = min(max((min(kelvin, 6400.0) - 50.0) / 50.0, 0.0), 127.0)
-    i = min(int(x), 126)
-    f = x - i
-    if f == 0.0:
-        return rows[i]
-    return tuple(a + f * (b - a) for a, b in zip(rows[i], rows[i + 1]))
+    """The emission colour GVDB volumes read at `kelvin` (blackbody.py: the shader's LUT, filtered as it reads it)."""
+    import blackbody
+    return blackbody.lut(kelvin)
 
 
 def load_teapot_fire():
@@ -595,21 +588,62 @@ def load_teapot_fire():
     # the surfaces being the pyscene's point lights'.
     fire_k = 818.0
     m.scene.addGVDBVolume(sigma_a=float3(0.998, 0.998, 0.998), sigma_s=float3(0.002, 0.002, 0.002), g=env_float("VR_PHASE_G", 0.0),
-                          dataFile=DATA_DIR + r"\swatch\embergen_fire_a_67", numMips=4, densityScale=_density(s),
+                          dataFile=DATA_DIR + swatch_fire.fire01_data(), numMips=4, densityScale=_density(s),
                           hasVelocity=False, hasEmission=True, LeScale=1.08 * 2.0 ** 10 / 0.998 / blackbody_lut(fire_k)[0],
                           temperatureCutoff=-fire_k, temperatureScale=1.0,
                           worldTranslation=float3(*swatch_fire.translation()),
-                          worldRotation=float3(-90, 0, swatch_fire.YAW), worldScaling=s)
-    # the .blend's night dome: PxrDomeLight, Loading_Bay_Night.exr (the 2k copy) at exposure 1 (x 2), at half its
-    # intensity as the target has it
+                          worldRotation=float3(*swatch_fire.ROTATION), worldScaling=s)
+    return _teapot_view(scatter_albedo=0.01)
+
+
+def _teapot_view(scatter_albedo):
+    """The teapot shots' dome and camera: the .blend's night dome (PxrDomeLight, Loading_Bay_Night.exr, the 2k copy, at
+    exposure 1 -- x 2 -- and half its intensity, as the RenderMan target has it) and its RenderManCam."""
     m.scene.setEnvMap(DATA_DIR + r"\swatch\Loading_Bay_Night.exr")
     m.scene.envMap.intensity = 1.0
     _pin_camera((0.0, 39.5, 150.0), (0.0, 13.45, 2.28), (0.0, 1.0, 0.0))
     m.scene.camera.focalLength = 100.0
     m.scene.camera.frameHeight = 23.01
-    return {"scatterAlbedo": float3(0.01, 0.01, 0.01), "exposure": 0.0,
+    a = scatter_albedo
+    return {"scatterAlbedo": float3(a, a, a), "exposure": 0.0,
             "params": {"mUseAnalyticLights": True, "mUseEnvironmentLights": True, "mUseEmissiveLights": True,
                        "mUseSurfaceScene": True}}
+
+
+def load_teapot_flame():
+    """The swatch teapot with an authored fire (user, 2026-10-13: our own fire, a complicated volume where the mutation
+    count matters; make_volumes.py teapot_flame, scenes/teapot_flame.pyscene): flame tongues glowing by temperature
+    (650 + 2350 T kelvin: deep red edges, a yellow-white core), grey smoke billowing out of their tips lit from inside by
+    the fire's point lights, embers; volume_boxes.TEAPOT_FIRE's medium and glow, which its lights were made from. The
+    teapot shots' dome and camera; one bounce (teapot_fire.pyscene)."""
+    import volume_boxes
+    m.loadScene(SCENE_DIR + r"\teapot_flame.pyscene")
+    f = volume_boxes.TEAPOT_FIRE
+    m.scene.addGVDBVolume(sigma_a=float3(f["sigma_a"], f["sigma_a"], f["sigma_a"]), sigma_s=float3(f["sigma_s"], f["sigma_s"], f["sigma_s"]),
+                          g=env_float("VR_PHASE_G", 0.0), dataFile=DATA_DIR + r"\authored\teapotflame", numMips=4,
+                          densityScale=_density(f["density_scale"]), hasVelocity=False, hasEmission=True, LeScale=f["le_scale"],
+                          temperatureCutoff=f["cutoff"], temperatureScale=f["scale"],
+                          worldTranslation=float3(*volume_boxes.BOXES["teapotflame"][0]), worldRotation=float3(0, 0, 0),
+                          worldScaling=1.0)
+    return _teapot_view(scatter_albedo=f["sigma_s"] / (f["sigma_a"] + f["sigma_s"]))
+
+
+def load_teapot_gasoline():
+    """The swatch teapot with a frame of EmberGen's gasoline explosion bursting from it (user's dataset, 2026-10-13, CC0;
+    Gasoline_Explosion_01, imported as it is by make_volumes.py write_gasoline; scenes/teapot_gasoline.pyscene): a
+    fireball in rolling smoke, placed, lit and glowing as swatch_fire.GASOLINE says. The teapot shots' dome and camera;
+    one bounce (teapot_fire.pyscene)."""
+    import swatch_fire
+    g = swatch_fire.GASOLINE
+    pose = {k: g[k] for k in ("scale", "rotation", "anchor", "middle", "bottom")}
+    m.loadScene(SCENE_DIR + r"\teapot_gasoline.pyscene")
+    m.scene.addGVDBVolume(sigma_a=float3(g["sigma_a"], g["sigma_a"], g["sigma_a"]), sigma_s=float3(g["sigma_s"], g["sigma_s"], g["sigma_s"]),
+                          g=env_float("VR_PHASE_G", 0.0), dataFile=DATA_DIR + r"\gasoline\gasoline%d" % swatch_fire.frame(g["frame"]), numMips=4,
+                          densityScale=_density(g["density_scale"]), hasVelocity=False, hasEmission=True, LeScale=g["le_scale"],
+                          temperatureCutoff=g["cutoff"], temperatureScale=g["temperature_scale"],
+                          worldTranslation=float3(*swatch_fire.translation(**pose)), worldRotation=float3(*g["rotation"]),
+                          worldScaling=g["scale"])
+    return _teapot_view(scatter_albedo=g["sigma_s"] / (g["sigma_a"] + g["sigma_s"]))
 
 
 # The JangaFX EmberGen fire plume (FirePlumeVDB) is deliberately not here: the user excluded it from the
@@ -649,7 +683,7 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           # The dust shockwave (user, 2026-10-11): their reference look first.
           "duststudio": load_dust_studio, "dustlights": load_dust_lights,
           # The RenderMan swatch teapot with EmberGen fire rising from it (user, 2026-10-11).
-          "teapotfire": load_teapot_fire,
+          "teapotfire": load_teapot_fire, "teapotflame": load_teapot_flame, "teapotgasoline": load_teapot_gasoline,
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}

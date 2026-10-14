@@ -146,6 +146,181 @@ def smoke_puffs(voxel=None):
     return smoothstep(0.0, 0.45, d).astype(np.float32)
 
 
+def streaky(sh, cell, octaves, seed, stretch=2.5):
+    """fbm whose features are `stretch` times taller (axis 1) than wide: rising streaks."""
+    small = (sh[0], max(4, int(round(sh[1] / stretch))), sh[2])
+    f = fbm(small, cell=cell, octaves=octaves, seed=seed)
+    return ndimage.zoom(f, (1, sh[1] / small[1], 1), order=1)[:, :sh[1], :]
+
+
+TEAPOT_OPENING = (0.2, -0.6)  # the swatch pot's opening, x and z (cm); its rim at y 21.6, 5.7 cm across inside
+FLAME_ROOT_Y = 19.5  # where the flame rises from, inside the pot
+
+
+def teapot_flame(voxel=None, seed=0, height=9.5, radius=4.4, lean=0.3, embers=60):
+    """An authored fire for the swatch teapot (user, 2026-10-13: our own fire, a complicated volume where the mutation
+    count matters), in the teapot's centimetres, y up: (density, temperature 0..1).
+      The flame: a cone of tongues rising from inside the pot (FLAME_ROOT_Y) `height` cm, `radius` cm at its root,
+    leaning right (+x) and back as it rises, swaying; read at points displaced by rising streaky noise, more so higher
+    up (a calm root, flickering tips), and cut into tongues by streaks thresholded harder with height, so its top
+    breaks into separate flames. Hottest low in its core, cooling to the tips and edges. A little soot (density 0.35).
+      The smoke: a plume out of the tips (above 55% of the height), drifting right and back, widening, billowed and
+    eroded at two scales; no temperature, so it glows only by the fire's light it scatters.
+      Embers: `embers` hot specks rising out of the flame."""
+    name = "teapotflame"
+    lo, hi, v0 = vb.BOXES[name]
+    v = voxel or v0
+    sh = shape(name, v)
+    X, Y, Z = centres(name, v)
+    grid = np.meshgrid(*(np.arange(n, dtype=np.float32) for n in sh), indexing="ij")
+    h = Y - FLAME_ROOT_Y
+    amp = (0.35 + 0.16 * np.clip(h, 0, None)) / v
+    warp = [(streaky(sh, cell=1.6 / v, octaves=3, seed=seed + 10 + a) - 0.5) * 2 * amp for a in range(3)]
+    Xw, Yw, Zw = (lo[a] + v * (grid[a] + warp[a] + 0.5) for a in range(3))
+    del grid, warp
+    hw = Yw - FLAME_ROOT_Y
+    up = np.maximum(hw, 0)
+    sway = (streaky((1, sh[1], 1), cell=40, octaves=2, seed=seed + 1)[0, :, 0] - 0.5)[None, :, None]
+    t = np.clip(hw / height, 0, 1)
+    axis_x = TEAPOT_OPENING[0] + lean * up + 0.015 * up ** 2 + 1.2 * sway * up / height
+    axis_z = TEAPOT_OPENING[1] - 0.08 * up
+    R = radius * (1 - t) ** 0.55 * smoothstep(-0.5, 0.8, hw)
+    rr = np.hypot(Xw - axis_x, Zw - axis_z) / np.maximum(R, 1e-3)
+    body = 1 - smoothstep(0.55, 1.0, rr)
+    tongues = streaky(sh, cell=0.9 / v, octaves=3, seed=seed + 20, stretch=3.0)
+    thr = 0.22 + 0.4 * t
+    flame = body * smoothstep(thr - 0.12, thr + 0.12, tongues) * (1 - smoothstep(0.88, 1.0, t))
+    temp = flame ** 0.6 * (1.0 - 0.35 * t) * (0.8 + 0.2 * np.clip(1 - rr, 0, 1))
+    del body, tongues
+    # the smoke
+    base = 0.55 * height
+    hs = np.clip(hw - base, 0, None)
+    sx = TEAPOT_OPENING[0] + lean * base + 0.015 * base ** 2 + (lean + 0.45) * hs + 0.02 * hs ** 2
+    sz = TEAPOT_OPENING[1] - 0.6 - 0.25 * hs
+    plume = (1 - smoothstep(0.5, 1.0, np.hypot(Xw - sx, Zw - sz) / (1.8 + 0.6 * hs))) * smoothstep(base, base + 1.5, hw)
+    billows = 0.6 * fbm(sh, cell=1.4 / v, octaves=3, seed=seed + 30) + 0.4 * fbm(sh, cell=0.45 / v, octaves=2, seed=seed + 31)
+    top = 1 - smoothstep(0.85, 1.0, (Yw - lo[1]) / (hi[1] - lo[1]))
+    smoke = smoothstep(0.0, 0.35, plume - 0.6 * (1 - billows)) * top
+    del plume, billows, Xw, Yw, Zw
+    # the embers
+    rng = np.random.default_rng(seed + 40)
+    specks = np.zeros(sh, np.float32)
+    for _ in range(embers):
+        e = (TEAPOT_OPENING[0] + rng.normal(1.5, 2.2), FLAME_ROOT_Y + rng.uniform(0.6, 1.5) * height, TEAPOT_OPENING[1] + rng.normal(0, 2.0))
+        i = [int((e[a] - lo[a]) / v) for a in range(3)]
+        if all(0 < i[a] < sh[a] - 1 for a in range(3)):
+            specks[i[0], i[1], i[2]] = rng.uniform(0.6, 1.0)
+    specks = np.clip(ndimage.gaussian_filter(specks, 0.7) * 6, 0, 1)
+    temp = np.maximum(temp, specks)
+    density = 0.35 * flame + 1.2 * smoke + 0.3 * specks
+    return density.astype(np.float32), np.clip(temp, 0, 1).astype(np.float32)
+
+
+def write_teapot_fire(seed=0):
+    """VolumetricReSTIRData/authored/teapotflame (the .vbx mips and its temperature) and teapotflame_lights.json: the
+    fire's point lights (emission_light_table, vb.TEAPOT_FIRE's medium and glow), positions in world cm."""
+    import json
+    name, f = "teapotflame", vb.TEAPOT_FIRE
+    lo, _, v = vb.BOXES[name]
+    density, temp = teapot_flame(seed=seed)
+    with tempfile.TemporaryDirectory() as work:
+        dest = convert(name, density, work, temperature=temp)
+    table = emission_light_table(density * f["density_scale"], temp, n=f["lights"], cutoff=f["cutoff"], scale=f["scale"],
+                                 voxel=v, sigma_a=f["sigma_a"], le_scale=f["le_scale"])
+    for l in table["lights"]:
+        l["p"] = [lo[a] + v * (l["p"][a] + 0.5) for a in range(3)]
+    path = OUT_DIR / (name + "_lights.json")
+    path.write_text(json.dumps(table, indent=1))
+    return dest, path
+
+
+def read_vdb_box(vdb, names):
+    """Grids of a .vdb (VdbToRaw.exe) in one index box: its low corner and {name: array}, x slowest."""
+    grids = {}
+    with tempfile.TemporaryDirectory() as work:
+        for g in names:
+            out = run([RELEASE / "VdbToRaw.exe", vdb, g, Path(work) / g], cwd=RELEASE).split()
+            grids[g] = ([int(v) for v in out[1:4]], np.fromfile(str(Path(work) / g), np.float32).reshape([int(v) for v in out[5:8]]))
+    lo = [min(grids[g][0][a] for g in names) for a in range(3)]
+    hi = [max(grids[g][0][a] + grids[g][1].shape[a] for g in names) for a in range(3)]
+    box = {}
+    for g, (glo, arr) in grids.items():
+        b = np.zeros([h - l for l, h in zip(lo, hi)], np.float32)
+        o = [glo[a] - lo[a] for a in range(3)]
+        b[o[0]:o[0] + arr.shape[0], o[1]:o[1] + arr.shape[1], o[2]:o[2] + arr.shape[2]] = arr
+        box[g] = b
+    return lo, box
+
+
+GASOLINE_SRC = str(REPO / "Gasoline_Explosion_01" / "Gasoline_Explosion_01" / "embergen_gasoline_explosion_a_%d.vdb")
+GASOLINE_DIR = REPO / "VolumetricReSTIRData" / "gasoline"
+
+
+def write_gasoline(frame=None):
+    """The gasoline explosion's frame (user's dataset, CC0) for the teapot: VolumetricReSTIRData/gasoline/gasoline<frame>
+    (gImportVDB, its density and temperature as they are) and gasoline<frame>_lights.json: point lights where it glows
+    (emission_light_table with swatch_fire.GASOLINE's medium and glow), positions in world cm as swatch_fire places it."""
+    import json
+    import swatch_fire as sf
+    g = sf.GASOLINE
+    frame = g["frame"] if frame is None else frame
+    name = "gasoline%d" % frame
+    with tempfile.TemporaryDirectory() as work:
+        vdb = Path(work) / (name + ".vdb")
+        shutil.copy(str(GASOLINE_SRC % frame), str(vdb))
+        dest = import_vdb(vdb, GASOLINE_DIR, emissive=True)
+    lo, box = read_vdb_box(GASOLINE_SRC % frame, ("density", "temperature"))
+    lo_d, _ = read_vdb_box(GASOLINE_SRC % frame, ("density",))
+    off = vbx_offset(dest, name, lo_d)
+    if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
+        raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))
+    # GVDB's extinction per cm: sigma x density x densityScale / the volume's scaling
+    table = emission_light_table(box["density"] * g["density_scale"] / g["scale"], box["temperature"], n=g["lights"],
+                                 cutoff=g["cutoff"], scale=g["temperature_scale"], voxel=g["scale"], sigma_a=g["sigma_a"],
+                                 le_scale=g["le_scale"])
+    pose = {k: g[k] for k in ("scale", "rotation", "anchor", "middle", "bottom")}
+    for l in table["lights"]:
+        l["p"] = list(sf.to_world([l["p"][a] + lo[a] + g["offset"][a] + 0.5 for a in range(3)], **pose))
+    path = GASOLINE_DIR / (name + "_lights.json")
+    path.write_text(json.dumps(table, indent=1))
+    return dest, path
+
+
+def vbx_offset(dest, stem, lo):
+    """The imported .vbx's coordinates minus the .vdb's index box corner `lo`: the VDB's own grid offset."""
+    import struct
+    with open(Path(dest) / (stem + "_mip0.vbx"), "rb") as fh:
+        b = fh.read(260)
+    origin = struct.unpack("<3f", b[98:110])
+    return tuple(origin[a] - lo[a] for a in range(3))
+
+
+FIRE01_SRC = str(REPO / "Fire_01" / "Fire_01" / "embergen_fire_a_%d.vdb")
+FIRE01_DIR = REPO / "VolumetricReSTIRData" / "fire01"
+
+
+def write_fire01(frame, n=1024):
+    """A frame of EmberGen's fire (Fire_01, the user's dataset, CC0: frame 67 is the swatch's) for the teapot, prepared
+    as the swatch's frame is: VolumetricReSTIRData/fire01/fire01_<frame> ('flames' renamed to density by VDBPrep) and
+    fire01_<frame>_lights.json (fire_light_table, positions in the .vbx's coordinates for swatch_fire.to_world)."""
+    import json
+    name = "fire01_%d" % frame
+    with tempfile.TemporaryDirectory() as work:
+        vdb = Path(work) / (name + ".vdb")
+        run([RELEASE / "VDBPrep.exe", FIRE01_SRC % frame, vdb, "flames=density"], cwd=RELEASE)
+        dest = import_vdb(vdb, FIRE01_DIR, emissive=True)
+    lo, box = read_vdb_box(FIRE01_SRC % frame, ("flames",))
+    off = vbx_offset(dest, name, lo)
+    if any(abs(off[a] - FIRE_OFFSET[a]) > 1e-3 for a in range(3)):
+        raise SystemExit("FAILED: %s's grid offset %s is not the swatch frame's %s" % (name, off, FIRE_OFFSET))
+    table = fire_light_table(box["flames"], n=n)
+    for l in table["lights"]:
+        l["p"] = [l["p"][a] + lo[a] + FIRE_OFFSET[a] + 0.5 for a in range(3)]
+    path = FIRE01_DIR / (name + "_lights.json")
+    path.write_text(json.dumps(table, indent=1))
+    return dest, path
+
+
 BUILDERS = {"stagehaze": stage_haze, "groundmist": ground_mist, "smokepuffs": smoke_puffs}
 
 
@@ -375,16 +550,21 @@ SWATCH_FIRE = REPO / "RenderMan_Swatch_Blender" / "VDB" / "embergen_fire_a_67.vd
 FIRE_OFFSET = (-96.5, -96.5, -128.5)  # the VDB's index -> its .vbx coordinates (its grid transform)
 
 
+def read_swatch_flames():
+    """The swatch fire's 'flames' grid (VdbToRaw.exe): its index box's low corner and the array, x slowest."""
+    with tempfile.TemporaryDirectory() as work:
+        raw = Path(work) / "flames.raw"
+        out = run([RELEASE / "VdbToRaw.exe", SWATCH_FIRE, "flames", raw], cwd=RELEASE).split()
+        lo, dims = [int(v) for v in out[1:4]], [int(v) for v in out[5:8]]
+        return lo, np.fromfile(str(raw), dtype=np.float32).reshape(dims)
+
+
 def write_fire_lights(n=1024):
     """VolumetricReSTIRData/swatch/fire_lights.json: fire_light_table() on the swatch fire's 'flames' grid (read with
     VdbToRaw.exe), positions in the .vbx's voxel coordinates (swatch_fire.to_world places them). 1024 lights: with 256
     the pot's inner wall came out patchy, each light's 1 / r^2 where the target's flame lights it evenly."""
     import json
-    with tempfile.TemporaryDirectory() as work:
-        raw = Path(work) / "flames.raw"
-        out = run([RELEASE / "VdbToRaw.exe", SWATCH_FIRE, "flames", raw], cwd=RELEASE).split()
-        lo, dims = [int(v) for v in out[1:4]], [int(v) for v in out[5:8]]
-        flames = np.fromfile(str(raw), dtype=np.float32).reshape(dims)
+    lo, flames = read_swatch_flames()
     table = fire_light_table(flames, n=n)
     for l in table["lights"]:  # array index -> the VDB's index -> its .vbx coordinates, at the voxel's centre
         l["p"] = [l["p"][a] + lo[a] + FIRE_OFFSET[a] + 0.5 for a in range(3)]
@@ -411,6 +591,41 @@ def fire_light_table(flames, n=64, seed=0):
     return {"rgb": list(RMAN_FIRE_RGB), "flames_sum": float(flat.sum()), "lights": lights}
 
 
+def lut_array(kelvin):
+    """blackbody.lut over an array of kelvin: (..., 3)."""
+    import blackbody
+    table = np.array(blackbody.rows())
+    x = np.clip((np.minimum(kelvin, 6400.0) - 50.0) / 50.0, 0.0, 127.0)
+    i = np.minimum(x.astype(int), 126)
+    f = (x - i)[..., None]
+    return table[i] * (1 - f) + table[i + 1] * f
+
+
+def emission_light_table(density, temperature, n, cutoff, scale, voxel, sigma_a, le_scale, seed=0):
+    """Point lights standing in for an emissive volume's glow on the surfaces around it (this renderer's surfaces take
+    no light from a glowing volume by light sampling): what each voxel emits as GVDB renders it -- sigma_a x density x
+    LeScale x the LUT at (T - cutoff) x scale kelvin, per unit length, times the voxel's volume -- and `n` voxels drawn
+    in proportion to its luminance (stratified), each light in its voxel's colour with an equal share of the
+    luminance. Positions are array indices; `total` the volume's emission (RGB intensity)."""
+    kelvin = np.minimum(6400.0, (np.asarray(temperature, np.float64) - cutoff) * scale)
+    rgb = lut_array(kelvin) * (sigma_a * le_scale * voxel ** 3) * np.asarray(density, np.float64)[..., None]
+    rgb[np.asarray(temperature) <= 0] = 0.0
+    lum = rgb @ np.array([0.2126, 0.7152, 0.0722])
+    flat = lum.ravel()
+    total = rgb.reshape(-1, 3).sum(0)
+    lights = []
+    if flat.sum() > 0:
+        rng = np.random.default_rng(seed)
+        cdf = np.cumsum(flat) / flat.sum()
+        share = flat.sum() / n
+        for i in np.searchsorted(cdf, (np.arange(n) + rng.random(n)) / n):
+            i = int(min(i, flat.size - 1))
+            idx = np.unravel_index(i, lum.shape)
+            c = rgb[idx] / lum[idx]
+            lights.append({"p": [float(v) for v in idx], "intensity": [float(share * v) for v in c]})
+    return {"total": [float(v) for v in total], "lights": lights}
+
+
 def write_raw(d, path):
     """C order, x slowest: VolFromRaw reads data[(i * ny + j) * nz + k] as voxel (i, j, k)."""
     np.ascontiguousarray(d, dtype=np.float32).tofile(str(path))
@@ -423,13 +638,26 @@ def run(cmd, cwd):
     return r.stdout
 
 
-def convert(name, d, work, voxel=None, out_dir=None):
-    """density -> <out_dir, default VolumetricReSTIRData/authored>/<name>/ (.vbx mips); voxel size from volume_boxes."""
+def convert(name, d, work, voxel=None, out_dir=None, temperature=None):
+    """density (and a temperature, for an emissive volume) -> <out_dir, default VolumetricReSTIRData/authored>/<name>/
+    (.vbx mips, and <name>_temperature.vbx); voxel size from volume_boxes."""
     voxel = voxel or vb.BOXES[name][2]
     out_dir = Path(out_dir) if out_dir else OUT_DIR
     raw, vdb = Path(work) / (name + ".raw"), Path(work) / (name + ".vdb")
     write_raw(d, raw)
-    print(run([RELEASE / "VolFromRaw.exe", raw, *d.shape, voxel, vdb], cwd=RELEASE).strip())
+    extra = []
+    if temperature is not None:
+        extra = [1e-4, Path(work) / (name + "_temperature.raw")]
+        write_raw(temperature, extra[1])
+    print(run([RELEASE / "VolFromRaw.exe", raw, *d.shape, voxel, vdb, *extra], cwd=RELEASE).strip())
+    return import_vdb(vdb, out_dir, emissive=temperature is not None)
+
+
+def import_vdb(vdb, out_dir, emissive=False):
+    """A .vdb with a 'density' grid (and 'temperature', if emissive) -> <out_dir>/<its stem>/ (.vbx mips and
+    <stem>_temperature.vbx), by gImportVDB."""
+    vdb, out_dir = Path(vdb), Path(out_dir)
+    name = vdb.stem
     staged = GIMPORT_DIR / name   # gImportVDB writes a folder named after the .vdb into its cwd
     if staged.exists():
         shutil.rmtree(staged)
@@ -441,6 +669,8 @@ def convert(name, d, work, voxel=None, out_dir=None):
     shutil.move(str(staged), str(dest))
     if not vp.vbx_complete(dest, name, NUM_MIPS):
         raise SystemExit("FAILED: %s is missing .vbx files after import" % dest)
+    if emissive and not (dest / (name + "_temperature.vbx")).exists():
+        raise SystemExit("FAILED: %s has no temperature .vbx after import" % dest)
     return dest
 
 
@@ -464,6 +694,10 @@ def main(argv):
             continue
         if name in TEXTURES:
             print("%s -> %s" % (name, write_texture(name)))
+            continue
+        if name == "teapotflame":  # an emissive volume: density, temperature and the lights standing in for its glow
+            t0 = time.time()
+            print("%s -> %s, %s (%.0fs)" % (name, *write_teapot_fire(), time.time() - t0))
             continue
         if name.startswith("dust") and name.endswith("r"):  # dust0050r: frame 50 of the shockwave, reshaped
             t0 = time.time()
