@@ -1,0 +1,20 @@
+# The swatch teapot (the stage: teapot_stage.pyscene) with a frame of one of the user's EmberGen sequences over its
+# opening (vr_graph.load_teapot_sequence; teapot_<seq>.pyscene sets SEQUENCE and runs this): its light on the surfaces
+# and in its own smoke is point lights where it glows, each in its voxel's blackbody colour, carrying what its share of
+# the volume emits (make_volumes.py write_sequence) -- lights inside a scattering medium. Render it at one bounce, for
+# the reason teapot_fire.pyscene gives.
+import json
+import sys
+
+sys.path.insert(0, r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts')
+import swatch_fire  # noqa: E402
+
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\teapot_stage.pyscene').read())
+
+frame = swatch_fire.frame(swatch_fire.SEQUENCES[SEQUENCE]['frame'])
+table = json.load(open(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\%s\%s%d_lights.json' % (SEQUENCE, SEQUENCE, frame)))
+for k, l in enumerate(table['lights']):
+    light = PointLight('flame%d' % k)
+    light.intensity = float3(*l['intensity'])
+    light.position = float3(*l['p'])
+    sceneBuilder.addLight(light)

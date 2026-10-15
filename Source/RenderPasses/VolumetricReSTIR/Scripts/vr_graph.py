@@ -628,26 +628,25 @@ def load_teapot_flame():
     return _teapot_view(scatter_albedo=f["sigma_s"] / (f["sigma_a"] + f["sigma_s"]))
 
 
-def load_teapot_gasoline():
-    """The swatch teapot with a frame of EmberGen's gasoline explosion bursting from it (user's dataset, 2026-10-13, CC0;
-    Gasoline_Explosion_01, imported as it is by make_volumes.py write_gasoline; scenes/teapot_gasoline.pyscene): a
-    fireball in rolling smoke, placed, lit and glowing as swatch_fire.GASOLINE says. The teapot shots' dome and camera;
-    one bounce (teapot_fire.pyscene)."""
+def load_teapot_sequence(seq):
+    """The swatch teapot with a frame of one of the user's EmberGen sequences over its opening (2026-10-13/14, CC0;
+    swatch_fire.SEQUENCES: gasoline, midair, plume; prepared by make_volumes.py write_sequence;
+    scenes/teapot_<seq>.pyscene), placed, lit and glowing as its entry says; TEAPOT_FRAME picks the frame. The teapot
+    shots' dome and camera; one bounce (teapot_fire.pyscene)."""
     import swatch_fire
-    g = swatch_fire.GASOLINE
-    pose = {k: g[k] for k in ("scale", "rotation", "anchor", "middle", "bottom")}
-    m.loadScene(SCENE_DIR + r"\teapot_gasoline.pyscene")
+    g = swatch_fire.SEQUENCES[seq]
+    m.loadScene(SCENE_DIR + r"\teapot_%s.pyscene" % seq)
     m.scene.addGVDBVolume(sigma_a=float3(g["sigma_a"], g["sigma_a"], g["sigma_a"]), sigma_s=float3(g["sigma_s"], g["sigma_s"], g["sigma_s"]),
-                          g=env_float("VR_PHASE_G", 0.0), dataFile=DATA_DIR + r"\gasoline\gasoline%d" % swatch_fire.frame(g["frame"]), numMips=4,
-                          densityScale=_density(g["density_scale"]), hasVelocity=False, hasEmission=True, LeScale=g["le_scale"],
-                          temperatureCutoff=g["cutoff"], temperatureScale=g["temperature_scale"],
-                          worldTranslation=float3(*swatch_fire.translation(**pose)), worldRotation=float3(*g["rotation"]),
+                          g=env_float("VR_PHASE_G", 0.0), dataFile=DATA_DIR + r"\%s\%s%d" % (seq, seq, swatch_fire.frame(g["frame"])),
+                          numMips=4, densityScale=_density(g["density_scale"]), hasVelocity=False, hasEmission=True,
+                          LeScale=g["le_scale"] * g.get("glow", 1.0), temperatureCutoff=g["cutoff"], temperatureScale=g["temperature_scale"],
+                          worldTranslation=float3(*swatch_fire.translation(**swatch_fire.pose(g))), worldRotation=float3(*g["rotation"]),
                           worldScaling=g["scale"])
     return _teapot_view(scatter_albedo=g["sigma_s"] / (g["sigma_a"] + g["sigma_s"]))
 
 
-# The JangaFX EmberGen fire plume (FirePlumeVDB) is deliberately not here: the user excluded it from the
-# decorrelation study. run_volume_dataset.py still plays it back.
+# The JangaFX EmberGen fire plume (FirePlumeVDB) as its own scene is deliberately not here: the user excluded it from
+# the decorrelation study (2026-09-27), then asked for it over the teapot (teapotplume, 2026-10-14).
 SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion, "explosiondusk": load_explosion_dusk,
           "emerald": load_emerald, "bunny": load_bunny, "wdas": load_wdas,
           # Stress scenes (spec V-B9), point lights only; names without "_" (run_study.sh's label suffixes).
@@ -683,7 +682,8 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           # The dust shockwave (user, 2026-10-11): their reference look first.
           "duststudio": load_dust_studio, "dustlights": load_dust_lights,
           # The RenderMan swatch teapot with EmberGen fire rising from it (user, 2026-10-11).
-          "teapotfire": load_teapot_fire, "teapotflame": load_teapot_flame, "teapotgasoline": load_teapot_gasoline,
+          "teapotfire": load_teapot_fire, "teapotflame": load_teapot_flame, "teapotgasoline": lambda: load_teapot_sequence("gasoline"),
+          "teapotmidair": lambda: load_teapot_sequence("midair"), "teapotplume": lambda: load_teapot_sequence("plume"),
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}

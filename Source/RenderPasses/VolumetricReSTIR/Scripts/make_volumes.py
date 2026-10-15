@@ -252,38 +252,44 @@ def read_vdb_box(vdb, names):
     return lo, box
 
 
-GASOLINE_SRC = str(REPO / "Gasoline_Explosion_01" / "Gasoline_Explosion_01" / "embergen_gasoline_explosion_a_%d.vdb")
-GASOLINE_DIR = REPO / "VolumetricReSTIRData" / "gasoline"
-
-
-def write_gasoline(frame=None):
-    """The gasoline explosion's frame (user's dataset, CC0) for the teapot: VolumetricReSTIRData/gasoline/gasoline<frame>
-    (gImportVDB, its density and temperature as they are) and gasoline<frame>_lights.json: point lights where it glows
-    (emission_light_table with swatch_fire.GASOLINE's medium and glow), positions in world cm as swatch_fire places it."""
+def write_sequence(seq, frame=None):
+    """A frame of one of the user's EmberGen sequences (swatch_fire.SEQUENCES: gasoline, midair, plume) for the teapot:
+    VolumetricReSTIRData/<seq>/<seq><frame> (gImportVDB, after VDBPrep's renames if the sequence has any) and
+    <seq><frame>_lights.json: point lights where it glows (emission_light_table with the sequence's medium and glow,
+    its density and its glow grid), positions in world cm as swatch_fire places it. Refuses a frame whose grid offset is
+    not the sequence's."""
     import json
     import swatch_fire as sf
-    g = sf.GASOLINE
+    g = sf.SEQUENCES[seq]
     frame = g["frame"] if frame is None else frame
-    name = "gasoline%d" % frame
+    name = "%s%d" % (seq, frame)
+    src = str(REPO / (g["src"] % frame))
+    out_dir = REPO / "VolumetricReSTIRData" / seq
     with tempfile.TemporaryDirectory() as work:
         vdb = Path(work) / (name + ".vdb")
-        shutil.copy(str(GASOLINE_SRC % frame), str(vdb))
-        dest = import_vdb(vdb, GASOLINE_DIR, emissive=True)
-    lo, box = read_vdb_box(GASOLINE_SRC % frame, ("density", "temperature"))
-    lo_d, _ = read_vdb_box(GASOLINE_SRC % frame, ("density",))
+        if g["renames"]:
+            run([RELEASE / "VDBPrep.exe", src, vdb, g["renames"]], cwd=RELEASE)
+        else:
+            shutil.copy(src, str(vdb))
+        dest = import_vdb(vdb, out_dir, emissive=True)
+    lo, box = read_vdb_box(src, ("density", g["glow_grid"]))
+    lo_d, _ = read_vdb_box(src, ("density",))
     off = vbx_offset(dest, name, lo_d)
     if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
         raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))
     # GVDB's extinction per cm: sigma x density x densityScale / the volume's scaling
-    table = emission_light_table(box["density"] * g["density_scale"] / g["scale"], box["temperature"], n=g["lights"],
+    table = emission_light_table(box["density"] * g["density_scale"] / g["scale"], box[g["glow_grid"]], n=g["lights"],
                                  cutoff=g["cutoff"], scale=g["temperature_scale"], voxel=g["scale"], sigma_a=g["sigma_a"],
                                  le_scale=g["le_scale"])
-    pose = {k: g[k] for k in ("scale", "rotation", "anchor", "middle", "bottom")}
     for l in table["lights"]:
-        l["p"] = list(sf.to_world([l["p"][a] + lo[a] + g["offset"][a] + 0.5 for a in range(3)], **pose))
-    path = GASOLINE_DIR / (name + "_lights.json")
+        l["p"] = list(sf.to_world([l["p"][a] + lo[a] + g["offset"][a] + 0.5 for a in range(3)], **sf.pose(g)))
+    path = out_dir / (name + "_lights.json")
     path.write_text(json.dumps(table, indent=1))
     return dest, path
+
+
+def write_gasoline(frame=None):
+    return write_sequence("gasoline", frame)
 
 
 def vbx_offset(dest, stem, lo):
@@ -606,22 +612,25 @@ def emission_light_table(density, temperature, n, cutoff, scale, voxel, sigma_a,
     no light from a glowing volume by light sampling): what each voxel emits as GVDB renders it -- sigma_a x density x
     LeScale x the LUT at (T - cutoff) x scale kelvin, per unit length, times the voxel's volume -- and `n` voxels drawn
     in proportion to its luminance (stratified), each light in its voxel's colour with an equal share of the
-    luminance. Positions are array indices; `total` the volume's emission (RGB intensity)."""
-    kelvin = np.minimum(6400.0, (np.asarray(temperature, np.float64) - cutoff) * scale)
-    rgb = lut_array(kelvin) * (sigma_a * le_scale * voxel ** 3) * np.asarray(density, np.float64)[..., None]
-    rgb[np.asarray(temperature) <= 0] = 0.0
+    luminance. Positions are array indices; `total` the volume's emission (RGB intensity). Only voxels that can glow
+    (temperature and density above 0) are evaluated: a fire plume frame has 62M voxels, too many to colour at once."""
+    temperature = np.asarray(temperature)
+    density = np.asarray(density)
+    where = np.flatnonzero((temperature > 0) & (density > 0))  # C order, as the dense draw ran
+    kelvin = np.minimum(6400.0, (temperature.ravel()[where].astype(np.float64) - cutoff) * scale)
+    rgb = lut_array(kelvin) * (sigma_a * le_scale * voxel ** 3) * density.ravel()[where].astype(np.float64)[:, None]
     lum = rgb @ np.array([0.2126, 0.7152, 0.0722])
-    flat = lum.ravel()
-    total = rgb.reshape(-1, 3).sum(0)
+    total = rgb.sum(0) if len(where) else np.zeros(3)
     lights = []
-    if flat.sum() > 0:
+    if lum.sum() > 0:
         rng = np.random.default_rng(seed)
-        cdf = np.cumsum(flat) / flat.sum()
-        share = flat.sum() / n
-        for i in np.searchsorted(cdf, (np.arange(n) + rng.random(n)) / n):
-            i = int(min(i, flat.size - 1))
-            idx = np.unravel_index(i, lum.shape)
-            c = rgb[idx] / lum[idx]
+        cdf = np.cumsum(lum) / lum.sum()
+        share = lum.sum() / n
+        # the first voxel whose cumulative share reaches each draw: always one that glows, as over the dense array
+        for k in np.searchsorted(cdf, (np.arange(n) + rng.random(n)) / n):
+            k = int(min(k, len(where) - 1))
+            idx = np.unravel_index(int(where[k]), density.shape)
+            c = rgb[k] / lum[k]
             lights.append({"p": [float(v) for v in idx], "intensity": [float(share * v) for v in c]})
     return {"total": [float(v) for v in total], "lights": lights}
 

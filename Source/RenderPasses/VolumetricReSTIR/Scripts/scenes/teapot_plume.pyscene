@@ -1,0 +1,5 @@
+# The swatch teapot with a frame of EmberGen's fire plume rising from it (user, 2026-10-14: FirePlumeVDB, excluded from
+# the study until then): flames at the opening under a tall smoke column (teapot_sequence.pyscene;
+# swatch_fire.SEQUENCES['plume']).
+SEQUENCE = 'plume'
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\teapot_sequence.pyscene').read())

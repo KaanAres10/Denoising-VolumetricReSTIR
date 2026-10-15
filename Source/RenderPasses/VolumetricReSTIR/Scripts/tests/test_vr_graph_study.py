@@ -221,7 +221,8 @@ class TestLoaders(StudyEnv):
             info = vr.SCENES[name]()
             v = volume_call(m)
             self.assertTrue(v["hasEmission"], name)
-            self.assertEqual((v["LeScale"], v["temperatureCutoff"]), (cfg["le_scale"], cfg["cutoff"]), name)
+            # the camera sees the glow at `glow` of what the lights were made from (the sequences: 1/16, to keep detail)
+            self.assertEqual((v["LeScale"], v["temperatureCutoff"]), (cfg["le_scale"] * cfg.get("glow", 1.0), cfg["cutoff"]), name)
             self.assertTrue(info["params"]["mUseEmissiveLights"] and info["params"]["mUseAnalyticLights"], name)
             path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
             builder = Recorder()
