@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from scipy import ndimage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import blackbody as bb  # noqa: E402
@@ -282,6 +283,68 @@ class TestLanternSkies(unittest.TestCase):
         self.assertEqual(sky.shape, (128, 256, 3))
         self.assertIn("lantern_sky", mv.SKIES)
         self.assertIn("lantern_night", mv.SKIES)
+
+
+class TestTornadoDetail(unittest.TestCase):
+    """The looping tornado with the Lanterns construct's detail added, its own structure kept (user, 2026-10-17)."""
+
+    def setUp(self):
+        yy, xx = np.indices((40, 40), dtype=np.float64)
+        r = np.hypot(xx - 20, yy - 20)
+        self.d = np.repeat((np.clip(1 - r / 12, 0, 1) * 0.3)[..., None], 60, axis=2).astype(np.float32)  # a column
+        self.d[..., :6] = self.d[..., 54:] = 0.0  # clear of the box's faces, as the tornado is
+
+    def test_resampled_finer_with_its_mass_and_place_kept(self):
+        # a column many of the warp's noise cells across, as the tornado is (~270 voxels): a warp keeps mass only on
+        # average, so on the 24-voxel column one realization is off by up to 12%
+        yy, xx = np.indices((100, 100), dtype=np.float64)
+        d = np.repeat((np.clip(1 - np.hypot(xx - 50, yy - 50) / 40, 0, 1) * 0.3)[..., None], 60, axis=2).astype(np.float32)
+        d[..., :6] = d[..., 54:] = 0.0
+        f = mv.tornado_detail(d, up=1.5, specks=0, bands=0.0)
+        self.assertEqual(f.shape, (150, 150, 90))
+        self.assertEqual(f.dtype, np.float32)
+        self.assertAlmostEqual(float(f.sum()) / 1.5 ** 3 / float(d.sum()), 1.0, delta=0.04)
+        cx = float((f.sum((1, 2)) * np.arange(150)).sum() / f.sum())
+        self.assertAlmostEqual(cx, (50 + 0.5) * 1.5 - 0.5, delta=1.0)  # old voxel 50's centre in the new grid
+
+    def test_warp_breaks_the_smooth_column_into_filaments(self):
+        smooth = mv.tornado_detail(self.d, up=1.5, warp=0.0, specks=0, bands=0.0)
+        f = mv.tornado_detail(self.d, up=1.5, specks=0, bands=0.0)
+        lap = lambda a: float(np.abs(ndimage.laplace(a))[20:40, 20:40, 10:80].mean())  # noqa: E731
+        self.assertGreater(lap(f), 3 * lap(smooth))
+
+    def test_bands_wrap_the_axis(self):
+        f = mv.tornado_detail(self.d, up=1.0, warp=0.0, specks=0, bands=0.45, pitch=12.0)
+        a = np.linspace(0, 2 * np.pi, 64, endpoint=False)
+        ring = ndimage.map_coordinates(f[:, :, 30], [20 + 6 * np.cos(a), 20 + 6 * np.sin(a)], order=1)
+        self.assertGreater(float(ring.std() / ring.mean()), 0.2)  # varies around the axis (the column: not at all)
+        line = f[26, 20, 6:54]  # along the axis at a fixed angle: a band every `pitch` voxels
+        spectrum = np.abs(np.fft.rfft(line - line.mean()))
+        self.assertAlmostEqual(48 / int(np.argmax(spectrum)), 12.0, delta=2.5)
+
+    def test_specks_are_small_dense_and_inside_the_smoke(self):
+        f = mv.tornado_detail(self.d, up=1.0, warp=0.0, bands=0.0, specks=50, speck_density=2.5)
+        self.assertGreater(float(f.max()), 2.0)  # far denser than the column's 0.3
+        self.assertLess(int((f > 1.0).sum()), 50 * 30)  # each a few voxels
+        yy, xx = np.indices((40, 40))
+        outside = np.hypot(xx - 20, yy - 20) > 15
+        self.assertLess(float(f[outside].max()), 0.05)
+
+    def test_sharp_bands_thin_the_gaps_between_them(self):
+        soft = mv.tornado_detail(self.d, up=1.0, warp=0.0, specks=0, bands=0.8, sharp=1.0, pitch=12.0)
+        sharp = mv.tornado_detail(self.d, up=1.0, warp=0.0, specks=0, bands=0.8, sharp=3.0, pitch=12.0)
+        line = lambda f: f[26, 20, 10:50]  # noqa: E731
+        self.assertLess(float(line(sharp).min() / line(sharp).mean()), float(line(soft).min() / line(soft).mean()))
+        self.assertAlmostEqual(float(sharp.sum()) / float(soft.sum()), 1.0, delta=0.1)  # the same smoke, regrouped
+
+    def test_specks_vary_in_size_and_density(self):
+        f = mv.tornado_detail(np.zeros((40, 40, 60), np.float32) + self.d, up=1.0, warp=0.0, bands=0.0, specks=200,
+                              speck_density=2.5, speck_spread=0.6)
+        peaks = f[(f == ndimage.maximum_filter(f, size=3)) & (f > 0.6)]
+        self.assertGreater(float(np.percentile(peaks, 90) / np.percentile(peaks, 10)), 2.0)
+
+    def test_is_repeatable(self):
+        np.testing.assert_array_equal(mv.tornado_detail(self.d, specks=20), mv.tornado_detail(self.d, specks=20))
 
 
 class TestRaw(unittest.TestCase):

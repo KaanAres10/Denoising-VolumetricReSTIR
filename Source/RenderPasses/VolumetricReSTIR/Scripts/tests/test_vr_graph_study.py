@@ -10,6 +10,8 @@ import os
 import sys
 import types
 import unittest
+
+import numpy as np
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1]
@@ -262,26 +264,79 @@ class TestLoaders(StudyEnv):
             self.assertTrue(env and env[0].endswith(g["sky"] + ".exr"), env)
             path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
             builder = Recorder()
-            scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n), "float3": lambda *a: tuple(a)}
+            scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n), "float3": lambda *a: tuple(a),
+                     "float2": lambda *a: tuple(a), "float4": lambda *a: tuple(a), "Material": lambda n: types.SimpleNamespace(name=n),
+                     "TriangleMesh": lambda: Recorder()}
             with open(path) as fh:
                 exec(fh.read(), scope)
             lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
-            self.assertEqual(len(lights), g["glow"]["n"], shot)
-            self.assertAlmostEqual(sum(l.intensity[1] for l in lights), g["glow"]["power"] * g["glow"]["rgb"][1], places=6)
+            glow = g.get("glow", {"n": 0, "power": 0.0, "rgb": (0.0, 0.0, 0.0)})  # the tornado's are soft boxes
+            self.assertEqual(len(lights), glow["n"], shot)
+            self.assertAlmostEqual(sum(l.intensity[1] for l in lights), glow["power"] * glow["rgb"][1], places=6)
+            self.assertEqual(info["params"]["mUseAnalyticLights"], glow["n"] > 0)  # never on with no point lights
 
     def test_the_looping_tornado_stands_as_its_preview_shows_it(self):
         # the user (2026-10-17): the original looping tornado, as JangaFX's preview shows it -- upright (z up -> y up,
-        # turned only about its own axis), the frame as simulated (no reshaping), under its own dark sky
+        # turned only about its own axis), its own structure with the Lanterns construct's detail added
+        # (make_volumes.py tornado_detail, not reshaped), under its own dark sky
         import lantern
         g = lantern.SHOTS["lantern"]
         vr, m = fresh_vr()
         vr.SCENES["lantern"]()
         v = volume_call(m)
-        self.assertTrue(v["dataFile"].endswith("tornado%d" % g["frame"]), v["dataFile"])
+        self.assertTrue(v["dataFile"].endswith("tornadodetail%d" % g["frame"]), v["dataFile"])
         self.assertEqual(v["worldRotation"][:2], (-90.0, 0.0))
-        self.assertNotIn("author", g)
+        self.assertIn("detail", g)
         env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
         self.assertTrue(env[0].endswith("lantern_night.exr"), env)
+
+    def test_the_looping_tornado_is_lit_by_big_soft_boxes_out_of_shot(self):
+        # the user (2026-10-17): complicated enough that mutations are useful, with big lights -- large emissive soft
+        # boxes, each its own tint (a pixel's sample carries its light's colour), facing the funnel, none in shot
+        import lantern
+        g = lantern.SHOTS["lantern"]
+        vr, m = fresh_vr()
+        info = vr.SCENES["lantern"]()
+        self.assertTrue(info["params"]["mUseEmissiveLights"] and info["params"]["mUseSurfaceScene"])
+
+        class Mesh:
+            def __init__(self):
+                self.v, self.t = [], []
+
+            def addVertex(self, p, n, uv):
+                self.v.append(np.array(p, float))
+
+            def addTriangle(self, a, b, c):
+                self.t.append((a, b, c))
+
+        path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+        builder = Recorder()
+        scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+                 "Material": lambda n: types.SimpleNamespace(name=n), "TriangleMesh": Mesh,
+                 "float2": lambda *a: tuple(a), "float3": lambda *a: tuple(a), "float4": lambda *a: tuple(a)}
+        with open(path) as fh:
+            exec(fh.read(), scope)
+        boxes = [c[1] for c in builder.calls if c[0] == "addTriangleMesh"]
+        self.assertEqual(len(boxes), len(g["panels"]))
+        self.assertEqual(len({tuple(mat.emissiveColor) for _, mat in boxes}), len(boxes))  # each its own tint
+        cam = g["camera"]
+        eye, target = np.array(cam["position"], float), np.array(cam["target"], float)
+        fwd = (target - eye) / np.linalg.norm(target - eye)
+        right = np.cross(fwd, (0.0, 1.0, 0.0))
+        right /= np.linalg.norm(right)
+        up = np.cross(right, fwd)
+        tan_v = 12.0 / cam["focal"]  # Falcor's frame: 24 mm high
+        for mesh, mat in boxes:
+            self.assertGreater(mat.emissiveFactor, 0.0)
+            q = [p - eye for p in mesh.v]
+            x = [np.dot(p, right) / np.dot(p, fwd) / (tan_v * 16 / 9) for p in q]
+            y = [np.dot(p, up) / np.dot(p, fwd) / tan_v for p in q]
+            self.assertTrue(all(np.dot(p, fwd) > 0 for p in q))
+            self.assertTrue(min(x) > 1 or max(x) < -1 or min(y) > 1 or max(y) < -1, (x, y))  # wholly out of shot
+            centre = sum(mesh.v) / len(mesh.v)
+            for a, b, c in mesh.t:  # wound to emit toward the funnel
+                n = np.cross(mesh.v[b] - mesh.v[a], mesh.v[c] - mesh.v[a])
+                self.assertGreater(np.dot(n, target - centre), 0.0)
 
     def test_blackbody_lut_reads_as_the_shader_samples_it(self):
         # VolumeBase.slang ConvertTempToColor: a 128-texel 1D texture, linear filtering, texel i at 50 + 50 i kelvin

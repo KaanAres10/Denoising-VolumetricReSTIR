@@ -1,6 +1,7 @@
-# A green energy tornado (lantern.py; vr_graph.load_lantern; lantern_<shot>.pyscene sets SHOT and runs this): lit from
-# inside by a few big green lights along its axis (make_volumes.py write_lantern) -- lights inside a scattering medium
-# -- and by the sky's glow and key (the loader's). No surfaces: the placeholder mesh only.
+# A green energy tornado (lantern.py; vr_graph.load_lantern; lantern_<shot>.pyscene sets SHOT and runs this): lit by
+# its big lights -- a few big green point lights beside its axis (make_volumes.py write_lantern), or large emissive soft
+# boxes out of shot (lantern.panel_corners: each its own tint) -- and by the sky's glow and key (the loader's). No
+# surfaces in shot: the placeholder mesh and the soft boxes only.
 import json
 import sys
 
@@ -15,3 +16,17 @@ for k, l in enumerate(table['lights']):
     light.intensity = float3(*l['intensity'])
     light.position = float3(*l['p'])
     sceneBuilder.addLight(light)
+target = lantern.SHOTS[SHOT]['camera']['target']
+for panel in lantern.SHOTS[SHOT].get('panels', ()):
+    corners = lantern.panel_corners(panel, target)
+    normal = [target[i] - sum(c[i] for c in corners) / 4 for i in range(3)]
+    mesh = TriangleMesh()
+    for c, uv in zip(corners, ((0, 0), (1, 0), (1, 1), (0, 1))):
+        mesh.addVertex(float3(*c), float3(*normal), float2(*uv))
+    mesh.addTriangle(0, 1, 2)  # wound to face the funnel: the emitting side
+    mesh.addTriangle(0, 2, 3)
+    box = Material('SoftBox' + panel['name'])
+    box.baseColor = float4(0, 0, 0, 1)
+    box.emissiveColor = float3(*panel['rgb'])
+    box.emissiveFactor = panel['radiance']
+    sceneBuilder.addMeshInstance(sceneBuilder.addNode('SoftBox' + panel['name']), sceneBuilder.addTriangleMesh(mesh, box))

@@ -292,11 +292,91 @@ def write_gasoline(frame=None):
     return write_sequence("gasoline", frame)
 
 
+def unit_noise(shape, sigma, rng):
+    """Smooth Gaussian noise: white noise blurred by `sigma` voxels (wrapping), scaled to unit standard deviation."""
+    n = ndimage.gaussian_filter(rng.standard_normal(shape, dtype=np.float32), sigma, mode="wrap")
+    return n / max(float(n.std()), 1e-12)
+
+
+def tornado_detail(d, up=1.5, warp=(3.0, 1.2), bands=0.45, sharp=1.0, arms=2, pitch=54.0, meander=1.0, specks=5000,
+                   speck_density=2.5, speck_sigma=0.8, speck_spread=0.0, speck_power=1.0, seed=1, chunk=24):
+    """The looping tornado with the Lanterns construct's detail added (user, 2026-10-17: "add detail such that it looks
+    like the lantern construct, the volumetrics more complicated, so that mutation is useful"), its own structure kept --
+    not reshaped. Returns float32 density on a grid `up` times finer (new voxel j's centre at source coordinate
+    (j + 0.5) / up - 0.5):
+      finer filaments: the frame sampled through a displacement field -- two octaves of smooth noise, `warp` new
+    voxels at 4 and 1.3 source voxels' scale -- so its smooth veils curl into filaments a voxel or two across;
+      bands: helices wrapping the funnel's axis (each slice's density centre, smoothed along z), `arms` of them, one
+    passing every `pitch` new voxels along z, their phase meandering with smooth noise (`meander` radians: the
+    reference's bands are irregular); `bands` of the density regrouped into them, the profile (1 + cos) / 2 to the
+    power `sharp` (higher: narrower bands, emptier gaps -- seen through smoke, a soft ripple averages out along the
+    view), its mean over a period 1, so the smoke is regrouped, not added;
+      specks: `specks` small dense blobs (Gaussian; `speck_density` at the centre, `speck_sigma` new voxels across,
+    both log-normal by `speck_spread`) drawn by the frame's density to the power `speck_power` (below 1: more out in
+    the thin veils): on the lit side each catches the light, a glint, as the construct's glitter -- against thin smoke
+    an opaque speck reads up to 1 / its optical depth brighter -- and in shadow a dark speck of debris, casting its own
+    small shadow. Seeded: the same arguments give the same volume."""
+    rng = np.random.default_rng(seed)
+    nx, ny, nz = d.shape
+    shape = tuple(int(round(up * n)) for n in d.shape)
+    disp = None
+    if warp:
+        disp = [warp[0] * unit_noise(d.shape, 4.0, rng) + warp[1] * unit_noise(d.shape, 1.3, rng) for _ in range(3)]
+    phase = meander * unit_noise(d.shape, 12.0, rng) if bands else None
+    band_mean = float(np.mean((0.5 + 0.5 * np.cos(np.linspace(0, 2 * np.pi, 4096, endpoint=False))) ** sharp))
+    # the funnel's axis, slice by slice, in source voxels
+    w = d.sum((0, 1)).astype(np.float64)
+    ix, iy = np.indices((nx, ny), dtype=np.float64)
+    keep = w > 1e-6 * max(float(w.max()), 1e-30)
+    axis = []
+    for grid in (ix, iy):
+        c = (d * grid[..., None]).sum((0, 1)) / np.maximum(w, 1e-30)
+        c = np.interp(np.arange(nz), np.flatnonzero(keep), c[keep]) if keep.any() else np.full(nz, (len(grid) - 1) / 2)
+        axis.append(ndimage.gaussian_filter1d(c, 8.0, mode="nearest"))
+    sx = ((np.arange(shape[0]) + 0.5) / up - 0.5)[:, None, None]
+    sy = ((np.arange(shape[1]) + 0.5) / up - 0.5)[None, :, None]
+    out = np.empty(shape, np.float32)
+    for z0 in range(0, shape[2], chunk):
+        jz = np.arange(z0, min(z0 + chunk, shape[2]))
+        sz = ((jz + 0.5) / up - 0.5)[None, None, :]
+        X, Y, Z = np.broadcast_arrays(sx, sy, sz)
+        at = [X, Y, Z]
+        if disp is not None:
+            at = [A + ndimage.map_coordinates(f, [X, Y, Z], order=1, mode="nearest") / up for A, f in zip((X, Y, Z), disp)]
+        val = ndimage.map_coordinates(d, at, order=1, mode="constant", cval=0.0)
+        if bands:
+            ax = np.interp(sz, np.arange(nz), axis[0])
+            ay = np.interp(sz, np.arange(nz), axis[1])
+            theta = np.arctan2(Y - ay, X - ax)
+            m = ndimage.map_coordinates(phase, [X, Y, Z], order=1, mode="nearest")
+            band = (0.5 + 0.5 * np.cos(arms * theta - 2 * np.pi * jz[None, None, :] / pitch + m)) ** sharp
+            val *= (1.0 - bands) + bands * band / band_mean
+        out[:, :, z0:z0 + len(jz)] = val
+    if specks:
+        p = np.maximum(d.ravel().astype(np.float64), 0.0) ** speck_power
+        p /= p.sum()
+        src = np.array(np.unravel_index(rng.choice(p.size, specks, p=p), d.shape)).T + rng.uniform(-0.5, 0.5, (specks, 3))
+        c = np.rint((src + 0.5) * up - 0.5).astype(np.int64)
+        peak = speck_density * np.exp(speck_spread * rng.standard_normal(specks))
+        sigma = speck_sigma * np.clip(np.exp(0.5 * speck_spread * rng.standard_normal(specks)), 0.6, 1.6)
+        r = int(np.ceil(3 * sigma.max()))
+        o = np.arange(-r, r + 1)
+        ox, oy, oz = (a.ravel() for a in np.meshgrid(o, o, o, indexing="ij"))
+        g = peak[:, None] * np.exp(-(ox ** 2 + oy ** 2 + oz ** 2)[None, :] / (2 * sigma[:, None] ** 2))
+        pts = c[:, None, :] + np.stack([ox, oy, oz], 1)[None]
+        inside = np.all((pts >= 0) & (pts < np.array(shape)), axis=2)
+        np.add.at(out, tuple(pts[inside].T), g[inside].astype(np.float32))
+    np.clip(out, 0.0, None, out=out)
+    return out
+
+
 def write_lantern(shot="lantern", frame=None):
-    """A frame of a green tornado shot (lantern.SHOTS: the looping tornado or the dust devil) as it is:
-    VolumetricReSTIRData/<data>/<data><frame> (gImportVDB) and <data><frame>_lights.json -- its few big green lights,
-    one at each of the shot's heights on the funnel's axis (the slice's density-weighted centre), moved `outside` cm
-    toward the shot's key, sharing its power, positions in world cm as lantern.py places the funnel."""
+    """A frame of a green tornado shot (lantern.SHOTS: the looping tornado or the dust devil): as it is, or with the
+    shot's `detail` added (tornado_detail, written by VolFromRaw a voxel a unit: no grid offset), as
+    VolumetricReSTIRData/<data>/<data><frame> (gImportVDB), and <data><frame>_lights.json -- the shot's `glow`, if it
+    has one: its few big green lights, one at each of its heights on the funnel's axis (the slice's density-weighted
+    centre), moved `outside` cm toward the shot's key, sharing its power, positions in world cm as lantern.py places
+    the funnel (its soft boxes, `panels`, are the scene's own)."""
     import json
     import lantern
     import swatch_fire as sf
@@ -309,13 +389,23 @@ def write_lantern(shot="lantern", frame=None):
     d = box["density"]
     with tempfile.TemporaryDirectory() as work:
         vdb = Path(work) / (name + ".vdb")
-        shutil.copy(src, str(vdb))
+        if "detail" in g:
+            d = tornado_detail(d, **g["detail"])
+            lo = [0, 0, 0]
+            raw = Path(work) / (name + ".raw")
+            write_raw(d, raw)
+            run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb], cwd=RELEASE)
+            raw.unlink()
+            lo_file, _ = read_vdb_box(vdb, ("density",))
+        else:
+            shutil.copy(src, str(vdb))
+            lo_file = lo
         dest = import_vdb(vdb, out_dir)
-    off = vbx_offset(dest, name, lo)
+    off = vbx_offset(dest, name, lo_file)
     if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
         raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))
     ix, iy = np.indices(d.shape[:2], dtype=np.float64)
-    spec = g["glow"]
+    spec = g.get("glow", {"heights": ()})
     lights = []
     for h in spec["heights"]:
         k = int(round(h - lo[2] - off[2] - 0.5))  # the slice's array index
