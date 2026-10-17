@@ -14,18 +14,21 @@
  #      /link /LIBPATH:external\packman\deps\lib
  #      /OUT:build\windows-vs2022\bin\Release\VdbToRaw.exe openvdb.lib
  #
- # Usage: VdbToRaw <in.vdb> <grid name> <out.raw>
+ # Usage: VdbToRaw <in.vdb> <grid name> <out.raw> [<minx> <miny> <minz> <maxx> <maxy> <maxz>]
+ #   (the optional box, inclusive index coordinates, clips the grid: Bifrost keeps a temperature grid active far past
+ #   its smoke, whose dense copy would not fit in memory)
  **************************************************************************/
 #include <openvdb/openvdb.h>
 #include <openvdb/tools/Dense.h>
 
 #include <cstdio>
+#include <cstdlib>
 
 int main(int argc, char** argv)
 {
     if (argc < 4)
     {
-        printf("Usage: VdbToRaw <in.vdb> <grid name> <out.raw>\n");
+        printf("Usage: VdbToRaw <in.vdb> <grid name> <out.raw> [<minx> <miny> <minz> <maxx> <maxy> <maxz>]\n");
         return 1;
     }
     openvdb::initialize();
@@ -45,7 +48,14 @@ int main(int argc, char** argv)
     openvdb::FloatGrid::Ptr grid = openvdb::gridPtrCast<openvdb::FloatGrid>(base);
     if (!grid) { printf("ERROR: grid '%s' is not a float grid\n", argv[2]); return 2; }
 
-    const openvdb::CoordBBox box = grid->evalActiveVoxelBoundingBox();
+    openvdb::CoordBBox box = grid->evalActiveVoxelBoundingBox();
+    if (argc >= 10)  // a clip box: Bifrost keeps a temperature grid active far past its smoke (ambient tiles)
+    {
+        const openvdb::CoordBBox clip(openvdb::Coord(atoi(argv[4]), atoi(argv[5]), atoi(argv[6])),
+                                      openvdb::Coord(atoi(argv[7]), atoi(argv[8]), atoi(argv[9])));
+        box.intersect(clip);
+        if (box.empty()) { printf("ERROR: grid '%s' has nothing inside the clip box\n", argv[2]); return 2; }
+    }
     openvdb::tools::Dense<float, openvdb::tools::LayoutZYX> dense(box);  // z fastest: data[(x * ny + y) * nz + z]
     openvdb::tools::copyToDense(*grid, dense);
 

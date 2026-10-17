@@ -1,0 +1,4 @@
+# The swatch teapot with a frame of Bifrost's large turbulent fire over it (the user's Maya + Bifrost, 2026-10-17;
+# bifrost_export.py; teapot_sequence.pyscene; swatch_fire.SEQUENCES['bifrostfire']).
+SEQUENCE = 'bifrostfire'
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\teapot_sequence.pyscene').read())

@@ -84,6 +84,17 @@ SEQUENCES = {
                "offset": (-96.5, -192.5, -192.5),
                "sigma_a": 0.9, "sigma_s": 0.1, "density_scale": 0.027, "cutoff": -0.0957, "temperature_scale": 1880.0,
                "le_scale": 40.9, "lights": 1024, "glow": 0.125},
+    # the user's Maya + Bifrost (2026-10-17): Bifrost's large_turbulent_fire example graph simulated headless
+    # (bifrost_export.py, frames 1-120, its default detail size 0.1), each frame rewritten for gImportVDB on first use
+    # (make_volumes.py clean_bifrost_vdb: `bifrost_src` -> `src`, a voxel a unit in Bifrost's own index placement); y up
+    # as Maya is, its ground at voxel y 0; temperature already kelvin; its glow matched to the midair explosion's
+    # frame 40 (emission_light_table's total)
+    "bifrostfire": {"src": "BifrostVDB/turbulent_fire_clean/fire_%04d.vdb", "bifrost_src": "BifrostVDB/turbulent_fire/fire_%04d.vdb",
+                    "renames": None, "glow_grid": "temperature", "frame": 100,
+                    "scale": 0.09, "rotation": (0.0, 0.0, 0.0), "anchor": (0.2, 19.5, -0.6), "base": (5.0, 0.0, -5.0),
+                    "offset": (0.0, 0.0, 0.0),
+                    "sigma_a": 0.9, "sigma_s": 0.1, "density_scale": 0.06, "cutoff": 0.0, "temperature_scale": 1.0,
+                    "le_scale": 18.0, "lights": 1024, "glow": 0.125},
     "plume": {"src": "FirePlumeVDB/fire_plume/fire_plume_VDB/firePlume_%04d.vdb",
               "renames": "flames=temperature", "glow_grid": "flames", "frame": 120,
               "scale": 0.05, "rotation": (0.0, 0.0, 0.0), "anchor": (0.2, 21.0, -0.6), "base": (2.2, 1.7, -204.2),

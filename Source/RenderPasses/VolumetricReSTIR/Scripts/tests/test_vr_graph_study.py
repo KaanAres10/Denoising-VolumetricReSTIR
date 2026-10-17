@@ -213,6 +213,22 @@ class TestLoaders(StudyEnv):
         total = sum(l.intensity[0] for l in above) + sum(l.intensity[0] for l in inside) / 2.75
         self.assertAlmostEqual(total / (2 ** 10 * 0.12 ** 3 * table["flames_sum"]), 1.0, places=9)
 
+    def test_the_bifrost_fire_over_the_teapot(self):
+        # the user's Maya + Bifrost (2026-10-17): Bifrost's large turbulent fire simulated headless (bifrost_export.py),
+        # each frame rewritten for gImportVDB (make_volumes.py clean_bifrost_vdb), over the teapot as the EmberGen fires
+        # are: its temperature already kelvin (scale 1, cutoff 0), y up as Maya is
+        import swatch_fire
+        g = swatch_fire.SEQUENCES["bifrostfire"]
+        vr, m = fresh_vr()
+        info = vr.SCENES["teapotbifrost"]()
+        v = volume_call(m)
+        self.assertTrue(v["dataFile"].endswith("bifrostfire%d" % g["frame"]), v["dataFile"])
+        self.assertTrue(v["hasEmission"])
+        self.assertEqual((v["temperatureScale"], v["temperatureCutoff"]), (1.0, 0.0))
+        self.assertEqual(v["worldRotation"], (0.0, 0.0, 0.0))
+        self.assertEqual(v["LeScale"], g["le_scale"] * g["glow"])
+        self.assertTrue(g["src"].startswith("BifrostVDB/") and g["bifrost_src"].startswith("BifrostVDB/"))
+
     def test_the_other_teapot_fires_glow_and_light_as_their_tables_say(self):
         # the authored fire and the gasoline explosion (user, 2026-10-13): emissive volumes over the teapot's stage, lit
         # by point lights made from what they emit; TEAPOT_FRAME picks the explosion's frame

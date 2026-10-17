@@ -19,7 +19,9 @@
  #      /link /LIBPATH:external\packman\deps\lib
  #      /OUT:build\windows-vs2022\bin\Release\VolFromRaw.exe openvdb.lib
  #
- # Usage: VolFromRaw <in.raw> <nx> <ny> <nz> <voxelSize> <out.vdb> [cutoff=1e-4] [temperature.raw]
+ # Usage: VolFromRaw <in.raw> <nx> <ny> <nz> <voxelSize> <out.vdb> [cutoff=1e-4] [temperature.raw|-] [<ox> <oy> <oz>]
+ #   (the origin: the index of the array's first voxel, 0 0 0 by default -- a re-written Bifrost frame keeps its own
+ #   placement, so a sequence's frames line up; "-" for no temperature)
  **************************************************************************/
 #include <openvdb/openvdb.h>
 
@@ -42,7 +44,7 @@ static bool readRaw(const char* path, size_t count, std::vector<float>& data)
 
 // Every voxel above the cutoff active, in a fog volume (background 0).
 static openvdb::FloatGrid::Ptr toGrid(const std::vector<float>& data, long long nx, long long ny, long long nz, double voxelSize,
-    float cutoff, const std::string& name)
+    float cutoff, const std::string& name, const openvdb::Coord& origin)
 {
     openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(0.f);
     grid->setName(name);
@@ -58,7 +60,7 @@ static openvdb::FloatGrid::Ptr toGrid(const std::vector<float>& data, long long 
                 const float v = data[static_cast<size_t>((i * ny + j) * nz + k)];
                 if (v > cutoff)
                 {
-                    acc.setValue(openvdb::Coord(static_cast<int>(i), static_cast<int>(j), static_cast<int>(k)), v);
+                    acc.setValue(origin + openvdb::Coord(static_cast<int>(i), static_cast<int>(j), static_cast<int>(k)), v);
                     active++;
                     if (v > maxValue) maxValue = v;
                 }
@@ -71,7 +73,7 @@ int main(int argc, char** argv)
 {
     if (argc < 7)
     {
-        printf("Usage: VolFromRaw <in.raw> <nx> <ny> <nz> <voxelSize> <out.vdb> [cutoff=1e-4] [temperature.raw]\n");
+        printf("Usage: VolFromRaw <in.raw> <nx> <ny> <nz> <voxelSize> <out.vdb> [cutoff=1e-4] [temperature.raw|-] [<ox> <oy> <oz>]\n");
         return 1;
     }
     const long long nx = atoll(argv[2]), ny = atoll(argv[3]), nz = atoll(argv[4]);
@@ -82,11 +84,12 @@ int main(int argc, char** argv)
     const size_t count = static_cast<size_t>(nx * ny * nz);
     std::vector<float> data, temperature;
     if (!readRaw(argv[1], count, data)) return 2;
-    if (argc > 8 && !readRaw(argv[8], count, temperature)) return 2;
+    if (argc > 8 && std::string(argv[8]) != "-" && !readRaw(argv[8], count, temperature)) return 2;
+    const openvdb::Coord origin = argc > 11 ? openvdb::Coord(atoi(argv[9]), atoi(argv[10]), atoi(argv[11])) : openvdb::Coord(0, 0, 0);
 
     openvdb::initialize();
-    openvdb::GridPtrVec grids{toGrid(data, nx, ny, nz, voxelSize, cutoff, "density")};
-    if (!temperature.empty()) grids.push_back(toGrid(temperature, nx, ny, nz, voxelSize, cutoff, "temperature"));
+    openvdb::GridPtrVec grids{toGrid(data, nx, ny, nz, voxelSize, cutoff, "density", origin)};
+    if (!temperature.empty()) grids.push_back(toGrid(temperature, nx, ny, nz, voxelSize, cutoff, "temperature", origin));
     openvdb::io::File out(argv[6]);
     out.write(grids);
     out.close();

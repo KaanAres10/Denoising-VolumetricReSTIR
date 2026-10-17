@@ -405,6 +405,35 @@ class TestGvdbAtlas(unittest.TestCase):
         self.assertGreater(mv.GVDB_ATLAS_MAX, 4000)
 
 
+@unittest.skipUnless((mv.RELEASE / "VolFromRaw.exe").exists() and (mv.RELEASE / "VdbToRaw.exe").exists(), "needs the tools")
+class TestBifrostClean(unittest.TestCase):
+    """A Bifrost frame rewritten for gImportVDB (bifrost_export.py writes them): its fog density and temperature as
+    `density` and `temperature`, in its own index placement, the temperature clipped to the smoke."""
+
+    def test_rewrites_names_keeps_placement_and_clips_temperature(self):
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            d = np.zeros((6, 5, 4), np.float32)
+            d[1:5, 1:4, 1:3] = 0.5  # the smoke
+            temp = np.full(d.shape, 300.0, np.float32)  # ambient temperature everywhere, as Bifrost leaves it
+            temp[2, 2, 1] = 1500.0
+            mv.write_raw(d, t / "d.raw")
+            mv.write_raw(temp, t / "t.raw")
+            src = t / "bifrost.vdb"
+            mv.run([mv.RELEASE / "VolFromRaw.exe", t / "d.raw", 6, 5, 4, 0.1, src, 1e-4, t / "t.raw", -10, 3, 7], cwd=mv.RELEASE)
+            # (VolFromRaw names them density / temperature; a Bifrost frame's are voxel_fog_density / voxel_temperature)
+            lo, shape, voxel = mv.clean_bifrost_vdb(src, t / "clean.vdb", density="density", temperature="temperature")
+            self.assertEqual(lo, [-9, 4, 8])  # the smoke's box, where it was
+            self.assertEqual(shape, (4, 3, 2))
+            self.assertAlmostEqual(voxel, 0.1, places=6)  # Bifrost's, reported; the rewrite is a voxel a unit
+            self.assertAlmostEqual(mv.vdb_grid(t / "clean.vdb", "density")[2], 1.0)
+            lo2, box = mv.read_vdb_box(t / "clean.vdb", ("density", "temperature"))
+            self.assertEqual(lo2, [-9, 4, 8])
+            np.testing.assert_allclose(box["density"], 0.5)
+            self.assertEqual(box["temperature"].shape, (4, 3, 2))  # clipped to the smoke, not the ambient domain
+            self.assertEqual(float(box["temperature"][1, 1, 0]), 1500.0)
+
+
 class TestRaw(unittest.TestCase):
     def test_raw_is_x_slowest(self):
         # VolFromRaw reads data[(i * ny + j) * nz + k] as voxel (i, j, k)

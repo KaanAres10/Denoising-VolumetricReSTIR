@@ -721,6 +721,7 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           # The RenderMan swatch teapot with EmberGen fire rising from it (user, 2026-10-11).
           "teapotfire": load_teapot_fire, "teapotflame": load_teapot_flame, "teapotgasoline": lambda: load_teapot_sequence("gasoline"),
           "teapotmidair": lambda: load_teapot_sequence("midair"), "teapotplume": lambda: load_teapot_sequence("plume"),
+          "teapotbifrost": lambda: load_teapot_sequence("bifrostfire"),
           "lantern": load_lantern, "lanterndust": lambda: load_lantern("lanterndust"),
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,

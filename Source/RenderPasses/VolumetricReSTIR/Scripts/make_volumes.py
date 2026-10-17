@@ -234,13 +234,23 @@ def write_teapot_fire(seed=0):
     return dest, path
 
 
-def read_vdb_box(vdb, names):
-    """Grids of a .vdb (VdbToRaw.exe) in one index box: its low corner and {name: array}, x slowest."""
-    grids = {}
+def vdb_grid(vdb, name, clip=None):
+    """One grid of a .vdb (VdbToRaw.exe): its active box's low corner, the box as an array (x slowest) and the voxel
+    size; `clip` ((lo, hi), inclusive index coordinates) cuts the box first."""
     with tempfile.TemporaryDirectory() as work:
-        for g in names:
-            out = run([RELEASE / "VdbToRaw.exe", vdb, g, Path(work) / g], cwd=RELEASE).split()
-            grids[g] = ([int(v) for v in out[1:4]], np.fromfile(str(Path(work) / g), np.float32).reshape([int(v) for v in out[5:8]]))
+        extra = [*clip[0], *clip[1]] if clip else []
+        out = run([RELEASE / "VdbToRaw.exe", vdb, name, Path(work) / name, *extra], cwd=RELEASE).split()
+        arr = np.fromfile(str(Path(work) / name), np.float32).reshape([int(v) for v in out[5:8]])
+    return [int(v) for v in out[1:4]], arr, float(out[9])
+
+
+def read_vdb_box(vdb, names, clip=None):
+    """Grids of a .vdb (VdbToRaw.exe) in one index box: its low corner and {name: array}, x slowest; `clip` as
+    vdb_grid's."""
+    grids = {}
+    for g in names:
+        glo, arr, _ = vdb_grid(vdb, g, clip)
+        grids[g] = (glo, arr)
     lo = [min(grids[g][0][a] for g in names) for a in range(3)]
     hi = [max(grids[g][0][a] + grids[g][1].shape[a] for g in names) for a in range(3)]
     box = {}
@@ -250,6 +260,27 @@ def read_vdb_box(vdb, names):
         b[o[0]:o[0] + arr.shape[0], o[1]:o[1] + arr.shape[1], o[2]:o[2] + arr.shape[2]] = arr
         box[g] = b
     return lo, box
+
+
+def clean_bifrost_vdb(src, dst, density="voxel_fog_density", temperature="voxel_temperature", cutoff=1e-4):
+    """A Bifrost frame (bifrost_export.py writes them) rewritten for gImportVDB: its fog density and temperature as
+    `density` and `temperature` (VolFromRaw), in its own index placement -- so a sequence's frames line up -- and the
+    temperature clipped to the smoke's box: Bifrost keeps it active far past the smoke at the ambient temperature,
+    which would fill a dense copy and GVDB's atlas -- written a voxel a unit, as every volume here is (a shot's
+    worldScaling gives it its size: GVDB places a .vbx in the .vdb's world units). Returns the box's low corner, its
+    shape and Bifrost's voxel size."""
+    lo, d, voxel = vdb_grid(src, density)
+    hi = [lo[a] + d.shape[a] - 1 for a in range(3)]
+    tlo, t_box, _ = vdb_grid(src, temperature, clip=(lo, hi))
+    t = np.zeros_like(d)
+    o = [tlo[a] - lo[a] for a in range(3)]
+    t[o[0]:o[0] + t_box.shape[0], o[1]:o[1] + t_box.shape[1], o[2]:o[2] + t_box.shape[2]] = t_box
+    with tempfile.TemporaryDirectory() as work:
+        write_raw(d, Path(work) / "density.raw")
+        write_raw(t, Path(work) / "temperature.raw")
+        run([RELEASE / "VolFromRaw.exe", Path(work) / "density.raw", *d.shape, 1.0, dst, cutoff,
+             Path(work) / "temperature.raw", *lo], cwd=RELEASE)
+    return lo, d.shape, voxel
 
 
 def write_sequence(seq, frame=None):
@@ -265,6 +296,9 @@ def write_sequence(seq, frame=None):
     name = "%s%d" % (seq, frame)
     src = str(REPO / (g["src"] % frame))
     out_dir = REPO / "VolumetricReSTIRData" / seq
+    if "bifrost_src" in g and not Path(src).exists():  # a Bifrost frame, rewritten for gImportVDB on first use
+        Path(src).parent.mkdir(parents=True, exist_ok=True)
+        clean_bifrost_vdb(REPO / (g["bifrost_src"] % frame), src)
     with tempfile.TemporaryDirectory() as work:
         vdb = Path(work) / (name + ".vdb")
         if g["renames"]:
