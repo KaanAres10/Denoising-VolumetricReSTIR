@@ -645,6 +645,34 @@ def load_teapot_sequence(seq):
     return _teapot_view(scatter_albedo=g["sigma_s"] / (g["sigma_a"] + g["sigma_s"]))
 
 
+def load_lantern(shot="lantern"):
+    """A green energy tornado (user, 2026-10-17: like the Lanterns series' construct; lantern.SHOTS: the looping tornado,
+    "lantern", or the dust devil, "lanterndust"; scenes/lantern_<shot>.pyscene): a frame of it as it is (TEAPOT_FRAME
+    picks another; make_volumes.py write_lantern prepares one) in a green medium, lit from inside by a few big green
+    lights and by the sky's glow and key (make_volumes.py lantern_sky); forward scattering (VR_PHASE_G, default 0.5).
+    16:9."""
+    import lantern
+    g = lantern.SHOTS[shot]
+    m.loadScene(SCENE_DIR + r"\lantern_%s.pyscene" % shot)
+    m.scene.addGVDBVolume(sigma_a=float3(*g["sigma_a"]), sigma_s=float3(*g["sigma_s"]), g=env_float("VR_PHASE_G", g["g"]),
+                          dataFile=DATA_DIR + r"\%s\%s%d" % (g["data"], g["data"], lantern.frame(shot)), numMips=4,
+                          densityScale=_density(g["density_scale"]), hasVelocity=False, hasEmission=False, LeScale=1.0,
+                          worldTranslation=float3(*swatch_fire_translation(lantern.pose(shot))), worldRotation=float3(*g["rotation"]),
+                          worldScaling=g["scale"])
+    m.scene.setEnvMap(DATA_DIR + r"\authored\lantern_sky.exr")
+    c = g["camera"]
+    _pin_camera(c["position"], c["target"], (0.0, 1.0, 0.0))
+    m.scene.camera.focalLength = c["focal"]
+    a = [s_ / (s_ + t) for s_, t in zip(g["sigma_s"], g["sigma_a"])]
+    return {"scatterAlbedo": float3(*a), "exposure": 0.0,
+            "params": {"mUseAnalyticLights": True, "mUseEnvironmentLights": True, "mUseEmissiveLights": False}}
+
+
+def swatch_fire_translation(pose):
+    import swatch_fire
+    return swatch_fire.translation(**pose)
+
+
 # The JangaFX EmberGen fire plume (FirePlumeVDB) as its own scene is deliberately not here: the user excluded it from
 # the decorrelation study (2026-09-27), then asked for it over the teapot (teapotplume, 2026-10-14).
 SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosion, "explosiondusk": load_explosion_dusk,
@@ -684,6 +712,7 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           # The RenderMan swatch teapot with EmberGen fire rising from it (user, 2026-10-11).
           "teapotfire": load_teapot_fire, "teapotflame": load_teapot_flame, "teapotgasoline": lambda: load_teapot_sequence("gasoline"),
           "teapotmidair": lambda: load_teapot_sequence("midair"), "teapotplume": lambda: load_teapot_sequence("plume"),
+          "lantern": load_lantern, "lanterndust": lambda: load_lantern("lanterndust"),
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}

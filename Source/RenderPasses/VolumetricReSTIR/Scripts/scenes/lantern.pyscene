@@ -1,0 +1,17 @@
+# A green energy tornado (lantern.py; vr_graph.load_lantern; lantern_<shot>.pyscene sets SHOT and runs this): lit from
+# inside by a few big green lights along its axis (make_volumes.py write_lantern) -- lights inside a scattering medium
+# -- and by the sky's glow and key (the loader's). No surfaces: the placeholder mesh only.
+import json
+import sys
+
+sys.path.insert(0, r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts')
+import lantern  # noqa: E402
+
+sceneBuilder.importScene(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\default.obj')
+data = lantern.SHOTS[SHOT]['data']
+table = json.load(open(r'C:\research\Denoising-VolumetricReSTIR\VolumetricReSTIRData\%s\%s%d_lights.json' % (data, data, lantern.frame(SHOT))))
+for k, l in enumerate(table['lights']):
+    light = PointLight('%s%d' % (l['set'], k))
+    light.intensity = float3(*l['intensity'])
+    light.position = float3(*l['p'])
+    sceneBuilder.addLight(light)

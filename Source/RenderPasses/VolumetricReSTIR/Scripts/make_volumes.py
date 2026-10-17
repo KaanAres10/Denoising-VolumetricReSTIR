@@ -292,6 +292,45 @@ def write_gasoline(frame=None):
     return write_sequence("gasoline", frame)
 
 
+def write_lantern(shot="lantern", frame=None):
+    """A frame of a green tornado shot (lantern.SHOTS: the looping tornado or the dust devil) as it is:
+    VolumetricReSTIRData/<data>/<data><frame> (gImportVDB) and <data><frame>_lights.json -- its few big green lights,
+    one at each of the shot's heights on the funnel's axis (the slice's density-weighted centre), moved `outside` cm
+    toward the key (lantern.KEY), sharing its power, positions in world cm as lantern.py places the funnel."""
+    import json
+    import lantern
+    import swatch_fire as sf
+    g = lantern.SHOTS[shot]
+    frame = g["frame"] if frame is None else frame
+    name = "%s%d" % (g["data"], frame)
+    src = str(REPO / (g["src"] % frame))
+    out_dir = REPO / "VolumetricReSTIRData" / g["data"]
+    with tempfile.TemporaryDirectory() as work:
+        vdb = Path(work) / (name + ".vdb")
+        shutil.copy(src, str(vdb))
+        dest = import_vdb(vdb, out_dir)
+    lo, box = read_vdb_box(src, ("density",))
+    d = box["density"]
+    off = vbx_offset(dest, name, lo)
+    if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
+        raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))
+    ix, iy = np.indices(d.shape[:2], dtype=np.float64)
+    spec = g["glow"]
+    lights = []
+    for h in spec["heights"]:
+        k = int(round(h - lo[2] - off[2] - 0.5))  # the slice's array index
+        k = min(max(k, 0), d.shape[2] - 1)
+        s = d[:, :, k].astype(np.float64)
+        w = max(s.sum(), 1e-9)
+        axis = ((s * ix).sum() / w + lo[0] + off[0] + 0.5, (s * iy).sum() / w + lo[1] + off[1] + 0.5, h)
+        p = np.array(sf.to_world(axis, **lantern.pose(shot)))
+        p = p + spec.get("outside", 0.0) * np.asarray(lantern.KEY) / np.linalg.norm(lantern.KEY)  # out toward the key
+        lights.append({"set": "glow", "p": [float(v) for v in p], "intensity": [spec["power"] / spec["n"] * c for c in spec["rgb"]]})
+    path = out_dir / (name + "_lights.json")
+    path.write_text(json.dumps({"lights": lights}, indent=1))
+    return dest, path
+
+
 def vbx_offset(dest, stem, lo):
     """The imported .vbx's coordinates minus the .vdb's index box corner `lo`: the VDB's own grid offset."""
     import struct
@@ -502,7 +541,30 @@ def studio_sky(key=STUDIO_KEY, width=1024, key_radiance=320.0, key_radius=5.0, f
     return sky.astype(np.float32)
 
 
-SKIES = {"studio_softbox": studio_sky}
+def lantern_sky(width=1024, glow=(-0.55, 0.35, -0.75), glow_radiance=5.0, glow_width=22.0, key=None,
+                key_radiance=6.0, key_width=14.0):
+    """The green tornado construct's backdrop (lantern.py): a grey-teal gradient (darker below and to the right), a
+    soft white glow behind the funnel at the frame's left edge, as in the reference, and the key: a soft light from the
+    upper left, in front of the funnel and out of shot, that shades its banded surface and makes it glitter."""
+    key = lantern_key() if key is None else key
+    h = width // 2
+    d = latlong_dir(((np.arange(width) + 0.5) / width)[None, :], ((np.arange(h) + 0.5) / h)[:, None])
+    sky = np.zeros(d.shape, np.float64)
+    for direction, radiance, width_deg in ((glow, glow_radiance, glow_width), (key, key_radiance, key_width)):
+        k = np.asarray(direction, float) / np.linalg.norm(direction)
+        angle = np.degrees(np.arccos(np.clip(d @ k, -1, 1)))
+        sky += (radiance * np.exp(-(angle / width_deg) ** 2))[..., None] * np.array([1.0, 1.0, 0.96])
+    up = smoothstep(-0.6, 0.6, d[..., 1])
+    sky += (0.03 + 0.06 * up)[..., None] * np.array([0.55, 0.85, 0.95])  # teal
+    return sky.astype(np.float32)
+
+
+def lantern_key():
+    import lantern
+    return lantern.KEY
+
+
+SKIES = {"studio_softbox": studio_sky, "lantern_sky": lantern_sky}
 
 
 def cast_iron_normals(size=4096, seed=7, strength=1.0, features=(9, 90), pits=0.0):

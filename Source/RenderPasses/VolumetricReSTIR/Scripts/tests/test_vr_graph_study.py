@@ -245,6 +245,30 @@ class TestLoaders(StudyEnv):
         finally:
             del os.environ["TEAPOT_FRAME"]
 
+    def test_the_green_tornadoes_stand_in_their_sky_lit_by_a_few_big_lights(self):
+        # the user's Lanterns reference (2026-10-17): the looping tornado and the dust devil as green funnels, lit by a
+        # few big lights (not many small ones) and the authored sky
+        import lantern
+        for shot in ("lantern", "lanterndust"):
+            g = lantern.SHOTS[shot]
+            vr, m = fresh_vr()
+            info = vr.SCENES[shot]()
+            v = volume_call(m)
+            self.assertTrue(v["dataFile"].endswith("%s%d" % (g["data"], g["frame"])), v["dataFile"])
+            self.assertFalse(v["hasEmission"])
+            self.assertEqual((v["sigma_s"], v["worldRotation"], v["worldScaling"]), (g["sigma_s"], g["rotation"], g["scale"]))
+            self.assertGreater(info["scatterAlbedo"][1], info["scatterAlbedo"][0])  # green
+            env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
+            self.assertTrue(env and env[0].endswith("lantern_sky.exr"), env)
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            builder = Recorder()
+            scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n), "float3": lambda *a: tuple(a)}
+            with open(path) as fh:
+                exec(fh.read(), scope)
+            lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
+            self.assertEqual(len(lights), g["glow"]["n"], shot)
+            self.assertAlmostEqual(sum(l.intensity[1] for l in lights), g["glow"]["power"] * g["glow"]["rgb"][1], places=6)
+
     def test_blackbody_lut_reads_as_the_shader_samples_it(self):
         # VolumeBase.slang ConvertTempToColor: a 128-texel 1D texture, linear filtering, texel i at 50 + 50 i kelvin
         vr, _ = fresh_vr()
