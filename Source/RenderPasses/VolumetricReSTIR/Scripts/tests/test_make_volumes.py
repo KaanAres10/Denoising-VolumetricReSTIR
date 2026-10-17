@@ -434,6 +434,27 @@ class TestBifrostClean(unittest.TestCase):
             self.assertEqual(float(box["temperature"][1, 1, 0]), 1500.0)
 
 
+class TestGlitter(unittest.TestCase):
+    """The construct's glitter (the Lanterns reference's sparkles): points on the volume's surface where it faces the
+    key light -- a speck of smoke cannot be brighter than the light reaching it, so the glints are tiny emitters."""
+
+    def setUp(self):
+        zz, yy, xx = np.indices((40, 40, 40), dtype=np.float64)
+        r = np.sqrt((xx - 20) ** 2 + (yy - 20) ** 2 + (zz - 20) ** 2)
+        self.d = np.clip(12.0 - r, 0.0, 1.0).astype(np.float32).transpose(2, 1, 0)  # a ball (x slowest), radius ~12
+
+    def test_points_lie_on_the_surface_facing_the_key(self):
+        pts = mv.glitter_points(self.d, n=300, key=(0.0, 1.0, 0.0), threshold=0.5, seed=0)
+        self.assertEqual(pts.shape, (300, 3))
+        r = np.linalg.norm(pts - 20.0, axis=1)
+        self.assertTrue(np.all(np.abs(r - 11.5) < 1.5), (r.min(), r.max()))  # on the ball's surface
+        self.assertGreater(float(np.mean(pts[:, 1] > 20.0)), 0.95)  # on the side facing +y, the key
+
+    def test_repeatable(self):
+        a = mv.glitter_points(self.d, n=50, key=(1.0, 0.0, 0.0), threshold=0.5, seed=3)
+        np.testing.assert_array_equal(a, mv.glitter_points(self.d, n=50, key=(1.0, 0.0, 0.0), threshold=0.5, seed=3))
+
+
 class TestRaw(unittest.TestCase):
     def test_raw_is_x_slowest(self):
         # VolFromRaw reads data[(i * ny + j) * nz + k] as voxel (i, j, k)

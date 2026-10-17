@@ -262,6 +262,32 @@ def read_vdb_box(vdb, names, clip=None):
     return lo, box
 
 
+def glitter_points(d, n, key, threshold, seed=0, power=4.0):
+    """The construct's glitter (the Lanterns reference's sparkles): `n` points (array index coordinates, x slowest)
+    on the surface of density `d` -- voxels at or above `threshold` with a 6-neighbour below it -- drawn by how
+    squarely their outward normal (minus the density gradient, central differences two voxels apart) faces `key`
+    (a direction in the same index frame), to the power `power`, jittered within their voxel. Seeded."""
+    rng = np.random.default_rng(seed)
+    mask = d >= threshold
+    surf = np.argwhere(mask & ~ndimage.binary_erosion(mask))
+    if len(surf) == 0:
+        return np.zeros((0, 3))
+    hi = np.array(d.shape) - 1
+    grad = np.zeros((len(surf), 3))
+    for a in range(3):
+        up, dn = surf.copy(), surf.copy()
+        up[:, a] = np.minimum(surf[:, a] + 2, hi[a])
+        dn[:, a] = np.maximum(surf[:, a] - 2, 0)
+        grad[:, a] = d[tuple(up.T)] - d[tuple(dn.T)]
+    normal = -grad / np.maximum(np.linalg.norm(grad, axis=1, keepdims=True), 1e-12)
+    k = np.asarray(key, float) / np.linalg.norm(key)
+    w = np.clip(normal @ k, 0.0, None) ** power
+    if w.sum() <= 0:
+        return np.zeros((0, 3))
+    pick = rng.choice(len(surf), size=min(n, int((w > 0).sum())), replace=False, p=w / w.sum())
+    return surf[pick] + rng.uniform(-0.5, 0.5, (len(pick), 3))
+
+
 def clean_bifrost_vdb(src, dst, density="voxel_fog_density", temperature="voxel_temperature", cutoff=1e-4):
     """A Bifrost frame (bifrost_export.py writes them) rewritten for gImportVDB: its fog density and temperature as
     `density` and `temperature` (VolFromRaw), in its own index placement -- so a sequence's frames line up -- and the
@@ -333,14 +359,16 @@ def unit_noise(shape, sigma, rng):
 
 
 GVDB_BRICK = 8  # gImportVDB's bricks: 8^3 voxels (10^3 texels in the atlas with their apron), 16 x 16 to a layer
-GVDB_ATLAS_MAX = 2040 + 2040  # SceneGVDB uploads a deep atlas as two Texture3D parts, each at most 2048 deep
+# gImportVDB's own atlas (16 x 16 bricks a layer) is a CUDA 3D texture, at most 16384 deep; Falcor's limit (two
+# Texture3D parts of at most 2048) no longer binds: import_vdb re-lays a deep atlas wider (vbx_tools.widen_file)
+GVDB_ATLAS_MAX = 16380
 GVDB_ATLAS_SLACK = 1.12  # gImportVDB's atlas runs over gvdb_atlas_depth's count (measured 4310 against 3940: +9%)
 
 
 def gvdb_atlas_depth(d, cutoff=1e-4):
     """The depth (texels) of the brick atlas gImportVDB builds for density `d` written a voxel a unit by VolFromRaw:
     a brick for every 8^3 block holding a voxel above VolFromRaw's cutoff, 16 x 16 bricks a layer, 10 texels a
-    brick. Past GVDB_ATLAS_MAX the volume cannot be uploaded."""
+    brick. Past GVDB_ATLAS_MAX gImportVDB cannot build it."""
     b = GVDB_BRICK
     m = d > cutoff
     m = np.pad(m, [(0, -s % b) for s in m.shape])
@@ -511,7 +539,7 @@ def write_lantern(shot="lantern", frame=None):
             box = None
             depth = gvdb_atlas_depth(d)
             if depth * GVDB_ATLAS_SLACK > GVDB_ATLAS_MAX:
-                raise SystemExit("FAILED: %s's brick atlas would be ~%d deep, past the %d SceneGVDB can upload: a smaller "
+                raise SystemExit("FAILED: %s's brick atlas would be ~%d deep, past the %d gImportVDB can build: a smaller "
                                  "`up`" % (name, depth * GVDB_ATLAS_SLACK, GVDB_ATLAS_MAX))
             print("%s: %s voxels, its atlas ~%d of %d deep" % (name, d.shape, depth * GVDB_ATLAS_SLACK, GVDB_ATLAS_MAX))
             lo = [0, 0, 0]
@@ -527,6 +555,39 @@ def write_lantern(shot="lantern", frame=None):
     off = vbx_offset(dest, name, lo_file)
     if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
         raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))
+    if "bifrost_src" in g:  # a simulated column (y up), fitted to the shot's `fit` (the reference's construct)
+        w = np.maximum(d, 0.0).astype(np.float64)
+        prof = w.sum((0, 2))
+        occupied = np.flatnonzero(prof > 0.02 * prof.max())
+        top = int(occupied.max())
+        # its head (60-85% of its height: the reference's construct is sized by its head, its tail wider), centred on
+        # itself (a bent column's top is off its foot's axis)
+        y0 = int(occupied.min() + 0.60 * (top - occupied.min()))
+        y1 = int(occupied.min() + 0.85 * (top - occupied.min())) + 1
+        wh = w[:, y0:y1, :]
+        cx = float((wh.sum((1, 2)) * np.arange(d.shape[0])).sum() / max(wh.sum(), 1e-30))
+        cz = float((wh.sum((0, 1)) * np.arange(d.shape[2])).sum() / max(wh.sum(), 1e-30))
+        # its diameter: twice the density-weighted rms distance from its axis x sqrt 2 (a uniform disc's radius)
+        rx, rz = np.arange(d.shape[0]) - cx, np.arange(d.shape[2]) - cz
+        r2 = (wh * (rx[:, None, None] ** 2 + rz[None, None, :] ** 2)).sum() / max(wh.sum(), 1e-30)
+        diameter = 2.0 * float(np.sqrt(2.0 * r2))
+        # its optical depth across at density_scale 1: the density summed along x through the axis, mid-height
+        mid = int(np.average(np.arange(d.shape[1]), weights=prof))
+        across = float(w[:, mid, int(round(cz))].sum())
+        fit = g["fit"]
+        grid = {"base": [cx + lo[0] + off[0] + 0.5, top + lo[1] + off[1] + 1.0, cz + lo[2] + off[2] + 0.5],  # the cap
+                "diameter_voxels": diameter, "scale": fit["diameter"] / diameter,
+                "density_scale": fit["tau"] / max(across, 1e-9)}
+    glitter = None
+    if "glitter" in g and grid is not None:  # tiny emitters on the funnel's key-lit surface (glitter_points)
+        spec = g["glitter"]
+        axes = [np.array(sf.rotate(e, g["rotation"])) for e in np.eye(3)]  # the volume's axes in the world
+        key = np.asarray(g["key"], float) / np.linalg.norm(g["key"])
+        pts = glitter_points(d, spec["n"], [float(a @ key) for a in axes], spec["threshold"], seed=spec.get("seed", 0),
+                             power=spec.get("power", 4.0))
+        pose = dict(lantern.pose(shot), base=grid["base"], scale=grid.get("scale", g["scale"]))
+        glitter = {"p": [[float(v) for v in sf.to_world([q[a] + lo[a] + off[a] + 0.5 for a in range(3)], **pose)] for q in pts],
+                   "size": spec["size"], "rgb": list(spec["rgb"]), "radiance": spec["radiance"]}
     ix, iy = np.indices(d.shape[:2], dtype=np.float64)
     spec = g.get("glow", {"heights": ()})
     lights = []
@@ -540,7 +601,8 @@ def write_lantern(shot="lantern", frame=None):
         p = p + spec.get("outside", 0.0) * np.asarray(g["key"]) / np.linalg.norm(g["key"])  # out toward the key
         lights.append({"set": "glow", "p": [float(v) for v in p], "intensity": [spec["power"] / spec["n"] * c for c in spec["rgb"]]})
     path = out_dir / (name + "_lights.json")
-    path.write_text(json.dumps(dict({"lights": lights}, **({"grid": grid} if grid else {})), indent=1))
+    path.write_text(json.dumps(dict({"lights": lights}, **({"grid": grid} if grid else {}),
+                                    **({"glitter": glitter} if glitter else {})), indent=1))
     return dest, path
 
 
@@ -948,6 +1010,9 @@ def import_vdb(vdb, out_dir, emissive=False):
     shutil.move(str(staged), str(dest))
     if not vp.vbx_complete(dest, name, NUM_MIPS):
         raise SystemExit("FAILED: %s is missing .vbx files after import" % dest)
+    import vbx_tools  # an atlas too deep for one Texture3D re-laid wider (untouched otherwise: byte-identical)
+    for vbx in sorted(dest.glob("*.vbx")):
+        vbx_tools.widen_file(vbx)
     if emissive and not (dest / (name + "_temperature.vbx")).exists():
         raise SystemExit("FAILED: %s has no temperature .vbx after import" % dest)
     return dest

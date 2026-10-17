@@ -30,3 +30,18 @@ for panel in lantern.SHOTS[SHOT].get('panels', ()):
     box.emissiveColor = float3(*panel['rgb'])
     box.emissiveFactor = panel['radiance']
     sceneBuilder.addMeshInstance(sceneBuilder.addNode('SoftBox' + panel['name']), sceneBuilder.addTriangleMesh(mesh, box))
+glitter = table.get('glitter')  # the construct's sparkles: tiny emissive squares facing the camera (lantern.glitter_quads)
+if glitter:
+    cam = lantern.SHOTS[SHOT]['camera']
+    toward = [cam['position'][i] - cam['target'][i] for i in range(3)]
+    mesh = TriangleMesh()
+    for k, quad in enumerate(lantern.glitter_quads(glitter['p'], cam, glitter['size'])):
+        for c, uv in zip(quad, ((0, 0), (1, 0), (1, 1), (0, 1))):
+            mesh.addVertex(float3(*c), float3(*toward), float2(*uv))
+        mesh.addTriangle(4 * k, 4 * k + 1, 4 * k + 2)
+        mesh.addTriangle(4 * k, 4 * k + 2, 4 * k + 3)
+    sparkle = Material('Glitter')
+    sparkle.baseColor = float4(0, 0, 0, 1)
+    sparkle.emissiveColor = float3(*glitter['rgb'])
+    sparkle.emissiveFactor = glitter['radiance']
+    sceneBuilder.addMeshInstance(sceneBuilder.addNode('Glitter'), sceneBuilder.addTriangleMesh(mesh, sparkle))

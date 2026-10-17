@@ -33,7 +33,13 @@ Medium: green -- albedo (0.15, 0.82, 0.28), extinction 1 per channel (no tint in
 Skies (make_volumes.py lantern_sky writes each to VolumetricReSTIRData/authored/<name>.exr): Gaussian lobes of white,
 a glow and a key (direction, peak radiance, width in degrees), over a teal brighter below, scaled by `teal`.
 """
+import os
+
 import swatch_fire
+
+# which Bifrost run the construct shot reads (BifrostVDB/<it>, bifrost_graphs.vortex_construct's frames): a variant
+# being tuned is picked by LANTERN_CONSTRUCT, which Mogwai inherits as make_volumes.py does
+CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_C5")
 
 GREEN = {"sigma_a": (0.85, 0.18, 0.72), "sigma_s": (0.15, 0.82, 0.28), "g": 0.5}
 SHOTS = {
@@ -70,11 +76,29 @@ SHOTS = {
     # at voxel x = z = 0); at frame 120 the column is 385 voxels long (11.5 m), twisting, flared where it tops out;
     # lying diagonally as the reference's construct (worldRotation z -62: its axis 28 degrees up to the right), its
     # middle at the frame's
-    "lanternbifrost": dict(GREEN, src="BifrostVDB/construct_clean/construct_%04d.vdb", bifrost_src="BifrostVDB/construct/construct_%04d.vdb",
-                           data="bifrostconstruct", frame=120,
-                           offset=(0.0, 0.0, 0.0), scale=0.09, rotation=(0.0, 0.0, -62.0), anchor=(-3.0, -4.0, 0.0),
-                           base=(0.0, 193.0, 0.0), density_scale=0.5,
+    # its green a touch less saturated than the tornado's (the reference's mid-tones: red / green 0.5, ours was 0.42)
+    "lanternbifrost": dict(GREEN, sigma_a=(0.80, 0.15, 0.68), sigma_s=(0.20, 0.85, 0.32),
+                           src="BifrostVDB/%s_clean/construct_%%04d.vdb" % CONSTRUCT,
+                           bifrost_src="BifrostVDB/%s/construct_%%04d.vdb" % CONSTRUCT,
+                           data="bifrostconstruct", frame=150,
+                           # fitted per frame (make_volumes.py write_lantern; its _lights.json "grid"): sized so its
+                           # diameter is the reference's (12.2 cm: half the frame's height, 265 px of 540), its density
+                           # for an optical depth of `tau` across its middle, its cap pinned where the reference's ends
+                           # (x 880, y 210 of 960 x 540)
+                           fit={"diameter": 14.1, "tau": 8.0, "cap": (17.1, 6.5, 0.0)},
+                           offset=(0.0, 0.0, 0.0), scale=0.06, rotation=(0.0, 0.0, -62.0), anchor=(17.1, 6.5, 0.0),
+                           base=(0.0, 0.0, 0.0), density_scale=0.25,  # (overridden by the fit)
                            sky="lantern_sky", key=(-0.75, 0.5, 0.45),
+                           # the reference's sparkles: 4000 tiny emitters where its surface faces the key (upper left)
+                           # (at radiance 40 in a pale green they clipped to white, spread evenly; the reference's
+                           # are green, clustered where the surface faces the key squarely: power 8)
+                           glitter={"n": 3000, "threshold": 0.04, "power": 8.0, "size": 0.05, "rgb": (0.15, 1.0, 0.25),
+                                    "radiance": 2.0, "seed": 1},  # red and blue under display white: green, not white
+                           # its own soft boxes: the tornado's, the fill raised (its mid-tones were 105 green to the
+                           # reference's 125, its shadows 61 to 80)
+                           panels=({"name": "Key", "dir": (-0.75, 0.5, 0.45), "dist": 36.0, "side": 14.0, "rgb": (0.75, 1.0, 0.8), "radiance": 35.0},
+                                   {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 18.0},
+                                   {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 12.0}),
                            camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
     "lanterndust": dict(GREEN, src="Dust_Devil/Dust_Devil/embergen_dust_devil_tornado_a_%d.vdb", data="dustdevil", frame=50,
                         offset=(-128.5, -128.5, -192.5), scale=0.065, rotation=(-90.0, 0.0, 0.0), anchor=(0.0, -11.5, 0.0),
@@ -83,7 +107,6 @@ SHOTS = {
                         glow={"n": 5, "heights": (-170.0, -110.0, -40.0, 40.0, 120.0), "rgb": (0.7, 1.0, 0.75), "power": 4200.0, "outside": 8.0},
                         camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
 }
-SHOTS["lanternbifrost"]["panels"] = SHOTS["lantern"]["panels"]  # the same big soft boxes
 SKIES = {
     # matched to the user's Lanterns reference: a teal sky brighter below (55/78/78 at the top right, 81/110/111 at the
     # bottom right), a broad white glow behind the funnel filling the frame's left side, a soft key from the upper left
@@ -113,3 +136,20 @@ def panel_corners(panel, target=(0.0, 0.0, 0.0)):
     b = [a[1] * k[2] - a[2] * k[1], a[2] * k[0] - a[0] * k[2], a[0] * k[1] - a[1] * k[0]]  # a x k
     h = panel["side"] / 2
     return [[centre[i] + h * (u * a[i] + v * b[i]) for i in range(3)] for u, v in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+
+
+def glitter_quads(points, camera, size):
+    """The construct's glitter (make_volumes.py write_lantern samples it on the funnel's key-lit surface): each point a
+    square `size` cm across facing the camera, wound so its emitting side does (corners a, b, c, d: triangles a b c,
+    a c d). Pure Python: Mogwai's scene builder runs it."""
+    eye, target = camera["position"], camera["target"]
+    f = [target[i] - eye[i] for i in range(3)]
+    n = sum(v * v for v in f) ** 0.5
+    f = [v / n for v in f]
+    r = [f[1] * 0 - f[2] * 1, f[2] * 0 - f[0] * 0, f[0] * 1 - f[1] * 0]  # f x up(0, 1, 0)
+    n = sum(v * v for v in r) ** 0.5
+    r = [v / n for v in r]
+    u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]]  # r x f
+    h = size / 2
+    return [[[p[i] + h * (s * r[i] + t * u[i]) for i in range(3)] for s, t in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+            for p in points]

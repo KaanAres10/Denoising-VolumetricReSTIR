@@ -67,8 +67,107 @@ class TestVortexConstruct(unittest.TestCase):
         self.assertEqual(self.nodes["flow"]["multiInPortNames"], ["swirl", "pull", "lift"])
         self.assertEqual(self.nodes["source_air"]["fanInPortNames"], {"geometry": ["disc"]})  # simulation nodes: fan-in
 
+    def test_the_flow_is_confined_to_the_vortex_core(self):
+        # swirl, pull and updraft x exp(-|r|^2 / core^2): the air round the column is left still (spun as a solid body
+        # the whole domain flung the head into a 12 m sheet)
+        conns = {(c["source"], c["target"]) for c in self.c["connections"]}
+        self.assertEqual(self.nodes["r2"]["nodeType"], "Core::Math::length_squared")
+        self.assertEqual(self.nodes["core"]["nodeType"], "Core::Math::exponential")
+        for force in ("swirl_force", "pull_force", "lift_force"):
+            self.assertIn(("core.exponential", "%s.first.core" % force), conns, force)
+        d = bg.vortex_construct(core=2.0)
+        v = {x["valueName"]: x["value"] for x in d["compounds"][0]["values"]}
+        self.assertEqual(v["minus_inv_core2.value"], "-0.25f")
+
+    def test_the_pull_ramps_up_from_the_ground(self):
+        # the reference's construct widens toward its tail: the pull starts at `base_pull` of itself on the ground and
+        # reaches full strength at `base_height` (ramp = clamp(y / base_height, 0, 1); x (base_pull + (1 - base_pull) ramp))
+        conns = {(c["source"], c["target"]) for c in self.c["connections"]}
+        self.assertEqual(self.nodes["ramp"]["nodeType"], "Core::Math::clamp")
+        self.assertIn(("base_scale.output", "pull_force.first.base"), conns)
+        d = bg.vortex_construct(base_pull=0.25, base_height=4.0)
+        v = {x["valueName"]: x["value"] for x in d["compounds"][0]["values"]}
+        self.assertEqual(v["inv_base_height.value"], "0.25f")
+        self.assertEqual((v["base_pull.value"], v["one_minus_base_pull.value"]), ("0.25f", "0.75f"))
+        self.assertEqual(bg.check_graph(d["compounds"][0]), [])
+
+    def test_a_drift_above_a_height_bends_the_column(self):
+        # the reference's construct is flatter toward its head than its tail: above `bend_from` the air drifts along +x,
+        # ramping up over `bend_length` to `bend` m/s (through the same drag); no drift by default
+        self.assertNotIn("bend_ramp", self.nodes)
+        d = bg.vortex_construct(bend=1.0, bend_from=6.0, bend_length=3.0)
+        c = d["compounds"][0]
+        nodes = {n["nodeName"]: n for n in c["compoundNodes"]}
+        conns = {(x["source"], x["target"]) for x in c["connections"]}
+        self.assertEqual(nodes["bend_ramp"]["nodeType"], "Core::Math::clamp")
+        self.assertIn(("bend_force.output", "flow.first.bend"), conns)
+        # faded with the updraft: in the cap, where the column has stopped rising, a drift slid the head into a hook
+        self.assertIn(("fade.clamped", "bend_force.first.fade"), conns)
+        v = {x["valueName"]: x["value"] for x in c["values"]}
+        self.assertEqual(v["bend_vector.value"], {"x": "2.0f", "y": "0.0f", "z": "0.0f"})  # drag 2 x 1 m/s
+        self.assertEqual((v["bend_offset.value"], v["inv_bend_length.value"]), ("-2.0f", "%sf" % (1.0 / 3.0)))
+        self.assertEqual(bg.check_graph(c), [])
+
+    def test_a_noisy_source_gives_the_swirl_something_to_streak(self):
+        # an even source leaves the swirl nothing to stretch; Bifrost's way (its fire feeds fields into source_air):
+        # fog density = fog + fractal noise (magnitude fog x source_noise), changing with time; off by default
+        self.assertNotIn("src_noise", self.nodes)
+        d = bg.vortex_construct(source_noise=0.8, noise_frequency=2.0)
+        c = d["compounds"][0]
+        nodes = {n["nodeName"]: n for n in c["compoundNodes"]}
+        conns = {(x["source"], x["target"]) for x in c["connections"]}
+        self.assertEqual(nodes["src_noise"]["nodeType"], "Core::Fields::fractal_noise_field")
+        self.assertIn(("src_time.seconds", "src_noise.time"), conns)
+        self.assertIn(("src_fog.output", "source_air.fog_density"), conns)
+        v = {x["valueName"]: x["value"] for x in c["values"]}
+        self.assertEqual((v["src_noise.magnitude"], v["src_noise.frequency"]), ("1.6f", "2.0f"))  # fog 2 x 0.8
+        self.assertNotIn("source_air.fog_density", v)  # the field drives it
+        self.assertEqual(bg.check_graph(c), [])
+
+    def test_the_updraft_fades_at_the_cap_and_the_head_widens(self):
+        # the head rolls into a rotating cap instead of spraying sheets: the updraft x fade, fade = clamp((cap - y) /
+        # fade_length, 0, 1); the pull toward the axis x (1 - head_push (1 - fade)): kept at the head by default
+        conns = {(c["source"], c["target"]) for c in self.c["connections"]}
+        self.assertEqual(self.nodes["height"]["nodeType"], "Core::Math::dot")
+        self.assertIn(("position.position", "height.first"), conns)
+        self.assertEqual(self.nodes["fade"]["nodeType"], "Core::Math::clamp")
+        self.assertEqual((self.values["fade.min"]["value"], self.values["fade.max"]["value"]), ("0.0f", "1.0f"))
+        self.assertIn(("fade.clamped", "lift_force.first.fade"), conns)
+        self.assertIn(("fade.clamped", "pull_scale_raw.first.fade"), conns)
+        self.assertIn(("pull_scale.output", "pull_force.first.scale"), conns)
+        d = bg.vortex_construct(cap=9.0, fade_length=3.0, head_push=1.5)
+        v = {x["valueName"]: x["value"] for x in d["compounds"][0]["values"]}
+        self.assertEqual(v["cap_over_fade.value"], "3.0f")
+        self.assertEqual(v["minus_inv_fade.value"], "%sf" % (-1.0 / 3.0))
+        # pull scale = fade x head_push + (1 - head_push): 1 low down, 1 - head_push (here outward, -0.5) at the cap
+        self.assertEqual((v["push.value"], v["one_minus_push.value"]), ("1.5f", "-0.5f"))
+        self.assertEqual(bg.vortex_construct()["compounds"][0]["values"][0]["valueName"].split(".")[0], "source_disc")
+
+    def test_the_faint_wide_source_is_opt_in(self):
+        # rising with the core it wrapped the whole column in a faint 2.2 m halo -- no tail, and past the renderer's
+        # atlas (~4560 of 4080 deep by frame 66) -- so it is off unless asked for
+        self.assertNotIn("tail_air", self.nodes)
+        d = bg.vortex_construct(tail_fog=0.5)
+        c = d["compounds"][0]
+        conns = {(x["source"], x["target"]) for x in c["connections"]}
+        self.assertIn(("tail_air.air_source", "simulate_aero.sources.tail"), conns)
+        self.assertEqual(bg.check_graph(c), [])
+
+    def test_production_detail_and_refinement(self):
+        # Bifrost's pyroclastic and Einstein influences for the detail, then post_refine_aero for resolution; the
+        # exported volume is the refined one
+        conns = {(c["source"], c["target"]) for c in self.c["connections"]}
+        for out in ("pyroclastic.drag_influence", "pyroclastic.vorticity_influence", "einstein.turbulence_influence",
+                    "einstein.vorticity_influence"):
+            self.assertTrue(any(src == out and tgt.startswith("simulate_aero.influences.") for src, tgt in conns), out)
+        self.assertEqual(self.nodes["refine"]["nodeType"], "Simulation::Aero::post_refine_aero")
+        self.assertIn(("simulate_aero.aero_volume", "refine.aero_volume"), conns)
+        self.assertIn(("simulate_aero.solver_inputs", "refine.solver_inputs"), conns)
+        self.assertIn(("refine.refined_aero", ".volume"), conns)
+        self.assertEqual(bg.VOLUME_OUTPUT, "refine.refined_aero")
+
     def test_exports_through_the_wrapper(self):
-        w = bx.wrap_graph(self.d, self.c["name"], "simulate_aero.aero_volume", "C:/out", "construct", {})
+        w = bx.wrap_graph(self.d, self.c["name"], bg.VOLUME_OUTPUT, "C:/out", "construct", {})
         self.assertEqual(bg.check_graph(w["compounds"][0]), [])
 
 

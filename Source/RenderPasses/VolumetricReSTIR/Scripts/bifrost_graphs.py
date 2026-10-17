@@ -1,13 +1,14 @@
 """Our own Bifrost graphs, built as JSON (user, 2026-10-17: Maya + Bifrost for film-quality volumes; bifrost_export.py
 simulates and exports them headless). Each builder returns a Bifrost definition file whose one compound runs an Aero
-simulation; bifrost_export.wrap_graph taps its volume (simulate_aero.aero_volume) for the .vdb writer. Units: Bifrost's
+simulation; bifrost_export.wrap_graph taps its volume (VOLUME_OUTPUT) for the .vdb writer. Units: Bifrost's
 scene units, metres (aero_solver_settings.scene_units_in_meters 1); y up, as Maya is.
 
   vortex_construct: the Lanterns construct -- a smoke column driven round its axis. Smoke is sourced from a disc on the
 ground and carried by a prescribed flow, damped toward it by drag (set_influence_force + set_influence_drag: the
 velocity settles at force / drag instead of growing without bound): a swirl round the y axis at `swirl` rad/s (up x
 the offset from the axis -- solid-body rotation), a pull toward the axis at `pull` per second (the funnel stays tight)
-and an updraft of `lift` m/s; Aero's turbulence and vorticity confinement add the small-scale detail.
+and an updraft of `lift` m/s, shaped by height into a rounded head over a smoky tail; Bifrost's production nodes
+add the detail (aero_pyroclastic_influence, aero_einstein_influence) and post_refine_aero the resolution.
 """
 NAMESPACE = "Lantern::Graphs"
 # nodes taking any number of inputs on `first` as multiInPortNames, as Bifrost's own graphs write them (a fan-in
@@ -85,32 +86,91 @@ def check_graph(compound):
     return problems
 
 
-def vortex_construct(detail=0.05, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, source_radius=1.5, fog=2.0, temperature=60.0,
-                     turbulence=(1.5, 3.0), vorticity=0.3, height=14.0, width=12.0):
-    """The Lanterns construct as an Aero simulation (module docstring): `detail` the fluid detail size (m), the flow's
-    `swirl` (rad/s), `pull` (1/s) and `lift` (m/s) reached through `drag` (1/s), the source disc's radius (m), its fog
-    density and temperature, the turbulence at two scales and the vorticity confinement, inside a `width` x `height` x
-    `width` box (m) standing on the ground."""
+VOLUME_OUTPUT = "refine.refined_aero"  # what bifrost_export.py writes: the refined volume
+
+
+def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, source_radius=1.0, fog=2.0, temperature=60.0,
+                     core=1.2, cap=9.0, fade_length=3.0, head_push=0.0, base_pull=1.0, base_height=4.0,
+                     bend=0.0, bend_from=6.0, bend_length=3.0,
+                     tail_radius=2.2, tail_fog=0.0, source_noise=0.0, noise_frequency=2.0,
+                     pyro_drag=1.5, pyro_vorticity=4.0, pyro_frequency=1.0, einstein=1.0, vorticity=0.3,
+                     refine_levels=1, style="busy", height=14.0, width=12.0):
+    """The Lanterns construct as an Aero simulation (module docstring), with Bifrost's production detail.
+    The flow, reached through `drag` (1/s) and confined to the vortex's core (x exp(-|r|^2 / `core`^2), r the offset
+    from the axis: spun as a solid body, the whole domain flung the head into a 12 m sheet): a swirl round the y axis
+    at `swirl` rad/s; an updraft of `lift` m/s that fades out between `cap` - `fade_length` and `cap` (m), so the
+    column stops rising and rolls into a rotating head; a pull toward the axis at `pull` per second, x (1 - head_push
+    (1 - fade)) -- kept at the head by default, outward there for head_push > 1 -- and x (base_pull + (1 - base_pull)
+    clamp(y / base_height, 0, 1)): weaker near the ground for base_pull < 1, so the column widens toward its foot (the
+    reference's construct widens toward its tail); and, for `bend` > 0, a drift along +x above `bend_from` (m), ramping
+    up over `bend_length` (m) to `bend` m/s and faded with the updraft, which bends the column's top (the reference's
+    construct is flatter toward its head than its tail). Sources: a disc `source_radius` (m) at fog
+    density `fog`, and, if `tail_fog` > 0, a wider, fainter one (`tail_radius`) -- off by default: rising with the
+    core it wrapped the whole column in a faint halo rather than making a tail, and filled the renderer's atlas
+    (~4560 of 4080 deep by frame 66); for `source_noise` > 0 the main source's fog density is fog + fractal noise
+    (magnitude fog x source_noise, `noise_frequency` per m, changing with time) -- an even source leaves the swirl
+    nothing to stretch into streaks. Detail: Bifrost's
+    aero_pyroclastic_influence (`pyro_drag`, `pyro_vorticity`, `pyro_frequency`: billowy detail) and
+    aero_einstein_influence (`einstein`: coarse and fine turbulence), vorticity confinement (`vorticity`), the solver's
+    `style`; then post_refine_aero, `refine_levels` levels (each doubles the resolution of all but the velocity) --
+    its output is the volume exported (VOLUME_OUTPUT). The fluid detail size `detail` (m, absolute), inside a `width` x
+    `height` x `width` box (m) standing on the ground."""
     g = Graph("vortex_construct")
-    g.node("source_disc", "Modeling::Primitive::create_mesh_cylinder", radius=("float", _f(source_radius)),
-           height=("float", _f(0.3)), position=("Math::float3", _v3(0, 0.15, 0)), up_axis=("Math::float3", _v3(0, 1, 0)))
-    g.node("source_air", "Simulation::Aero::source_air", fluid_detail_size=("float", _f(detail)),
-           use_fluid_detail_size=("bool", "true"), resolution_mode=("Geometry::Volume::ResolutionType", "Absolute"),
-           fog_density=("float", _f(fog)), temperature=("float", _f(temperature)))
-    g.connect("source_disc.out_mesh", "source_air.geometry.disc")
+    for name, radius, density in (("source", source_radius, fog), ("tail", tail_radius, tail_fog))[:2 if tail_fog > 0 else 1]:
+        g.node(name + "_disc", "Modeling::Primitive::create_mesh_cylinder", radius=("float", _f(radius)),
+               height=("float", _f(0.3)), position=("Math::float3", _v3(0, 0.15, 0)), up_axis=("Math::float3", _v3(0, 1, 0)))
+        g.node(name + "_air", "Simulation::Aero::source_air", fluid_detail_size=("float", _f(detail)),
+               use_fluid_detail_size=("bool", "true"), resolution_mode=("Geometry::Volume::ResolutionType", "Absolute"),
+               fog_density=("float", _f(density)), temperature=("float", _f(temperature)))
+        g.connect(name + "_disc.out_mesh", name + "_air.geometry.disc")
+    if source_noise > 0:  # fog + fractal noise, changing with time, drives the main source's density
+        g.c["values"] = [v for v in g.c["values"] if v["valueName"] != "source_air.fog_density"]
+        g.node("src_time", "Core::Time::time")
+        g.node("src_noise", "Core::Fields::fractal_noise_field", magnitude=("float", _f(fog * source_noise)),
+               frequency=("float", _f(noise_frequency)))
+        g.connect("src_time.seconds", "src_noise.time")
+        g.node("src_base", "Core::Fields::scalar_field", value=("float", _f(fog)))
+        g.node("src_fog", "Core::Math::add")
+        g.connect("src_base.scalar_field", "src_fog.first.base")
+        g.connect("src_noise.noise_field", "src_fog.first.noise")
+        g.connect("src_fog.output", "source_air.fog_density")
     g.node("bounds", "Modeling::Primitive::create_mesh_cube", length=("float", _f(width)), width=("float", _f(width)),
            height=("float", _f(height)), position=("Math::float3", _v3(0, height / 2, 0)))
     g.node("aero_solver_settings", "Simulation::Aero::aero_solver_settings", scene_units_in_meters=("float", _f(1.0)),
-           style=("Simulation::Aero::TransportStyle", "busy"), enable_buoyancy=("bool", "true"),
+           style=("Simulation::Aero::TransportStyle", style), enable_buoyancy=("bool", "true"),
            kill_voxel_fog_threshold=("float", _f(0.005)))
     g.connect("bounds.cube_mesh", "aero_solver_settings.simulation_bounds")
-    # the prescribed flow, as a vector field: drag x (swirl (up x r) - pull r + lift up), r the offset from the y axis
+    # the prescribed flow, as a vector field (r: the offset from the y axis; y: the height)
     g.node("position", "Core::Fields::position_field")
     g.node("flat", "Core::Fields::vector_field", value=("Math::float3", _v3(1, 0, 1)))
     g.node("offset", "Core::Math::multiply")
     g.connect("position.position", "offset.first.p")
     g.connect("flat.vector_field", "offset.first.mask")
     g.node("up", "Core::Fields::vector_field", value=("Math::float3", _v3(0, 1, 0)))
+    g.node("height", "Core::Math::dot")
+    g.connect("position.position", "height.first")
+    g.connect("up.vector_field", "height.second")
+    # fade = clamp((cap - y) / fade_length, 0, 1)
+    g.node("cap_over_fade", "Core::Fields::scalar_field", value=("float", _f(cap / fade_length)))
+    g.node("minus_inv_fade", "Core::Fields::scalar_field", value=("float", _f(-1.0 / fade_length)))
+    g.node("height_term", "Core::Math::multiply")
+    g.connect("height.dot_product", "height_term.first.y")
+    g.connect("minus_inv_fade.scalar_field", "height_term.first.k")
+    g.node("fade_raw", "Core::Math::add")
+    g.connect("cap_over_fade.scalar_field", "fade_raw.first.cap")
+    g.connect("height_term.output", "fade_raw.first.y")
+    g.node("fade", "Core::Math::clamp", min=("float", _f(0.0)), max=("float", _f(1.0)))
+    g.connect("fade_raw.output", "fade.value")
+    # the core: exp(-|r|^2 / core^2)
+    g.node("r2", "Core::Math::length_squared")
+    g.connect("offset.output", "r2.vector")
+    g.node("minus_inv_core2", "Core::Fields::scalar_field", value=("float", _f(-1.0 / core ** 2)))
+    g.node("core_arg", "Core::Math::multiply")
+    g.connect("r2.length_squared", "core_arg.first.r2")
+    g.connect("minus_inv_core2.scalar_field", "core_arg.first.k")
+    g.node("core", "Core::Math::exponential")
+    g.connect("core_arg.output", "core.value")
+    # swirl: drag x swirl x (up x r) x core
     g.node("swirl", "Core::Math::cross")
     g.connect("up.vector_field", "swirl.first")
     g.connect("offset.output", "swirl.second")
@@ -118,32 +178,89 @@ def vortex_construct(detail=0.05, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
     g.node("swirl_force", "Core::Math::multiply")
     g.connect("swirl.cross_product", "swirl_force.first.t")
     g.connect("swirl_rate.scalar_field", "swirl_force.first.k")
+    g.connect("core.exponential", "swirl_force.first.core")
+    # pull: -drag x pull x r x core x (fade head_push + 1 - head_push)
+    g.node("push", "Core::Fields::scalar_field", value=("float", _f(head_push)))
+    g.node("one_minus_push", "Core::Fields::scalar_field", value=("float", _f(1.0 - head_push)))
+    g.node("pull_scale_raw", "Core::Math::multiply")
+    g.connect("fade.clamped", "pull_scale_raw.first.fade")
+    g.connect("push.scalar_field", "pull_scale_raw.first.k")
+    g.node("pull_scale", "Core::Math::add")
+    g.connect("pull_scale_raw.output", "pull_scale.first.scaled")
+    g.connect("one_minus_push.scalar_field", "pull_scale.first.push")
+    # x (base_pull + (1 - base_pull) clamp(y / base_height, 0, 1))
+    g.node("inv_base_height", "Core::Fields::scalar_field", value=("float", _f(1.0 / base_height)))
+    g.node("ramp_raw", "Core::Math::multiply")
+    g.connect("height.dot_product", "ramp_raw.first.y")
+    g.connect("inv_base_height.scalar_field", "ramp_raw.first.k")
+    g.node("ramp", "Core::Math::clamp", min=("float", _f(0.0)), max=("float", _f(1.0)))
+    g.connect("ramp_raw.output", "ramp.value")
+    g.node("base_pull", "Core::Fields::scalar_field", value=("float", _f(base_pull)))
+    g.node("one_minus_base_pull", "Core::Fields::scalar_field", value=("float", _f(1.0 - base_pull)))
+    g.node("base_scale_raw", "Core::Math::multiply")
+    g.connect("ramp.clamped", "base_scale_raw.first.ramp")
+    g.connect("one_minus_base_pull.scalar_field", "base_scale_raw.first.k")
+    g.node("base_scale", "Core::Math::add")
+    g.connect("base_scale_raw.output", "base_scale.first.ramped")
+    g.connect("base_pull.scalar_field", "base_scale.first.floor")
     g.node("pull_rate", "Core::Fields::scalar_field", value=("float", _f(-drag * pull)))
     g.node("pull_force", "Core::Math::multiply")
     g.connect("offset.output", "pull_force.first.r")
     g.connect("pull_rate.scalar_field", "pull_force.first.k")
-    g.node("lift_force", "Core::Fields::vector_field", value=("Math::float3", _v3(0, drag * lift, 0)))
+    g.connect("pull_scale.output", "pull_force.first.scale")
+    g.connect("core.exponential", "pull_force.first.core")
+    g.connect("base_scale.output", "pull_force.first.base")
+    # lift: drag x lift x up x fade x core
+    g.node("lift_vector", "Core::Fields::vector_field", value=("Math::float3", _v3(0, drag * lift, 0)))
+    g.node("lift_force", "Core::Math::multiply")
+    g.connect("lift_vector.vector_field", "lift_force.first.lift")
+    g.connect("fade.clamped", "lift_force.first.fade")
+    g.connect("core.exponential", "lift_force.first.core")
     g.node("flow", "Core::Math::add")
     g.connect("swirl_force.output", "flow.first.swirl")
     g.connect("pull_force.output", "flow.first.pull")
-    g.connect("lift_force.vector_field", "flow.first.lift")
+    g.connect("lift_force.output", "flow.first.lift")
+    if bend > 0:  # drag x bend x (1, 0, 0) x clamp((y - bend_from) / bend_length, 0, 1)
+        g.node("inv_bend_length", "Core::Fields::scalar_field", value=("float", _f(1.0 / bend_length)))
+        g.node("bend_offset", "Core::Fields::scalar_field", value=("float", _f(-bend_from / bend_length)))
+        g.node("bend_raw", "Core::Math::multiply")
+        g.connect("height.dot_product", "bend_raw.first.y")
+        g.connect("inv_bend_length.scalar_field", "bend_raw.first.k")
+        g.node("bend_shift", "Core::Math::add")
+        g.connect("bend_raw.output", "bend_shift.first.scaled")
+        g.connect("bend_offset.scalar_field", "bend_shift.first.offset")
+        g.node("bend_ramp", "Core::Math::clamp", min=("float", _f(0.0)), max=("float", _f(1.0)))
+        g.connect("bend_shift.output", "bend_ramp.value")
+        g.node("bend_vector", "Core::Fields::vector_field", value=("Math::float3", _v3(drag * bend, 0, 0)))
+        g.node("bend_force", "Core::Math::multiply")
+        g.connect("bend_vector.vector_field", "bend_force.first.drift")
+        g.connect("bend_ramp.clamped", "bend_force.first.ramp")
+        g.connect("fade.clamped", "bend_force.first.fade")  # none in the cap: the head would slide into a hook
+        g.connect("bend_force.output", "flow.first.bend")
     g.node("vortex_force", "Simulation::Influence::set_influence_force")
     g.connect("flow.output", "vortex_force.force")
     g.node("vortex_drag", "Simulation::Influence::set_influence_drag", drag=("float", _f(drag)))
     g.connect("vortex_force.out_influence", "vortex_drag.influence")
-    g.node("turbulence", "Simulation::Influence::turbulence_influence", turbulence=("float", _f(turbulence[0])),
-           frequency=("float", _f(0.5)), change_rate=("float", _f(1.0)))
-    g.node("turbulence_fine", "Simulation::Influence::turbulence_influence", turbulence=("float", _f(turbulence[1])),
-           frequency=("float", _f(2.0)), change_rate=("float", _f(2.0)))
+    # Bifrost's production detail
+    g.node("pyroclastic", "Simulation::Influence::aero_pyroclastic_influence", drag=("float", _f(pyro_drag)),
+           vorticity=("float", _f(pyro_vorticity)), frequency=("float", _f(pyro_frequency)))
+    g.node("einstein", "Simulation::Influence::aero_einstein_influence", master_magnitude=("float", _f(einstein)))
     g.node("vorticity", "Simulation::Influence::vorticity_influence", vorticity=("float", _f(vorticity)))
     g.node("simulate_aero", "Simulation::Aero::simulate_aero")
     g.connect("source_air.air_source", "simulate_aero.sources.air")
+    if tail_fog > 0:
+        g.connect("tail_air.air_source", "simulate_aero.sources.tail")
     g.connect("aero_solver_settings.solver_settings", "simulate_aero.settings")
     g.connect("vortex_drag.out_influence", "simulate_aero.influences.vortex")
-    g.connect("turbulence.out_influence", "simulate_aero.influences.turbulence")
-    g.connect("turbulence_fine.out_influence", "simulate_aero.influences.turbulence_fine")
+    g.connect("pyroclastic.drag_influence", "simulate_aero.influences.pyro_drag")
+    g.connect("pyroclastic.vorticity_influence", "simulate_aero.influences.pyro_vorticity")
+    g.connect("einstein.turbulence_influence", "simulate_aero.influences.einstein_turbulence")
+    g.connect("einstein.vorticity_influence", "simulate_aero.influences.einstein_vorticity")
     g.connect("vorticity.out_influence", "simulate_aero.influences.vorticity")
-    g.output("volume", "Object", "simulate_aero.aero_volume")
+    g.node("refine", "Simulation::Aero::post_refine_aero", refinement_levels=("int", "%dL" % refine_levels))
+    g.connect("simulate_aero.aero_volume", "refine.aero_volume")
+    g.connect("simulate_aero.solver_inputs", "refine.solver_inputs")
+    g.output("volume", "Object", VOLUME_OUTPUT)
     return g.definition()
 
 
@@ -152,7 +269,7 @@ BUILDERS = {"vortex_construct": vortex_construct}
 
 def main(argv):
     """python bifrost_graphs.py <builder> <out.json> [param=value ...] -- writes the graph for bifrost_export.py
-    (its compound: Lantern::Graphs::<builder>, its volume: simulate_aero.aero_volume)."""
+    (its compound: Lantern::Graphs::<builder>, its volume: VOLUME_OUTPUT)."""
     import json
     params = {}
     for a in argv[3:]:

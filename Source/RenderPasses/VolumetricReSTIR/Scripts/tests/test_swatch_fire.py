@@ -41,3 +41,25 @@ class TestSwatchFire(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGlitterQuads(unittest.TestCase):
+    """lantern.glitter_quads: the construct's glitter as tiny emissive squares facing the camera."""
+
+    def test_each_point_becomes_a_square_facing_the_camera(self):
+        import lantern
+        cam = {"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0)}
+        quads = lantern.glitter_quads([(1.0, 2.0, 3.0), (-4.0, 0.0, 0.0)], cam, 0.1)
+        self.assertEqual(len(quads), 2)
+        a, b, c, d = [tuple(x) for x in quads[0]]
+        centre = [sum(v[i] for v in (a, b, c, d)) / 4 for i in range(3)]
+        self.assertTrue(all(abs(centre[i] - (1.0, 2.0, 3.0)[i]) < 1e-9 for i in range(3)))
+        side = sum((b[i] - a[i]) ** 2 for i in range(3)) ** 0.5
+        self.assertAlmostEqual(side, 0.1)
+        # wound so (b - a) x (c - a) points at the camera (the emitting side)
+        e1 = [b[i] - a[i] for i in range(3)]
+        e2 = [c[i] - a[i] for i in range(3)]
+        n = (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0])
+        to_cam = [cam["position"][i] - centre[i] for i in range(3)]
+        self.assertGreater(sum(n[i] * to_cam[i] for i in range(3)), 0.0)
+

@@ -373,6 +373,26 @@ class TestLoaders(StudyEnv):
                 n = np.cross(mesh.v[b] - mesh.v[a], mesh.v[c] - mesh.v[a])
                 self.assertGreater(np.dot(n, target - centre), 0.0)
 
+    def test_the_bifrost_construct_is_placed_by_its_cap(self):
+        # each frame's _lights.json records where its column's top centre is (make_volumes.py write_lantern): the shot
+        # pins that point -- the construct's rounded cap -- at its anchor, whatever the simulation's height
+        import json
+        import lantern
+        import swatch_fire
+        g = lantern.SHOTS["lanternbifrost"]
+        vr, m = fresh_vr()
+        table = json.load(open(os.path.join(vr.DATA_DIR, g["data"], "%s%d_lights.json" % (g["data"], g["frame"]))))
+        vr.SCENES["lanternbifrost"]()
+        v = volume_call(m)
+        grid = table["grid"]
+        # fitted to the reference: its diameter and its optical depth across, whatever the simulation's
+        self.assertAlmostEqual(v["worldScaling"], grid["scale"])
+        self.assertAlmostEqual(v["densityScale"], grid["density_scale"])
+        self.assertAlmostEqual(grid["scale"] * grid["diameter_voxels"], g["fit"]["diameter"], places=6)
+        expect = swatch_fire.translation(**dict(lantern.pose("lanternbifrost"), base=grid["base"], scale=grid["scale"]))
+        np.testing.assert_allclose(v["worldTranslation"], expect, atol=1e-9)
+        self.assertEqual(tuple(g["anchor"]), tuple(g["fit"]["cap"]))
+
     def test_blackbody_lut_reads_as_the_shader_samples_it(self):
         # VolumeBase.slang ConvertTempToColor: a 128-texel 1D texture, linear filtering, texel i at 50 + 50 i kelvin
         vr, _ = fresh_vr()
