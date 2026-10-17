@@ -259,7 +259,7 @@ class TestLoaders(StudyEnv):
             self.assertEqual((v["sigma_s"], v["worldRotation"], v["worldScaling"]), (g["sigma_s"], g["rotation"], g["scale"]))
             self.assertGreater(info["scatterAlbedo"][1], info["scatterAlbedo"][0])  # green
             env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
-            self.assertTrue(env and env[0].endswith("lantern_sky.exr"), env)
+            self.assertTrue(env and env[0].endswith(g["sky"] + ".exr"), env)
             path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
             builder = Recorder()
             scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n), "float3": lambda *a: tuple(a)}
@@ -268,6 +268,20 @@ class TestLoaders(StudyEnv):
             lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
             self.assertEqual(len(lights), g["glow"]["n"], shot)
             self.assertAlmostEqual(sum(l.intensity[1] for l in lights), g["glow"]["power"] * g["glow"]["rgb"][1], places=6)
+
+    def test_the_looping_tornado_stands_as_its_preview_shows_it(self):
+        # the user (2026-10-17): the original looping tornado, as JangaFX's preview shows it -- upright (z up -> y up,
+        # turned only about its own axis), the frame as simulated (no reshaping), under its own dark sky
+        import lantern
+        g = lantern.SHOTS["lantern"]
+        vr, m = fresh_vr()
+        vr.SCENES["lantern"]()
+        v = volume_call(m)
+        self.assertTrue(v["dataFile"].endswith("tornado%d" % g["frame"]), v["dataFile"])
+        self.assertEqual(v["worldRotation"][:2], (-90.0, 0.0))
+        self.assertNotIn("author", g)
+        env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
+        self.assertTrue(env[0].endswith("lantern_night.exr"), env)
 
     def test_blackbody_lut_reads_as_the_shader_samples_it(self):
         # VolumeBase.slang ConvertTempToColor: a 128-texel 1D texture, linear filtering, texel i at 50 + 50 i kelvin

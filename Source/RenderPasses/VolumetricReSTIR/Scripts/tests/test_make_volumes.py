@@ -260,29 +260,28 @@ class TestEmissionLights(unittest.TestCase):
         np.testing.assert_allclose(np.array(l0["intensity"]) / l0["intensity"][0], rgb3000 / rgb3000[0], rtol=1e-6)
 
 
-class TestLanternFunnel(unittest.TestCase):
-    """The looping tornado reshaped into the Lanterns construct (user, 2026-10-17)."""
+class TestLanternSkies(unittest.TestCase):
+    """The green tornadoes' skies (lantern.SKIES; make_volumes.py lantern_sky)."""
 
-    def test_profile_has_a_neck_and_a_round_head(self):
-        r = lambda t: float(mv.funnel_radius(t, 60.0))  # noqa: E731
-        self.assertLess(r(0.5), 0.5 * r(0.78))  # the neck, half the head's width or less
-        self.assertAlmostEqual(r(0.78), 60.0, places=6)  # full width
-        self.assertAlmostEqual(r(1.0), 0.0, places=6)  # the cap closes it
-        self.assertGreater(r(0.95), 0.0)
+    def test_night_sky_is_dark_behind_the_tornado_and_lit_by_its_key(self):
+        # the looping tornado's: dark as its preview's backdrop (the Lanterns teal, dimmed), so its thin wisps show,
+        # lit by its key from in front
+        import lantern
+        spec = lantern.SKIES["lantern_night"]
+        sky = mv.lantern_sky("lantern_night", width=512)
+        d = mv.latlong_dir(((np.arange(512) + 0.5) / 512)[None, :], ((np.arange(256) + 0.5) / 256)[:, None])
+        behind = d @ np.array([0.0, 0.0, -1.0]) > np.cos(np.radians(12.0))  # the frame's middle, behind the funnel
+        self.assertLess(float(sky[behind].max()), 0.03)
+        self.assertGreater(float(sky[behind][..., 1].mean()), float(sky[behind][..., 0].mean()))  # teal
+        k = np.asarray(spec["key"]) / np.linalg.norm(spec["key"])
+        j, i = np.unravel_index(np.argmax(sky[..., 1] * (d @ k > 0.9)), sky.shape[:2])
+        self.assertGreater(float(sky[j, i, 1]), 0.9 * spec["key_radiance"])
 
-    def test_reshaped_funnel_is_solid_in_the_head_and_follows_the_profile(self):
-        rng = np.random.default_rng(0)
-        src = np.zeros((40, 40, 60), np.float32)
-        yy, xx = np.indices((40, 40))
-        src[(xx - 20) ** 2 + (yy - 20) ** 2 < 64] = 0.5  # a column 8 voxels in radius
-        src *= rng.uniform(0.5, 1.0, src.shape).astype(np.float32)
-        f, nz = mv.lantern_funnel(src, head=12.0, half=16)
-        self.assertEqual(f.shape, (32, 32, 60))
-        head = int(0.78 * (nz - 1))
-        self.assertGreater(f[16, 16, head], 0.5)  # solid on the axis
-        self.assertEqual(float(f[0, 0, head]), 0.0)  # nothing outside the surface
-        width = lambda z: int((f[:, 16, z] > 0.1).sum())  # noqa: E731
-        self.assertLess(width(int(0.5 * (nz - 1))), width(head))  # the neck is narrower than the head
+    def test_lantern_sky_is_still_the_reference_matched_one(self):
+        sky = mv.lantern_sky("lantern_sky", width=256)
+        self.assertEqual(sky.shape, (128, 256, 3))
+        self.assertIn("lantern_sky", mv.SKIES)
+        self.assertIn("lantern_night", mv.SKIES)
 
 
 class TestRaw(unittest.TestCase):

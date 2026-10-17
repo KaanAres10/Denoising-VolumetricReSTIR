@@ -648,8 +648,8 @@ def load_teapot_sequence(seq):
 def load_lantern(shot="lantern"):
     """A green energy tornado (user, 2026-10-17: like the Lanterns series' construct; lantern.SHOTS: the looping tornado,
     "lantern", or the dust devil, "lanterndust"; scenes/lantern_<shot>.pyscene): a frame of it as it is (TEAPOT_FRAME
-    picks another; make_volumes.py write_lantern prepares one) in a green medium, lit from inside by a few big green
-    lights and by the sky's glow and key (make_volumes.py lantern_sky); forward scattering (VR_PHASE_G, default 0.5).
+    picks another; make_volumes.py write_lantern prepares one) in a green medium, lit by a few big green lights and by
+    its sky's glow and key (lantern.SKIES; make_volumes.py lantern_sky); forward scattering (VR_PHASE_G, default 0.5).
     16:9."""
     import lantern
     g = lantern.SHOTS[shot]
@@ -659,7 +659,7 @@ def load_lantern(shot="lantern"):
                           densityScale=_density(g["density_scale"]), hasVelocity=False, hasEmission=False, LeScale=1.0,
                           worldTranslation=float3(*swatch_fire_translation(lantern.pose(shot))), worldRotation=float3(*g["rotation"]),
                           worldScaling=g["scale"])
-    m.scene.setEnvMap(DATA_DIR + r"\authored\lantern_sky.exr")
+    m.scene.setEnvMap(DATA_DIR + r"\authored\%s.exr" % g["sky"])
     c = g["camera"]
     _pin_camera(c["position"], c["target"], (0.0, 1.0, 0.0))
     m.scene.camera.focalLength = c["focal"]
