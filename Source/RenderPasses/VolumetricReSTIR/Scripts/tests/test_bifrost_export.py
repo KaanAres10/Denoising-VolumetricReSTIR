@@ -47,6 +47,7 @@ class TestWrapGraph(unittest.TestCase):
         self.assertEqual(values["write_OpenVDB_volume.directory"], "C:/out")
         # only what the renderer reads (every property, velocities and all, made the fire's 120 frames 7.3 GB)
         self.assertEqual(values["write_OpenVDB_volume.properties"], "voxel_fog_density voxel_temperature")
+        self.assertEqual(values["write_OpenVDB_volume.resolution_rounding"], "Up")  # never coarser than simulated
 
     def test_overrides_replace_the_graphs_values(self):
         values = [v for v in self.c["values"] if v["valueName"] == "switch.condition"]

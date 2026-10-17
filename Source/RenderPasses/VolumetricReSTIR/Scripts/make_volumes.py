@@ -490,6 +490,9 @@ def write_lantern(shot="lantern", frame=None):
     name = "%s%d" % (g["data"], frame)
     src = str(REPO / (g["src"] % frame))
     out_dir = REPO / "VolumetricReSTIRData" / g["data"]
+    if "bifrost_src" in g and not Path(src).exists():  # a Bifrost frame, rewritten for gImportVDB on first use
+        Path(src).parent.mkdir(parents=True, exist_ok=True)
+        clean_bifrost_vdb(REPO / (g["bifrost_src"] % frame), src)
     lo, box = read_vdb_box(src, ("density",))
     d = box["density"]
     grid = None

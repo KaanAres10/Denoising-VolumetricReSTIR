@@ -52,7 +52,8 @@ def wrap_graph(definition, compound, volume_output, out_dir, stem, overrides, pr
         {"source": "to_long.long", "target": "write_OpenVDB_volume.frame"},
         {"source": "write_OpenVDB_volume.success", "target": ".written"}])
     writer = {"filename": ("string", "%s_####.vdb" % stem), "directory": ("string", out_dir), "properties": ("string", properties),
-              "overwrite": ("bool", "true"), "create_directories": ("bool", "true")}
+              "overwrite": ("bool", "true"), "create_directories": ("bool", "true"),
+              "resolution_rounding": ("File::ResolutionRounding", "Up")}  # never coarser than simulated
     values = dict((v["valueName"], v) for v in c.get("values", []))
     for name, (vtype, value) in list({"write_OpenVDB_volume." + k: v for k, v in writer.items()}.items()) + list(overrides.items()):
         values[name] = {"valueName": name, "valueType": vtype, "value": value}

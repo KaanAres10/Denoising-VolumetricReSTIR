@@ -64,6 +64,18 @@ SHOTS = {
                             {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 18.0},
                             {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 3.0}),
                     camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
+    # the construct simulated in Bifrost (the user's Maya + Bifrost, 2026-10-17; bifrost_graphs.vortex_construct: a smoke
+    # column driven round its axis, detail 0.03 m, its source 1 m in radius; bifrost_export.py, frames 1-120), each frame
+    # rewritten for gImportVDB on first use (make_volumes.py clean_bifrost_vdb: Bifrost's own index placement, its axis
+    # at voxel x = z = 0); at frame 120 the column is 385 voxels long (11.5 m), twisting, flared where it tops out;
+    # lying diagonally as the reference's construct (worldRotation z -62: its axis 28 degrees up to the right), its
+    # middle at the frame's
+    "lanternbifrost": dict(GREEN, src="BifrostVDB/construct_clean/construct_%04d.vdb", bifrost_src="BifrostVDB/construct/construct_%04d.vdb",
+                           data="bifrostconstruct", frame=120,
+                           offset=(0.0, 0.0, 0.0), scale=0.09, rotation=(0.0, 0.0, -62.0), anchor=(-3.0, -4.0, 0.0),
+                           base=(0.0, 193.0, 0.0), density_scale=0.5,
+                           sky="lantern_sky", key=(-0.75, 0.5, 0.45),
+                           camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
     "lanterndust": dict(GREEN, src="Dust_Devil/Dust_Devil/embergen_dust_devil_tornado_a_%d.vdb", data="dustdevil", frame=50,
                         offset=(-128.5, -128.5, -192.5), scale=0.065, rotation=(-90.0, 0.0, 0.0), anchor=(0.0, -11.5, 0.0),
                         base=(0.0, 0.0, -192.5), density_scale=0.13,  # 2 a cm at density 1: its base is dense (1.0)
@@ -71,6 +83,7 @@ SHOTS = {
                         glow={"n": 5, "heights": (-170.0, -110.0, -40.0, 40.0, 120.0), "rgb": (0.7, 1.0, 0.75), "power": 4200.0, "outside": 8.0},
                         camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
 }
+SHOTS["lanternbifrost"]["panels"] = SHOTS["lantern"]["panels"]  # the same big soft boxes
 SKIES = {
     # matched to the user's Lanterns reference: a teal sky brighter below (55/78/78 at the top right, 81/110/111 at the
     # bottom right), a broad white glow behind the funnel filling the frame's left side, a soft key from the upper left

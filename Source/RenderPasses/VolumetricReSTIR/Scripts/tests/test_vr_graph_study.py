@@ -267,7 +267,7 @@ class TestLoaders(StudyEnv):
         # the user's Lanterns reference (2026-10-17): the looping tornado and the dust devil as green funnels, lit by a
         # few big lights (not many small ones) and the authored sky
         import lantern
-        for shot in ("lantern", "lanterndust"):
+        for shot in ("lantern", "lanterndust", "lanternbifrost"):  # lanternbifrost: the construct simulated in Bifrost
             g = lantern.SHOTS[shot]
             vr, m = fresh_vr()
             info = vr.SCENES[shot]()

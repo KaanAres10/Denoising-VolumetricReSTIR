@@ -1,0 +1,3 @@
+# The Lanterns construct simulated in Bifrost (the user's Maya + Bifrost; lantern.py's lanternbifrost).
+SHOT = 'lanternbifrost'
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\lantern.pyscene').read())

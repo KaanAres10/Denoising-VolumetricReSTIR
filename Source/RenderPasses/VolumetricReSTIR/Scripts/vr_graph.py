@@ -723,6 +723,7 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "teapotmidair": lambda: load_teapot_sequence("midair"), "teapotplume": lambda: load_teapot_sequence("plume"),
           "teapotbifrost": lambda: load_teapot_sequence("bifrostfire"),
           "lantern": load_lantern, "lanterndust": lambda: load_lantern("lanterndust"),
+          "lanternbifrost": lambda: load_lantern("lanternbifrost"),
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}
