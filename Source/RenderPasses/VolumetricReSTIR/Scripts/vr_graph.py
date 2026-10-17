@@ -650,15 +650,22 @@ def load_lantern(shot="lantern"):
     "lantern", or the dust devil, "lanterndust"; scenes/lantern_<shot>.pyscene): a frame of it as it is (TEAPOT_FRAME
     picks another; make_volumes.py write_lantern prepares one) in a green medium, lit by a few big green lights and by
     its sky's glow and key (lantern.SKIES; make_volumes.py lantern_sky); forward scattering (VR_PHASE_G, default 0.5).
-    16:9."""
+    16:9. A detailed frame (the shot's `detail`) is on its own grid, `up` times finer: the voxel and the density per
+    voxel 1 / up as large, its middle where write_lantern recorded it in the frame's _lights.json ("grid")."""
+    import json
     import lantern
     g = lantern.SHOTS[shot]
+    stem = DATA_DIR + r"\%s\%s%d" % (g["data"], g["data"], lantern.frame(shot))
+    up = g.get("detail", {}).get("up", 1.0)
+    pose = dict(lantern.pose(shot), scale=g["scale"] / up)
+    if "detail" in g:
+        pose["base"] = json.load(open(stem + "_lights.json"))["grid"]["base"]
     m.loadScene(SCENE_DIR + r"\lantern_%s.pyscene" % shot)
     m.scene.addGVDBVolume(sigma_a=float3(*g["sigma_a"]), sigma_s=float3(*g["sigma_s"]), g=env_float("VR_PHASE_G", g["g"]),
-                          dataFile=DATA_DIR + r"\%s\%s%d" % (g["data"], g["data"], lantern.frame(shot)), numMips=4,
-                          densityScale=_density(g["density_scale"]), hasVelocity=False, hasEmission=False, LeScale=1.0,
-                          worldTranslation=float3(*swatch_fire_translation(lantern.pose(shot))), worldRotation=float3(*g["rotation"]),
-                          worldScaling=g["scale"])
+                          dataFile=stem, numMips=4, densityScale=_density(g["density_scale"] / up),
+                          hasVelocity=False, hasEmission=False, LeScale=1.0,
+                          worldTranslation=float3(*swatch_fire_translation(pose)), worldRotation=float3(*g["rotation"]),
+                          worldScaling=pose["scale"])
     m.scene.setEnvMap(DATA_DIR + r"\authored\%s.exr" % g["sky"])
     c = g["camera"]
     _pin_camera(c["position"], c["target"], (0.0, 1.0, 0.0))

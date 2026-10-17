@@ -258,7 +258,7 @@ class TestLoaders(StudyEnv):
             v = volume_call(m)
             self.assertTrue(v["dataFile"].endswith("%s%d" % (g["data"], g["frame"])), v["dataFile"])
             self.assertFalse(v["hasEmission"])
-            self.assertEqual((v["sigma_s"], v["worldRotation"], v["worldScaling"]), (g["sigma_s"], g["rotation"], g["scale"]))
+            self.assertEqual((v["sigma_s"], v["worldRotation"]), (g["sigma_s"], g["rotation"]))
             self.assertGreater(info["scatterAlbedo"][1], info["scatterAlbedo"][0])  # green
             env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
             self.assertTrue(env and env[0].endswith(g["sky"] + ".exr"), env)
@@ -288,7 +288,26 @@ class TestLoaders(StudyEnv):
         self.assertEqual(v["worldRotation"][:2], (-90.0, 0.0))
         self.assertIn("detail", g)
         env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
-        self.assertTrue(env[0].endswith("lantern_night.exr"), env)
+        self.assertTrue(env[0].endswith("lantern_sky.exr"), env)  # the construct's own backdrop
+
+    def test_a_detailed_frame_is_placed_by_its_own_grid(self):
+        # make_volumes.py write_lantern writes each detailed frame on its own finer grid (its index box starts where the
+        # frame's does) and records that grid's voxel, middle and density in its _lights.json: the loader takes them,
+        # so every frame of the loop lands in the same place at the same optical depth
+        import json
+        import lantern
+        g = lantern.SHOTS["lantern"]
+        vr, m = fresh_vr()
+        table = json.load(open(os.path.join(vr.DATA_DIR, g["data"], "%s%d_lights.json" % (g["data"], g["frame"]))))
+        grid = table["grid"]  # the frame's own: where its middle is on its finer grid
+        up = g["detail"]["up"]
+        vr.SCENES["lantern"]()
+        v = volume_call(m)
+        self.assertAlmostEqual(v["worldScaling"], g["scale"] / up)  # the voxel and density 1 / up as large: lantern.py's
+        self.assertAlmostEqual(v["densityScale"], g["density_scale"] / up)
+        import swatch_fire
+        expect = swatch_fire.translation(**dict(lantern.pose("lantern"), scale=g["scale"] / up, base=grid["base"]))
+        np.testing.assert_allclose(v["worldTranslation"], expect, atol=1e-9)
 
     def test_the_looping_tornado_is_lit_by_big_soft_boxes_out_of_shot(self):
         # the user (2026-10-17): complicated enough that mutations are useful, with big lights -- large emissive soft

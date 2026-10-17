@@ -343,8 +343,66 @@ class TestTornadoDetail(unittest.TestCase):
         peaks = f[(f == ndimage.maximum_filter(f, size=3)) & (f > 0.6)]
         self.assertGreater(float(np.percentile(peaks, 90) / np.percentile(peaks, 10)), 2.0)
 
+    def test_curl_noise_is_divergence_free(self):
+        # the warp's field: a curl, so it swirls the smoke without compressing it (mass kept even on a small subject)
+        c = mv.curl_tile(32, 2.5, np.random.default_rng(3))
+        div = sum((np.roll(c[a], -1, a) - np.roll(c[a], 1, a)) / 2 for a in range(3))
+        mag = np.sqrt(sum(f ** 2 for f in c))
+        self.assertLess(float(np.abs(div).mean()), 0.05 * float(mag.mean()))
+        f = mv.tornado_detail(self.d, up=1.5, specks=0, bands=0.0)
+        self.assertAlmostEqual(float(f.sum()) / 1.5 ** 3 / float(self.d.sum()), 1.0, delta=0.05)
+
+    def test_streaks_run_along_the_swirl(self):
+        # the vortex's streaks: long around the axis, thin across it (along z) -- ~6 a turn, so measured at a
+        # tornado-like radius (45 voxels; the funnel's is 60-270 on its finer grid)
+        yy, xx = np.indices((140, 140), dtype=np.float64)
+        d = np.repeat((np.clip(1 - np.hypot(xx - 70, yy - 70) / 60, 0, 1) * 0.3)[..., None], 40, axis=2).astype(np.float32)
+        f = mv.tornado_detail(d, up=1.0, warp=0.0, specks=0, bands=0.0, streaks=0.8, streak_width=(3.0, 3.0))
+        base = mv.tornado_detail(d, up=1.0, warp=0.0, specks=0, bands=0.0)
+        r = f / np.maximum(base, 1e-6)  # the streaks alone
+        a = np.linspace(0, 2 * np.pi, 2048, endpoint=False)
+        ring = lambda z: ndimage.map_coordinates(r[:, :, z], [70 + 45 * np.cos(a), 70 + 45 * np.sin(a)], order=1)  # noqa: E731
+        around = np.mean([np.abs(np.diff(ring(z))).mean() / (2 * np.pi * 45 / 2048) for z in range(10, 30, 4)])
+        along_z = float(np.abs(np.diff(r[115, 70, 5:35])).mean())
+        self.assertLess(around, 0.3 * along_z)
+
+    def test_erosion_carves_the_thin_smoke_and_keeps_the_core(self):
+        base = mv.tornado_detail(self.d, up=1.0, warp=0.0, specks=0, bands=0.0)
+        f = mv.tornado_detail(self.d, up=1.0, warp=0.0, specks=0, bands=0.0, erode=0.6, erode_ref=0.15)
+        thin, core = (base > 0.01) & (base < 0.06), base > 0.2
+        self.assertGreater(float((f[thin] < 0.25 * base[thin]).mean()), 0.3)  # much of the thin smoke carved away
+        self.assertGreater(float((f[core] / base[core]).min()), 0.95)  # the dense core untouched
+        self.assertGreater(float((f[thin] > 0.75 * base[thin]).mean()), 0.05)  # wisps left standing
+
+    def test_grain_roughens_the_smoke_finely(self):
+        base = mv.tornado_detail(self.d, up=1.0, warp=0.0, specks=0, bands=0.0)
+        f = mv.tornado_detail(self.d, up=1.0, warp=0.0, specks=0, bands=0.0, grain=0.3)
+        r = (f / np.maximum(base, 1e-6))[base > 0.1]
+        self.assertGreater(float(r.std()), 0.15)
+        self.assertAlmostEqual(float(r.mean()), 1.0, delta=0.05)
+
     def test_is_repeatable(self):
         np.testing.assert_array_equal(mv.tornado_detail(self.d, specks=20), mv.tornado_detail(self.d, specks=20))
+
+
+class TestGvdbAtlas(unittest.TestCase):
+    """The brick atlas gImportVDB builds must fit SceneGVDB's two Texture3D parts (each at most 2048 deep)."""
+
+    def test_atlas_depth_counts_occupied_bricks(self):
+        d = np.zeros((64, 64, 72), np.float32)
+        self.assertEqual(mv.gvdb_atlas_depth(d), 0)
+        d[3, 3, 3] = 1.0
+        self.assertEqual(mv.gvdb_atlas_depth(d), 10)  # one 8^3 brick: a layer of 16 x 16, 10 texels deep
+        d[:, :, :] = 1e-5  # below VolFromRaw's cutoff: no bricks
+        self.assertEqual(mv.gvdb_atlas_depth(d), 0)
+        d[:, :, 64:] = 1.0  # 8 x 8 x 1 bricks, the last layer a partial block
+        d[:, :, :8] = 1.0  # another 64
+        self.assertEqual(mv.gvdb_atlas_depth(d), 10)  # 128 bricks: one layer
+        d[:, :, 8:16] = 1.0  # 192
+        d[:, :, 16:24] = 1.0  # 256
+        d[:, :, 24:32] = 1.0  # 320: a second layer
+        self.assertEqual(mv.gvdb_atlas_depth(d), 20)
+        self.assertGreater(mv.GVDB_ATLAS_MAX, 4000)
 
 
 class TestRaw(unittest.TestCase):

@@ -11,18 +11,18 @@ Mogwai's scene builder runs this. Centimetres.
 make it green", every small wisp visible -- where the mutation count has its influence), the frame as simulated:
 upright (z up, 432 voxels from its thin twisting foot to its wide billowing top, ~240 across there), seen along its
 voxel x as the preview is (worldRotation z 90: its silhouette's best match, IoU 0.87 against the preview's frame 64,
-0.76 along y), its middle at the frame's, 0.053 cm a voxel -- 23 cm, nine-tenths of the frame's height. Density 0.3:
-its veils thin (the median column's optical depth ~0.4) and its core opaque enough that its swirls show (thinner, the
-view averaged them into haze; denser, the veils were as solid as the core). With the construct's detail added
-(user, 2026-10-17: "add detail such that it looks like the lantern construct, the volumetrics more complicated, so
-that mutation is useful"; make_volumes.py tornado_detail), its own structure kept: 1.5x finer, its veils curled into
-filaments, banded by helices wrapping its axis (the construct's rings: 80% of the smoke regrouped into them, sharp
-enough to show through the smoke), and 6000 specks, a pixel or two each -- glints where lit, the construct's glitter,
-dark debris and small shadows where not. Against a dark sky (lantern_night: the Lanterns teal dimmed to near black, as
-the preview's black) with a key from the upper left in front, as the preview's, a rim behind it to the right, out of
-shot, and lit by three big emissive soft boxes out of shot (key, rim, fill), each its own green: a pixel's sample
-carries its box's colour and a point on it -- where the study found mutations most useful (softbox -81..-89%, many
-coloured lights -91%). Its funnel's median 34/97/54, the Lanterns construct's 36/96/52.
+0.76 along y), its middle at the frame's, 0.053 cm a source voxel -- 23 cm, nine-tenths of the frame's height. With
+film-style detail added (user, 2026-10-17: "more detail, like the lantern construct, movie production detail";
+make_volumes.py tornado_detail), its own structure kept, as a production upres adds it to a simulation: 1.6x finer
+(at 2x, and at 1.75x once its body is kept whole, its bricks overflow SceneGVDB's atlas), curl-noise turbulence, the
+vortex's flow-line streaks, dust grain, the construct's rings (60% of the smoke regrouped into helices), the faintest
+haze eroded into crisp wisps (the Nubis remap, against density 0.04: against 0.12 it carved the body away), 3000 faint
+specks (opaque ones read as dark dirt against the backlight). Density 1.6 a source voxel, so its body reads solid as
+the construct's does. Against the construct's own sky (lantern_sky: teal, the white glow at the left), lit by three
+big emissive soft boxes out of shot (key, rim, fill), each its own green: a pixel's sample carries its box's colour and
+a point on it -- where the study found mutations most useful (softbox -81..-89%, many coloured lights -91%); on an
+earlier, lighter version of this shot 5 mutations at M cap 200 cut the in-medium correlation rho(8) 0.110 -> 0.016
+and the raw error 15%. Its funnel's green median 49/116/70, the Lanterns construct's 36/96/52.
   lanterndust: the dust devil (z up, 385 voxels: a dense ground cloud 35 voxels in radius narrowing to a twisting
 column of ~18 that wanders off its axis and flares to ~60 at the top), upright, its ground's centre below the frame's
 middle, 0.065 cm a voxel: the column fills the frame's height.
@@ -39,22 +39,30 @@ GREEN = {"sigma_a": (0.85, 0.18, 0.72), "sigma_s": (0.15, 0.82, 0.28), "g": 0.5}
 SHOTS = {
     "lantern": dict(GREEN, src="TornadoLoopingVDB/TornadoLooping/TornadoVDB/tornado_%04d.vdb", data="tornadodetail",
                     frame=64,
-                    # the construct's detail on the frame (make_volumes.py tornado_detail): 1.5x finer, its veils curled
-                    # into filaments, banded, specked -- written a voxel a unit (no grid offset)
-                    detail={"up": 1.5, "warp": (3.0, 1.2), "bands": 0.8, "sharp": 2.5, "arms": 2, "pitch": 54.0,
-                            "meander": 1.0, "specks": 6000, "speck_density": 5.0, "speck_sigma": 0.45, "speck_spread": 0.5,
-                            "speck_power": 0.5, "seed": 1},
-                    # the frame's pose on the finer grid: 0.053 / 1.5 cm a voxel, its middle (voxel (-7, -6, -92) of the
-                    # source .vbx) at (v - lo - offset) x 1.5; density 0.3 / 1.5 a voxel, the same optical depth
-                    offset=(0.0, 0.0, 0.0), scale=0.053 / 1.5, rotation=(-90.0, 0.0, 90.0), anchor=(0.0, 0.0, 0.0),
-                    base=(219.75, 224.25, 330.75), density_scale=0.2,
-                    sky="lantern_night", key=(-0.75, 0.5, 0.45),
+                    # film-style detail on the frame (make_volumes.py tornado_detail, all lengths in its finer voxels):
+                    # 1.6x as fine, curl-noise turbulence, the vortex's streaks, dust grain, the construct's rings, the
+                    # thin smoke eroded into crisp wisps, glitter -- written a voxel a unit (no grid offset) from the
+                    # frame's own index box, the source's grid offset `source_offset`
+                    # 1.6x: at 2x its 8^3 bricks (~130k) overflow SceneGVDB's atlas, and at 1.75x once the body is
+                    # kept whole (make_volumes.py gvdb_atlas_depth)
+                    detail={"up": 1.6, "source_offset": (-175.5, -175.5, -319.5),
+                            "warp": (4.0, 1.2), "warp_scales": (24.0, 6.0), "streaks": 0.45, "streak_width": (6.0, 3.0),
+                            "grain": 0.25, "grain_scale": 2.5, "erode": 0.5, "erode_ref": 0.04, "erode_scales": (16.0, 6.0, 2.5),
+                            "bands": 0.6, "sharp": 2.5, "arms": 2, "pitch": 58.0, "meander": 1.0,
+                            "specks": 3000, "speck_density": 1.5, "speck_sigma": 0.5, "speck_spread": 0.5, "speck_power": 1.0,
+                            "seed": 1},
+                    # the pose and density in the source's terms -- 0.053 cm a source voxel, its middle at source voxel
+                    # (-7, -6, -92), 1.6 a source voxel at density 1 -- which write_lantern turns into each frame's finer
+                    # grid's (its _lights.json "grid", which vr_graph.load_lantern reads); `offset` the written grid's
+                    offset=(0.0, 0.0, 0.0), scale=0.053, rotation=(-90.0, 0.0, 90.0), anchor=(0.0, 0.0, 0.0),
+                    base=(-7.0, -6.0, -92.0), density_scale=1.6,
+                    sky="lantern_sky", key=(-0.75, 0.5, 0.45),
                     # big lights (the user: bigger lights, not many small ones): emissive soft boxes, each `side` cm square,
                     # `dist` cm from the funnel's middle along `dir`, facing it, out of shot; each its own tint, so a
                     # pixel's sample carries its light's colour, and the point on a box is the light-vertex move's
-                    panels=({"name": "Key", "dir": (-0.75, 0.5, 0.45), "dist": 36.0, "side": 14.0, "rgb": (0.75, 1.0, 0.8), "radiance": 50.0},
-                            {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 40.0},
-                            {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 5.0}),
+                    panels=({"name": "Key", "dir": (-0.75, 0.5, 0.45), "dist": 36.0, "side": 14.0, "rgb": (0.75, 1.0, 0.8), "radiance": 22.0},
+                            {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 18.0},
+                            {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 3.0}),
                     camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
     "lanterndust": dict(GREEN, src="Dust_Devil/Dust_Devil/embergen_dust_devil_tornado_a_%d.vdb", data="dustdevil", frame=50,
                         offset=(-128.5, -128.5, -192.5), scale=0.065, rotation=(-90.0, 0.0, 0.0), anchor=(0.0, -11.5, 0.0),

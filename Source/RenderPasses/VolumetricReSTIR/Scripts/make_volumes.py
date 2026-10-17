@@ -298,32 +298,84 @@ def unit_noise(shape, sigma, rng):
     return n / max(float(n.std()), 1e-12)
 
 
-def tornado_detail(d, up=1.5, warp=(3.0, 1.2), bands=0.45, sharp=1.0, arms=2, pitch=54.0, meander=1.0, specks=5000,
-                   speck_density=2.5, speck_sigma=0.8, speck_spread=0.0, speck_power=1.0, seed=1, chunk=24):
-    """The looping tornado with the Lanterns construct's detail added (user, 2026-10-17: "add detail such that it looks
-    like the lantern construct, the volumetrics more complicated, so that mutation is useful"), its own structure kept --
-    not reshaped. Returns float32 density on a grid `up` times finer (new voxel j's centre at source coordinate
-    (j + 0.5) / up - 0.5):
-      finer filaments: the frame sampled through a displacement field -- two octaves of smooth noise, `warp` new
-    voxels at 4 and 1.3 source voxels' scale -- so its smooth veils curl into filaments a voxel or two across;
-      bands: helices wrapping the funnel's axis (each slice's density centre, smoothed along z), `arms` of them, one
-    passing every `pitch` new voxels along z, their phase meandering with smooth noise (`meander` radians: the
-    reference's bands are irregular); `bands` of the density regrouped into them, the profile (1 + cos) / 2 to the
-    power `sharp` (higher: narrower bands, emptier gaps -- seen through smoke, a soft ripple averages out along the
-    view), its mean over a period 1, so the smoke is regrouped, not added;
-      specks: `specks` small dense blobs (Gaussian; `speck_density` at the centre, `speck_sigma` new voxels across,
-    both log-normal by `speck_spread`) drawn by the frame's density to the power `speck_power` (below 1: more out in
-    the thin veils): on the lit side each catches the light, a glint, as the construct's glitter -- against thin smoke
-    an opaque speck reads up to 1 / its optical depth brighter -- and in shadow a dark speck of debris, casting its own
-    small shadow. Seeded: the same arguments give the same volume."""
+GVDB_BRICK = 8  # gImportVDB's bricks: 8^3 voxels (10^3 texels in the atlas with their apron), 16 x 16 to a layer
+GVDB_ATLAS_MAX = 2040 + 2040  # SceneGVDB uploads a deep atlas as two Texture3D parts, each at most 2048 deep
+GVDB_ATLAS_SLACK = 1.12  # gImportVDB's atlas runs over gvdb_atlas_depth's count (measured 4310 against 3940: +9%)
+
+
+def gvdb_atlas_depth(d, cutoff=1e-4):
+    """The depth (texels) of the brick atlas gImportVDB builds for density `d` written a voxel a unit by VolFromRaw:
+    a brick for every 8^3 block holding a voxel above VolFromRaw's cutoff, 16 x 16 bricks a layer, 10 texels a
+    brick. Past GVDB_ATLAS_MAX the volume cannot be uploaded."""
+    b = GVDB_BRICK
+    m = d > cutoff
+    m = np.pad(m, [(0, -s % b) for s in m.shape])
+    n = int(m.reshape(m.shape[0] // b, b, m.shape[1] // b, b, m.shape[2] // b, b).any((1, 3, 5)).sum())
+    return -(-n // 256) * 10
+
+
+TILE = 64  # texels a side of a periodic noise tile
+TILE_SIGMA = 2.5  # its blur, texels
+TILE_FEATURE = 4 * TILE_SIGMA  # texels from one of its features to the next
+
+
+def curl_tile(n, sigma, rng):
+    """A periodic divergence-free field on an n^3 tile: the curl of three smooth noise potentials (central differences,
+    wrapping), scaled to a unit mean magnitude. Returns its (x, y, z) components."""
+    psi = [unit_noise((n, n, n), sigma, rng) for _ in range(3)]
+
+    def dd(f, axis):
+        return (np.roll(f, -1, axis) - np.roll(f, 1, axis)) / 2
+    c = [dd(psi[2], 1) - dd(psi[1], 2), dd(psi[0], 2) - dd(psi[2], 0), dd(psi[1], 0) - dd(psi[0], 1)]
+    k = 1.0 / max(float(np.sqrt(sum(f ** 2 for f in c)).mean()), 1e-12)
+    return [(f * k).astype(np.float32) for f in c]
+
+
+def tile_at(tile, coords):
+    """A periodic tile sampled at texel coordinates (trilinear, wrapping)."""
+    return ndimage.map_coordinates(tile, coords, order=1, mode="grid-wrap")
+
+
+def tornado_detail(d, up=2.0, warp=(4.0, 1.2), warp_scales=(24.0, 6.0), streaks=0.0, streak_width=(6.0, 4.0),
+                   grain=0.0, grain_scale=2.5, erode=0.0, erode_ref=0.15, erode_scales=(16.0, 6.0, 2.5), bands=0.45,
+                   sharp=1.0, arms=2, pitch=54.0, meander=1.0, specks=5000, speck_density=2.5, speck_sigma=0.8,
+                   speck_spread=0.0, speck_power=1.0, seed=1, chunk=8):
+    """The looping tornado with film-style detail added (user, 2026-10-17: "more detail, like the lantern construct,
+    movie production detail"), its own structure kept -- not reshaped -- as a production upres adds it to a
+    simulation (Houdini's Pyro Upres: resampled finer, turbulence advected in, edges eroded by noise). Returns float32
+    density on a grid `up` times finer (new voxel j's centre at source coordinate (j + 0.5) / up - 0.5). Lengths are
+    in new voxels; noise comes from periodic tiles (TILE texels, a feature every TILE_FEATURE):
+      warp: the frame sampled through a curl-noise displacement (divergence free: it swirls the smoke without
+    compressing it), an octave per `warp_scales` feature size, `warp` voxels each -- smooth veils curl into filaments;
+      streaks: the vortex's flow lines -- noise long around the funnel's axis (each slice's density centre, smoothed
+    along z), ~6 features a turn, rising one tile a turn so it joins up, `streak_width` (radial, vertical) across --
+    density x (1 + `streaks` n);
+      grain: fine noise (`grain_scale`), density x (1 + `grain` n): dust's texture;
+      bands: helices wrapping the axis, `arms` of them, one passing every `pitch` voxels along z, their phase
+    meandering with smooth noise (`meander` radians: the reference's bands are irregular); `bands` of the density
+    regrouped into them, the profile (1 + cos) / 2 to the power `sharp` (higher: narrower bands, emptier gaps -- seen
+    through smoke, a soft ripple averages out along the view), its mean over a period 1;
+      erode: the thin smoke carved by ridged noise (|n| over `erode_scales`, in [0, 1]) with the cloud modelling remap
+    (Schneider 2015, Nubis): q -> (q - e D) / (1 - e D) on the density over `erode_ref`, capped at 1 -- the thin
+    veils break into crisp wisps and sheets, the core (q >= 1) untouched;
+      specks: `specks` small dense blobs (Gaussian; `speck_density` at the centre, `speck_sigma` across, both
+    log-normal by `speck_spread`) drawn by the frame's density to the power `speck_power` (below 1: more out in the thin
+    veils): glints where lit, the construct's glitter (against thin smoke an opaque speck reads up to 1 / its optical
+    depth brighter), dark debris casting its own small shadow where not.
+    Seeded: the same arguments give the same volume."""
     rng = np.random.default_rng(seed)
     nx, ny, nz = d.shape
     shape = tuple(int(round(up * n)) for n in d.shape)
-    disp = None
-    if warp:
-        disp = [warp[0] * unit_noise(d.shape, 4.0, rng) + warp[1] * unit_noise(d.shape, 1.3, rng) for _ in range(3)]
+
+    def k_tex(size):  # texels a voxel, for features `size` voxels apart
+        return TILE_FEATURE / size
+    curls = [curl_tile(TILE, TILE_SIGMA, rng) for _ in warp_scales] if warp else []
+    streak_tile = unit_noise((TILE,) * 3, TILE_SIGMA, rng) if streaks else None
+    grain_tile = unit_noise((TILE,) * 3, TILE_SIGMA, rng) if grain else None
+    erode_tiles = [unit_noise((TILE,) * 3, TILE_SIGMA, rng) for _ in erode_scales] if erode else []
     phase = meander * unit_noise(d.shape, 12.0, rng) if bands else None
     band_mean = float(np.mean((0.5 + 0.5 * np.cos(np.linspace(0, 2 * np.pi, 4096, endpoint=False))) ** sharp))
+    offsets = rng.uniform(0, TILE, (8, 3))  # each octave's own place in its tile
     # the funnel's axis, slice by slice, in source voxels
     w = d.sum((0, 1)).astype(np.float64)
     ix, iy = np.indices((nx, ny), dtype=np.float64)
@@ -333,25 +385,44 @@ def tornado_detail(d, up=1.5, warp=(3.0, 1.2), bands=0.45, sharp=1.0, arms=2, pi
         c = (d * grid[..., None]).sum((0, 1)) / np.maximum(w, 1e-30)
         c = np.interp(np.arange(nz), np.flatnonzero(keep), c[keep]) if keep.any() else np.full(nz, (len(grid) - 1) / 2)
         axis.append(ndimage.gaussian_filter1d(c, 8.0, mode="nearest"))
-    sx = ((np.arange(shape[0]) + 0.5) / up - 0.5)[:, None, None]
-    sy = ((np.arange(shape[1]) + 0.5) / up - 0.5)[None, :, None]
+    jy = np.arange(shape[1])[None, :, None].astype(np.float64)
+    jz = np.arange(shape[2])[None, None, :].astype(np.float64)
+    sz = (jz + 0.5) / up - 0.5
+    ax = np.interp(sz, np.arange(nz), axis[0])
+    ay = np.interp(sz, np.arange(nz), axis[1])
     out = np.empty(shape, np.float32)
-    for z0 in range(0, shape[2], chunk):
-        jz = np.arange(z0, min(z0 + chunk, shape[2]))
-        sz = ((jz + 0.5) / up - 0.5)[None, None, :]
-        X, Y, Z = np.broadcast_arrays(sx, sy, sz)
-        at = [X, Y, Z]
-        if disp is not None:
-            at = [A + ndimage.map_coordinates(f, [X, Y, Z], order=1, mode="nearest") / up for A, f in zip((X, Y, Z), disp)]
+    for x0 in range(0, shape[0], chunk):
+        jx = np.arange(x0, min(x0 + chunk, shape[0]))[:, None, None].astype(np.float64)
+        J = np.broadcast_arrays(jx, jy, jz)  # new voxels
+        S = [(j + 0.5) / up - 0.5 for j in J]  # source coordinates
+        at = list(S)
+        for (amp, size), curl, o in zip(zip(warp if warp else (), warp_scales), curls, offsets):
+            t = [J[a] * k_tex(size) + o[a] for a in range(3)]
+            for a in range(3):
+                at[a] = at[a] + amp * tile_at(curl[a], t) / up
         val = ndimage.map_coordinates(d, at, order=1, mode="constant", cval=0.0)
+        rx, ry = (S[0] - ax) * up, (S[1] - ay) * up  # from the axis, new voxels
+        theta = np.arctan2(ry, rx)
+        if streaks:
+            turn = theta / (2 * np.pi) * TILE  # around: one tile a turn (joins up)
+            t = [np.hypot(rx, ry) * k_tex(streak_width[0]) + offsets[3, 0], turn + offsets[3, 1],
+                 J[2] * k_tex(streak_width[1]) - turn + offsets[3, 2]]  # rising one tile a turn: joins up too
+            val *= np.maximum(1.0 + streaks * tile_at(streak_tile, t), 0.0)
+        if grain:
+            t = [J[a] * k_tex(grain_scale) + offsets[4, a] for a in range(3)]
+            val *= np.maximum(1.0 + grain * tile_at(grain_tile, t), 0.0)
         if bands:
-            ax = np.interp(sz, np.arange(nz), axis[0])
-            ay = np.interp(sz, np.arange(nz), axis[1])
-            theta = np.arctan2(Y - ay, X - ax)
-            m = ndimage.map_coordinates(phase, [X, Y, Z], order=1, mode="nearest")
-            band = (0.5 + 0.5 * np.cos(arms * theta - 2 * np.pi * jz[None, None, :] / pitch + m)) ** sharp
+            m = ndimage.map_coordinates(phase, S, order=1, mode="nearest")
+            band = (0.5 + 0.5 * np.cos(arms * theta - 2 * np.pi * J[2] / pitch + m)) ** sharp
             val *= (1.0 - bands) + bands * band / band_mean
-        out[:, :, z0:z0 + len(jz)] = val
+        if erode:
+            D = sum(np.abs(tile_at(tl, [J[a] * k_tex(size) + offsets[5 + i, a] for a in range(3)])) * 0.5 ** i
+                    for i, (tl, size) in enumerate(zip(erode_tiles, erode_scales)))
+            D = np.clip(D / (2.0 * sum(0.5 ** i for i in range(len(erode_scales)))), 0.0, 1.0)
+            q = val / erode_ref
+            qc = np.minimum(q, 1.0)
+            val = erode_ref * (q - qc + np.maximum(qc - erode * D, 0.0) / (1.0 - erode * D))
+        out[x0:x0 + jx.shape[0]] = val
     if specks:
         p = np.maximum(d.ravel().astype(np.float64), 0.0) ** speck_power
         p /= p.sum()
@@ -387,10 +458,25 @@ def write_lantern(shot="lantern", frame=None):
     out_dir = REPO / "VolumetricReSTIRData" / g["data"]
     lo, box = read_vdb_box(src, ("density",))
     d = box["density"]
+    grid = None
     with tempfile.TemporaryDirectory() as work:
         vdb = Path(work) / (name + ".vdb")
         if "detail" in g:
-            d = tornado_detail(d, **g["detail"])
+            spec = dict(g["detail"])
+            up, src_off = spec["up"], spec.pop("source_offset")
+            if "glow" in g:
+                raise SystemExit("FAILED: %s: lamps are not placed on a detailed grid (soft boxes are the scene's)" % shot)
+            # where the shot's middle is on this frame's finer grid (its index box starts at the frame's own `lo`): a
+            # source .vbx point p sits at (p - source offset - lo) x up on it (vr_graph.load_lantern reads it; the voxel
+            # and the density per voxel are lantern.py's over up)
+            grid = {"up": up, "base": [(g["base"][a] - src_off[a] - lo[a]) * up for a in range(3)]}
+            d = tornado_detail(d, **spec)
+            box = None
+            depth = gvdb_atlas_depth(d)
+            if depth * GVDB_ATLAS_SLACK > GVDB_ATLAS_MAX:
+                raise SystemExit("FAILED: %s's brick atlas would be ~%d deep, past the %d SceneGVDB can upload: a smaller "
+                                 "`up`" % (name, depth * GVDB_ATLAS_SLACK, GVDB_ATLAS_MAX))
+            print("%s: %s voxels, its atlas ~%d of %d deep" % (name, d.shape, depth * GVDB_ATLAS_SLACK, GVDB_ATLAS_MAX))
             lo = [0, 0, 0]
             raw = Path(work) / (name + ".raw")
             write_raw(d, raw)
@@ -417,7 +503,7 @@ def write_lantern(shot="lantern", frame=None):
         p = p + spec.get("outside", 0.0) * np.asarray(g["key"]) / np.linalg.norm(g["key"])  # out toward the key
         lights.append({"set": "glow", "p": [float(v) for v in p], "intensity": [spec["power"] / spec["n"] * c for c in spec["rgb"]]})
     path = out_dir / (name + "_lights.json")
-    path.write_text(json.dumps({"lights": lights}, indent=1))
+    path.write_text(json.dumps(dict({"lights": lights}, **({"grid": grid} if grid else {})), indent=1))
     return dest, path
 
 
