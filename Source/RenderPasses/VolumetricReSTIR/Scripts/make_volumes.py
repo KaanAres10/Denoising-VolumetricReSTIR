@@ -292,6 +292,67 @@ def write_gasoline(frame=None):
     return write_sequence("gasoline", frame)
 
 
+# The Lanterns construct's profile along its axis (its radius over the head's, by the fraction of the way from the
+# smoky lower-left end to the rounded head at the upper right), read off the user's reference picture: a wide smoky
+# start, a neck at 50%, the head swelling to its full width at 75%, closed by a half-round cap from 82%.
+FUNNEL_PROFILE = ((0.0, 0.7), (0.35, 0.55), (0.5, 0.32), (0.62, 0.72), (0.75, 1.0), (0.82, 1.0))
+FUNNEL_CAP = 0.82  # where the cap starts
+
+
+def funnel_radius(t, head):
+    """The construct's radius (voxels) at fraction t of its length: FUNNEL_PROFILE, then a half-round cap to t = 1."""
+    t = np.asarray(t, float)
+    knots = np.array(FUNNEL_PROFILE)
+    r = np.interp(t, knots[:, 0], knots[:, 1])
+    cap = np.clip((t - FUNNEL_CAP) / (1.0 - FUNNEL_CAP), 0.0, 1.0)
+    return head * r * np.sqrt(np.clip(1.0 - cap ** 2, 0.0, 1.0))
+
+
+def lantern_funnel(d, head=60.0, half=75, arms=2, pitch=16.0, ridge=0.04, warp=2.5):
+    """The looping tornado reshaped into the Lanterns construct (user, 2026-10-17: "make it exactly look like the
+    lantern tornado; you can edit the file extensively"): a straight funnel along the tornado's own axis (its density's
+    mean centre), its radius following funnel_radius() (`head` voxels at its widest), filled -- slice by slice -- with
+    the tornado's own swirl structure stretched radially to that radius (its rms radius x 1.1, where it is still
+    dense, lands on the new surface), so the detail is the simulation's. A crisp surface (the construct is solid: 0.55 at
+    least, plus the simulation's detail), denser inside, with bands wrapping it like rings near the surface -- `arms`
+    helices, so a band comes round every `pitch` voxels along the axis (~8 across the head, as in the reference) -- as
+    soft ridges `ridge` of its radius high and as density in its shell, meandering with the simulation's structure
+    (the reference's bands are irregular); and its lower-left end, up to the neck, left smoky
+    and thin, as the reference's. Returns (density, its z-length), a (2 half)^2 x z box with the axis at its centre."""
+    nx, ny, nz = d.shape
+    w = d.sum((0, 1)).astype(np.float64)
+    ix, iy = np.indices((nx, ny), dtype=np.float64)
+    cx = float((d * ix[..., None]).sum() / max(d.sum(), 1e-9))
+    cy = float((d * iy[..., None]).sum() / max(d.sum(), 1e-9))
+    r2 = ((d * ((ix[..., None] - cx) ** 2 + (iy[..., None] - cy) ** 2)).sum((0, 1)) / np.maximum(w, 1e-9))
+    r_src = np.maximum(ndimage.gaussian_filter1d(np.sqrt(r2), 10.0), 8.0)
+    u, v = np.meshgrid(np.arange(2 * half) - half + 0.5, np.arange(2 * half) - half + 0.5, indexing="ij")
+    rr, theta = np.hypot(u, v), np.arctan2(v, u)
+    out = np.zeros((2 * half, 2 * half, nz), np.float32)
+    ref = max(float(np.percentile(d[d > 0.01], 95)), 1e-6)
+    for z in range(nz):
+        t = z / (nz - 1)
+        R = float(funnel_radius(t, head))
+        if R < 0.5:
+            continue
+        k = 1.1 * r_src[z] / R
+        slab = ndimage.map_coordinates(d[:, :, z], [cx + u * k, cy + v * k], order=1, mode="constant", cval=0.0)
+        inner = np.clip(slab / ref, 0.0, 1.0) ** 0.7
+        q = rr / R
+        smoky = 1.0 - smoothstep(0.36, 0.48, t)  # the lower-left end, to the neck: the tornado's own wisps, thin
+        # the solid part: a surface that follows the simulation's detail (a bumpy silhouette), denser inside, cut into
+        # spiral ridges in its outer shell
+        # the rings meander with the simulation's own structure (`warp` radians of phase at full density)
+        bands = 0.5 + 0.5 * np.sin(arms * theta - 2 * np.pi * z / pitch + warp * inner)
+        # ridges: the surface pushed out along the bands, for the key light to catch
+        envelope = 1.0 - smoothstep(0.8, 1.0, q * (1.1 - 0.15 * inner) / (1.0 - ridge + ridge * bands))
+        shell = smoothstep(0.55, 0.9, q)
+        solid = envelope * (0.55 + 0.45 * inner) * (1.0 - shell + shell * (0.45 + 0.55 * bands))
+        wisps = 0.25 * inner * (1.0 - smoothstep(0.6, 1.4, q))
+        out[:, :, z] = (1 - smoky) * solid + smoky * wisps
+    return out, nz
+
+
 def write_lantern(shot="lantern", frame=None):
     """A frame of a green tornado shot (lantern.SHOTS: the looping tornado or the dust devil) as it is:
     VolumetricReSTIRData/<data>/<data><frame> (gImportVDB) and <data><frame>_lights.json -- its few big green lights,
@@ -305,13 +366,22 @@ def write_lantern(shot="lantern", frame=None):
     name = "%s%d" % (g["data"], frame)
     src = str(REPO / (g["src"] % frame))
     out_dir = REPO / "VolumetricReSTIRData" / g["data"]
-    with tempfile.TemporaryDirectory() as work:
-        vdb = Path(work) / (name + ".vdb")
-        shutil.copy(src, str(vdb))
-        dest = import_vdb(vdb, out_dir)
     lo, box = read_vdb_box(src, ("density",))
     d = box["density"]
-    off = vbx_offset(dest, name, lo)
+    with tempfile.TemporaryDirectory() as work:
+        vdb = Path(work) / (name + ".vdb")
+        if g.get("author") == "funnel":  # reshaped into the Lanterns construct, written a voxel a unit (no grid offset)
+            d, _ = lantern_funnel(d)
+            lo = [0, 0, 0]
+            raw = Path(work) / (name + ".raw")
+            write_raw(d, raw)
+            run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb], cwd=RELEASE)
+            lo_file, _ = read_vdb_box(vdb, ("density",))
+        else:
+            shutil.copy(src, str(vdb))
+            lo_file = lo
+        dest = import_vdb(vdb, out_dir)
+    off = vbx_offset(dest, name, lo_file)
     if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
         raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))
     ix, iy = np.indices(d.shape[:2], dtype=np.float64)

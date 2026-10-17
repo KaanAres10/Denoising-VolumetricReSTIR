@@ -260,6 +260,31 @@ class TestEmissionLights(unittest.TestCase):
         np.testing.assert_allclose(np.array(l0["intensity"]) / l0["intensity"][0], rgb3000 / rgb3000[0], rtol=1e-6)
 
 
+class TestLanternFunnel(unittest.TestCase):
+    """The looping tornado reshaped into the Lanterns construct (user, 2026-10-17)."""
+
+    def test_profile_has_a_neck_and_a_round_head(self):
+        r = lambda t: float(mv.funnel_radius(t, 60.0))  # noqa: E731
+        self.assertLess(r(0.5), 0.5 * r(0.78))  # the neck, half the head's width or less
+        self.assertAlmostEqual(r(0.78), 60.0, places=6)  # full width
+        self.assertAlmostEqual(r(1.0), 0.0, places=6)  # the cap closes it
+        self.assertGreater(r(0.95), 0.0)
+
+    def test_reshaped_funnel_is_solid_in_the_head_and_follows_the_profile(self):
+        rng = np.random.default_rng(0)
+        src = np.zeros((40, 40, 60), np.float32)
+        yy, xx = np.indices((40, 40))
+        src[(xx - 20) ** 2 + (yy - 20) ** 2 < 64] = 0.5  # a column 8 voxels in radius
+        src *= rng.uniform(0.5, 1.0, src.shape).astype(np.float32)
+        f, nz = mv.lantern_funnel(src, head=12.0, half=16)
+        self.assertEqual(f.shape, (32, 32, 60))
+        head = int(0.78 * (nz - 1))
+        self.assertGreater(f[16, 16, head], 0.5)  # solid on the axis
+        self.assertEqual(float(f[0, 0, head]), 0.0)  # nothing outside the surface
+        width = lambda z: int((f[:, 16, z] > 0.1).sum())  # noqa: E731
+        self.assertLess(width(int(0.5 * (nz - 1))), width(head))  # the neck is narrower than the head
+
+
 class TestRaw(unittest.TestCase):
     def test_raw_is_x_slowest(self):
         # VolFromRaw reads data[(i * ny + j) * nz + k] as voxel (i, j, k)
