@@ -410,6 +410,27 @@ class TestBifrostClean(unittest.TestCase):
     """A Bifrost frame rewritten for gImportVDB (bifrost_export.py writes them): its fog density and temperature as
     `density` and `temperature`, in its own index placement, the temperature clipped to the smoke."""
 
+    def test_motion_blur_averages_frames_over_their_common_box(self):
+        # volume motion blur as frames averaged (the reference's streaks along its rotation): a blob moving 2 voxels
+        # along x between two frames comes out as both halves, each at half its density, over the union of the boxes
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            srcs = []
+            for k, x0 in enumerate((0, 2)):
+                d = np.zeros((4, 3, 3), np.float32)
+                d[1:3, 1, 1] = 1.0
+                temp = np.full(d.shape, 300.0, np.float32)
+                mv.write_raw(d, t / "d.raw")
+                mv.write_raw(temp, t / "t.raw")
+                src = t / ("f%d.vdb" % k)
+                mv.run([mv.RELEASE / "VolFromRaw.exe", t / "d.raw", 4, 3, 3, 0.1, src, 1e-4, t / "t.raw", x0, 0, 0], cwd=mv.RELEASE)
+                srcs.append(src)
+            lo, shape, voxel = mv.blur_bifrost_frames(srcs, t / "blur.vdb", density="density", temperature="temperature")
+            self.assertEqual(lo, [1, 1, 1])
+            self.assertEqual(shape, (4, 1, 1))  # voxels x 1..4: frame 0's 1-2 and frame 1's 3-4
+            lo2, box = mv.read_vdb_box(t / "blur.vdb", ("density",))
+            np.testing.assert_allclose(box["density"].ravel(), [0.5, 0.5, 0.5, 0.5])
+
     def test_rewrites_names_keeps_placement_and_clips_temperature(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)

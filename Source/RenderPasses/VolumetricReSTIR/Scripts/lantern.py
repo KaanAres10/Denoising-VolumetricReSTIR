@@ -40,6 +40,8 @@ import swatch_fire
 # which Bifrost run the construct shot reads (BifrostVDB/<it>, bifrost_graphs.vortex_construct's frames): a variant
 # being tuned is picked by LANTERN_CONSTRUCT, which Mogwai inherits as make_volumes.py does
 CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_C5")
+# its motion blur: frames averaged (make_volumes.py blur_bifrost_frames), LANTERN_SHUTTER of them (1: none)
+SHUTTER = int(os.environ.get("LANTERN_SHUTTER", "1"))
 
 GREEN = {"sigma_a": (0.85, 0.18, 0.72), "sigma_s": (0.15, 0.82, 0.28), "g": 0.5}
 SHOTS = {
@@ -78,7 +80,8 @@ SHOTS = {
     # middle at the frame's
     # its green a touch less saturated than the tornado's (the reference's mid-tones: red / green 0.5, ours was 0.42)
     "lanternbifrost": dict(GREEN, sigma_a=(0.80, 0.15, 0.68), sigma_s=(0.20, 0.85, 0.32),
-                           src="BifrostVDB/%s_clean/construct_%%04d.vdb" % CONSTRUCT,
+                           src="BifrostVDB/%s_clean%s/construct_%%04d.vdb" % (CONSTRUCT, "_s%d" % SHUTTER if SHUTTER > 1 else ""),
+                           shutter=SHUTTER,
                            bifrost_src="BifrostVDB/%s/construct_%%04d.vdb" % CONSTRUCT,
                            data="bifrostconstruct", frame=150,
                            # fitted per frame (make_volumes.py write_lantern; its _lights.json "grid"): sized so its

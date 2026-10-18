@@ -124,6 +124,42 @@ class TestVortexConstruct(unittest.TestCase):
         self.assertNotIn("source_air.fog_density", v)  # the field drives it
         self.assertEqual(bg.check_graph(c), [])
 
+    def test_the_tail_thins_near_the_ground(self):
+        # the reference's construct thins into smoke toward its tail (the column's foot here): dissipation at
+        # `tail_thin` per second, masked by 1 - clamp(y / base_height, 0, 1); none by default
+        self.assertNotIn("tail_dissipation", self.nodes)
+        d = bg.vortex_construct(tail_thin=0.6, base_height=5.0)
+        c = d["compounds"][0]
+        nodes = {n["nodeName"]: n for n in c["compoundNodes"]}
+        conns = {(x["source"], x["target"]) for x in c["connections"]}
+        self.assertEqual(nodes["tail_mask"]["nodeType"], "Simulation::Influence::set_influence_mask")
+        self.assertEqual(nodes["tail_dissipation"]["nodeType"], "Simulation::Influence::dissipation_influence")
+        self.assertIn(("low.output", "tail_mask.mask"), conns)
+        self.assertIn(("tail_mask.out_influence", "tail_dissipation.influence"), conns)
+        self.assertIn(("tail_dissipation.out_influence", "simulate_aero.influences.tail_thin"), conns)
+        v = {x["valueName"]: x["value"] for x in c["values"]}
+        self.assertEqual(v["tail_dissipation.rate"], "0.6f")
+        self.assertEqual(bg.check_graph(c), [])
+
+    def test_arms_in_the_source_wind_into_bands(self):
+        # the reference's rings: a source denser in `source_arms` spots round its disc (fog x (1 + amp cos(n theta)),
+        # theta = atan2(z, x)) -- turned by the swirl and lifted, they wind into helical bands, rings where the
+        # updraft fades; time noise in the source made lumps instead
+        self.assertNotIn("angle", self.nodes)
+        d = bg.vortex_construct(source_arms=6, source_arm_amp=0.8)
+        c = d["compounds"][0]
+        nodes = {n["nodeName"]: n for n in c["compoundNodes"]}
+        conns = {(x["source"], x["target"]) for x in c["connections"]}
+        self.assertEqual(nodes["angle"]["nodeType"], "Core::Math::atan_2D")
+        self.assertIn(("pos_z.dot_product", "angle.y"), conns)
+        self.assertIn(("pos_x.dot_product", "angle.x"), conns)
+        self.assertIn(("arm_cos.cosine", "arm_term.first.cos"), conns)
+        self.assertIn(("arm_term.output", "src_fog.first.arms"), conns)
+        self.assertIn(("src_fog.output", "source_air.fog_density"), conns)
+        v = {x["valueName"]: x["value"] for x in c["values"]}
+        self.assertEqual((v["arms_k.value"], v["arm_amp.value"]), ("6.0f", "1.6f"))  # fog 2 x 0.8
+        self.assertEqual(bg.check_graph(c), [])
+
     def test_the_updraft_fades_at_the_cap_and_the_head_widens(self):
         # the head rolls into a rotating cap instead of spraying sheets: the updraft x fade, fade = clamp((cap - y) /
         # fade_length, 0, 1); the pull toward the axis x (1 - head_push (1 - fade)): kept at the head by default

@@ -295,18 +295,38 @@ def clean_bifrost_vdb(src, dst, density="voxel_fog_density", temperature="voxel_
     which would fill a dense copy and GVDB's atlas -- written a voxel a unit, as every volume here is (a shot's
     worldScaling gives it its size: GVDB places a .vbx in the .vdb's world units). Returns the box's low corner, its
     shape and Bifrost's voxel size."""
-    lo, d, voxel = vdb_grid(src, density)
-    hi = [lo[a] + d.shape[a] - 1 for a in range(3)]
-    tlo, t_box, _ = vdb_grid(src, temperature, clip=(lo, hi))
-    t = np.zeros_like(d)
-    o = [tlo[a] - lo[a] for a in range(3)]
-    t[o[0]:o[0] + t_box.shape[0], o[1]:o[1] + t_box.shape[1], o[2]:o[2] + t_box.shape[2]] = t_box
+    return blur_bifrost_frames([src], dst, density, temperature, cutoff)
+
+
+def blur_bifrost_frames(srcs, dst, density="voxel_fog_density", temperature="voxel_temperature", cutoff=1e-4):
+    """Bifrost frames averaged into one, rewritten as clean_bifrost_vdb does: volume motion blur as a shutter's worth of
+    frames (the Lanterns reference's construct is streaked along its rotation), over the union of their smoke's boxes
+    (Bifrost's index space is the same for every frame). One frame: clean_bifrost_vdb. Returns the union's low corner,
+    its shape and Bifrost's voxel size."""
+    frames = []
+    for src in srcs:
+        lo, d, voxel = vdb_grid(src, density)
+        hi = [lo[a] + d.shape[a] - 1 for a in range(3)]
+        tlo, t_box, _ = vdb_grid(src, temperature, clip=(lo, hi))
+        frames.append((lo, d, tlo, t_box))
+    ulo = [min(f[0][a] for f in frames) for a in range(3)]
+    uhi = [max(f[0][a] + f[1].shape[a] for f in frames) for a in range(3)]
+    shape = tuple(uhi[a] - ulo[a] for a in range(3))
+    dsum = np.zeros(shape, np.float32)
+    tsum = np.zeros(shape, np.float32)
+    for lo, d, tlo, t_box in frames:
+        o = [lo[a] - ulo[a] for a in range(3)]
+        dsum[o[0]:o[0] + d.shape[0], o[1]:o[1] + d.shape[1], o[2]:o[2] + d.shape[2]] += d
+        o = [tlo[a] - ulo[a] for a in range(3)]
+        tsum[o[0]:o[0] + t_box.shape[0], o[1]:o[1] + t_box.shape[1], o[2]:o[2] + t_box.shape[2]] += t_box
+    dsum /= len(frames)
+    tsum /= len(frames)
     with tempfile.TemporaryDirectory() as work:
-        write_raw(d, Path(work) / "density.raw")
-        write_raw(t, Path(work) / "temperature.raw")
-        run([RELEASE / "VolFromRaw.exe", Path(work) / "density.raw", *d.shape, 1.0, dst, cutoff,
-             Path(work) / "temperature.raw", *lo], cwd=RELEASE)
-    return lo, d.shape, voxel
+        write_raw(dsum, Path(work) / "density.raw")
+        write_raw(tsum, Path(work) / "temperature.raw")
+        run([RELEASE / "VolFromRaw.exe", Path(work) / "density.raw", *shape, 1.0, dst, cutoff,
+             Path(work) / "temperature.raw", *ulo], cwd=RELEASE)
+    return ulo, shape, voxel
 
 
 def write_sequence(seq, frame=None):
@@ -518,9 +538,10 @@ def write_lantern(shot="lantern", frame=None):
     name = "%s%d" % (g["data"], frame)
     src = str(REPO / (g["src"] % frame))
     out_dir = REPO / "VolumetricReSTIRData" / g["data"]
-    if "bifrost_src" in g and not Path(src).exists():  # a Bifrost frame, rewritten for gImportVDB on first use
-        Path(src).parent.mkdir(parents=True, exist_ok=True)
-        clean_bifrost_vdb(REPO / (g["bifrost_src"] % frame), src)
+    if "bifrost_src" in g and not Path(src).exists():  # a Bifrost frame, rewritten for gImportVDB on first use --
+        Path(src).parent.mkdir(parents=True, exist_ok=True)  # averaged with the frames before it over `shutter`
+        k = g.get("shutter", 1)
+        blur_bifrost_frames([REPO / (g["bifrost_src"] % f) for f in range(frame - k + 1, frame + 1)], src)
     lo, box = read_vdb_box(src, ("density",))
     d = box["density"]
     grid = None

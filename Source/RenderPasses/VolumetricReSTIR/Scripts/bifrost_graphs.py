@@ -92,7 +92,8 @@ VOLUME_OUTPUT = "refine.refined_aero"  # what bifrost_export.py writes: the refi
 def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, source_radius=1.0, fog=2.0, temperature=60.0,
                      core=1.2, cap=9.0, fade_length=3.0, head_push=0.0, base_pull=1.0, base_height=4.0,
                      bend=0.0, bend_from=6.0, bend_length=3.0,
-                     tail_radius=2.2, tail_fog=0.0, source_noise=0.0, noise_frequency=2.0,
+                     tail_radius=2.2, tail_fog=0.0, source_noise=0.0, noise_frequency=2.0, tail_thin=0.0,
+                     source_arms=0, source_arm_amp=0.8,
                      pyro_drag=1.5, pyro_vorticity=4.0, pyro_frequency=1.0, einstein=1.0, vorticity=0.3,
                      refine_levels=1, style="busy", height=14.0, width=12.0):
     """The Lanterns construct as an Aero simulation (module docstring), with Bifrost's production detail.
@@ -109,7 +110,10 @@ def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
     core it wrapped the whole column in a faint halo rather than making a tail, and filled the renderer's atlas
     (~4560 of 4080 deep by frame 66); for `source_noise` > 0 the main source's fog density is fog + fractal noise
     (magnitude fog x source_noise, `noise_frequency` per m, changing with time) -- an even source leaves the swirl
-    nothing to stretch into streaks. Detail: Bifrost's
+    nothing to stretch into streaks (it made lumps); for `source_arms` > 0 the source is denser in that many spots
+    round its disc (fog x (1 + source_arm_amp cos(n theta))), which the swirl and the updraft wind into helical bands,
+    rings where the updraft fades (the reference's construct is ringed); for `tail_thin` > 0 the smoke dissipates at that rate (1/s) near the ground,
+    masked by 1 - clamp(y / base_height, 0, 1): the reference's construct thins into smoke toward its tail. Detail: Bifrost's
     aero_pyroclastic_influence (`pyro_drag`, `pyro_vorticity`, `pyro_frequency`: billowy detail) and
     aero_einstein_influence (`einstein`: coarse and fine turbulence), vorticity confinement (`vorticity`), the solver's
     `style`; then post_refine_aero, `refine_levels` levels (each doubles the resolution of all but the velocity) --
@@ -123,17 +127,38 @@ def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
                use_fluid_detail_size=("bool", "true"), resolution_mode=("Geometry::Volume::ResolutionType", "Absolute"),
                fog_density=("float", _f(density)), temperature=("float", _f(temperature)))
         g.connect(name + "_disc.out_mesh", name + "_air.geometry.disc")
-    if source_noise > 0:  # fog + fractal noise, changing with time, drives the main source's density
+    if source_noise > 0 or source_arms > 0:  # a field drives the main source's density: fog + noise + arms
         g.c["values"] = [v for v in g.c["values"] if v["valueName"] != "source_air.fog_density"]
+        g.node("src_base", "Core::Fields::scalar_field", value=("float", _f(fog)))
+        g.node("src_fog", "Core::Math::add")
+        g.connect("src_base.scalar_field", "src_fog.first.base")
+        g.connect("src_fog.output", "source_air.fog_density")
+    if source_noise > 0:  # fractal noise, changing with time
         g.node("src_time", "Core::Time::time")
         g.node("src_noise", "Core::Fields::fractal_noise_field", magnitude=("float", _f(fog * source_noise)),
                frequency=("float", _f(noise_frequency)))
         g.connect("src_time.seconds", "src_noise.time")
-        g.node("src_base", "Core::Fields::scalar_field", value=("float", _f(fog)))
-        g.node("src_fog", "Core::Math::add")
-        g.connect("src_base.scalar_field", "src_fog.first.base")
         g.connect("src_noise.noise_field", "src_fog.first.noise")
-        g.connect("src_fog.output", "source_air.fog_density")
+    if source_arms > 0:  # fog x amp x cos(n atan2(z, x))
+        for axis, vec in (("x", (1, 0, 0)), ("z", (0, 0, 1))):
+            g.node(axis + "_axis", "Core::Fields::vector_field", value=("Math::float3", _v3(*vec)))
+            g.node("pos_" + axis, "Core::Math::dot")
+            g.connect("position.position", "pos_%s.first" % axis)
+            g.connect("%s_axis.vector_field" % axis, "pos_%s.second" % axis)
+        g.node("angle", "Core::Math::atan_2D")
+        g.connect("pos_z.dot_product", "angle.y")
+        g.connect("pos_x.dot_product", "angle.x")
+        g.node("arms_k", "Core::Fields::scalar_field", value=("float", _f(source_arms)))
+        g.node("arm_phase", "Core::Math::multiply")
+        g.connect("angle.arctangent", "arm_phase.first.angle")
+        g.connect("arms_k.scalar_field", "arm_phase.first.k")
+        g.node("arm_cos", "Core::Math::cos")
+        g.connect("arm_phase.output", "arm_cos.value")
+        g.node("arm_amp", "Core::Fields::scalar_field", value=("float", _f(fog * source_arm_amp)))
+        g.node("arm_term", "Core::Math::multiply")
+        g.connect("arm_cos.cosine", "arm_term.first.cos")
+        g.connect("arm_amp.scalar_field", "arm_term.first.k")
+        g.connect("arm_term.output", "src_fog.first.arms")
     g.node("bounds", "Modeling::Primitive::create_mesh_cube", length=("float", _f(width)), width=("float", _f(width)),
            height=("float", _f(height)), position=("Math::float3", _v3(0, height / 2, 0)))
     g.node("aero_solver_settings", "Simulation::Aero::aero_solver_settings", scene_units_in_meters=("float", _f(1.0)),
@@ -257,6 +282,20 @@ def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
     g.connect("einstein.turbulence_influence", "simulate_aero.influences.einstein_turbulence")
     g.connect("einstein.vorticity_influence", "simulate_aero.influences.einstein_vorticity")
     g.connect("vorticity.out_influence", "simulate_aero.influences.vorticity")
+    if tail_thin > 0:  # dissipation near the ground: 1 - ramp
+        g.node("minus_one", "Core::Fields::scalar_field", value=("float", _f(-1.0)))
+        g.node("one", "Core::Fields::scalar_field", value=("float", _f(1.0)))
+        g.node("neg_ramp", "Core::Math::multiply")
+        g.connect("ramp.clamped", "neg_ramp.first.ramp")
+        g.connect("minus_one.scalar_field", "neg_ramp.first.k")
+        g.node("low", "Core::Math::add")
+        g.connect("one.scalar_field", "low.first.one")
+        g.connect("neg_ramp.output", "low.first.minus_ramp")
+        g.node("tail_mask", "Simulation::Influence::set_influence_mask")
+        g.connect("low.output", "tail_mask.mask")
+        g.node("tail_dissipation", "Simulation::Influence::dissipation_influence", rate=("float", _f(tail_thin)))
+        g.connect("tail_mask.out_influence", "tail_dissipation.influence")
+        g.connect("tail_dissipation.out_influence", "simulate_aero.influences.tail_thin")
     g.node("refine", "Simulation::Aero::post_refine_aero", refinement_levels=("int", "%dL" % refine_levels))
     g.connect("simulate_aero.aero_volume", "refine.aero_volume")
     g.connect("simulate_aero.solver_inputs", "refine.solver_inputs")
