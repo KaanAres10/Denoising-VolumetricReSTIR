@@ -63,6 +63,20 @@ class TestGlitterQuads(unittest.TestCase):
         to_cam = [cam["position"][i] - centre[i] for i in range(3)]
         self.assertGreater(sum(n[i] * to_cam[i] for i in range(3)), 0.0)
 
+    def test_streaked_along_its_motion(self):
+        # a glint moving during the shutter: its quad lengthened along its motion as the camera sees it (the part along
+        # the view dropped), as wide as its size; corners still wound toward the camera
+        import lantern
+        cam = {"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0)}
+        q = lantern.glitter_quads([(0.0, 0.0, 0.0)], cam, 0.1, stretch=[(0.3, 0.0, 5.0)])[0]
+        sides = [sum((q[(i + 1) % 4][k] - q[i][k]) ** 2 for k in range(3)) ** 0.5 for i in range(4)]
+        self.assertAlmostEqual(max(sides), 0.4)  # 0.1 + 0.3 along x
+        self.assertAlmostEqual(min(sides), 0.1)
+        e1 = [q[1][i] - q[0][i] for i in range(3)]
+        e2 = [q[2][i] - q[0][i] for i in range(3)]
+        n = (e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0])
+        self.assertGreater(n[2], 0.0)  # faces the camera (+z)
+
     def test_a_size_for_each_point(self):
         # sparkles of many sizes (a sub-pixel speck is as bright as its area): many dim, a few bright
         import lantern

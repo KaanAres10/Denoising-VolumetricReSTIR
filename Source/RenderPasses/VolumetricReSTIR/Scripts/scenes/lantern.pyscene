@@ -30,12 +30,12 @@ for panel in lantern.SHOTS[SHOT].get('panels', ()):
     box.emissiveColor = float3(*panel['rgb'])
     box.emissiveFactor = panel['radiance']
     sceneBuilder.addMeshInstance(sceneBuilder.addNode('SoftBox' + panel['name']), sceneBuilder.addTriangleMesh(mesh, box))
-glitter = table.get('glitter')  # the construct's sparkles: tiny emissive squares facing the camera (lantern.glitter_quads)
-if glitter:
+glitter = table.get('glitter')  # the construct's sparkles: emissive quads facing the camera (lantern.glitter_quads),
+if glitter:  # streaked along their motion if the table says how far each moves, soft if it names a sprite
     cam = lantern.SHOTS[SHOT]['camera']
     toward = [cam['position'][i] - cam['target'][i] for i in range(3)]
     mesh = TriangleMesh()
-    for k, quad in enumerate(lantern.glitter_quads(glitter['p'], cam, glitter['size'])):
+    for k, quad in enumerate(lantern.glitter_quads(glitter['p'], cam, glitter['size'], stretch=glitter.get('stretch'))):
         for c, uv in zip(quad, ((0, 0), (1, 0), (1, 1), (0, 1))):
             mesh.addVertex(float3(*c), float3(*toward), float2(*uv))
         mesh.addTriangle(4 * k, 4 * k + 1, 4 * k + 2)
@@ -44,4 +44,19 @@ if glitter:
     sparkle.baseColor = float4(0, 0, 0, 1)
     sparkle.emissiveColor = float3(*glitter['rgb'])
     sparkle.emissiveFactor = glitter['radiance']
+    if glitter.get('sprite'):  # (linear: the colour is in it)
+        sparkle.loadTexture(MaterialTextureSlot.Emissive, glitter['sprite'], False)
     sceneBuilder.addMeshInstance(sceneBuilder.addNode('Glitter'), sceneBuilder.addTriangleMesh(mesh, sparkle))
+debris = table.get('debris')  # the reference's dark flecks: tiny near-black squares on its visible surface
+if debris:
+    cam = lantern.SHOTS[SHOT]['camera']
+    toward = [cam['position'][i] - cam['target'][i] for i in range(3)]
+    mesh = TriangleMesh()
+    for k, quad in enumerate(lantern.glitter_quads(debris['p'], cam, debris['size'])):
+        for c, uv in zip(quad, ((0, 0), (1, 0), (1, 1), (0, 1))):
+            mesh.addVertex(float3(*c), float3(*toward), float2(*uv))
+        mesh.addTriangle(4 * k, 4 * k + 1, 4 * k + 2)
+        mesh.addTriangle(4 * k, 4 * k + 2, 4 * k + 3)
+    fleck = Material('Debris')
+    fleck.baseColor = float4(*debris['rgb'], 1.0)
+    sceneBuilder.addMeshInstance(sceneBuilder.addNode('Debris'), sceneBuilder.addTriangleMesh(mesh, fleck))

@@ -467,6 +467,43 @@ class TestBifrostClean(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 mv.vdb_grid(t / "dens.vdb", "temperature")
 
+    def test_flow_streaks_run_along_the_flow(self):
+        # fine noise blurred along the velocity and brought back to full contrast: a texture of fine lines along the
+        # flow -- smooth along it, varying across it
+        v = np.zeros((40, 40, 40, 3), np.float32)
+        v[..., 2] = 40.0  # 40 voxels a second along z (voxel 1)
+        n = mv.flow_streaks((40, 40, 40), v, 1.0, shutter=0.5, cell=1.5, seed=0)
+        self.assertAlmostEqual(float(n.std()), 1.0, delta=0.05)
+        c = n[10:30, 10:30, 10:30]
+        along = float(np.corrcoef(c[:, :, 1:].ravel(), c[:, :, :-1].ravel())[0, 1])  # neighbours along the flow
+        across = float(np.corrcoef(c[1:, :, :].ravel(), c[:-1, :, :].ravel())[0, 1])  # and across it
+        self.assertLess(1.0 - along, 0.2 * (1.0 - across))  # far smoother along the flow than across it
+
+    def test_drift_and_grain(self):
+        # the construct moving as a whole during the shutter (`drift`, m/s, the volume's frame): a still blob smeared
+        # along it; `grain`: fine density variation the blur draws into streaks, the mass kept
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            d = np.zeros((5, 5, 5), np.float32)
+            d[2, 2, 2] = 1.0
+            v = np.zeros(d.shape + (3,), np.float32)
+            mv.write_raw(d, t / "d.raw")
+            v.tofile(str(t / "v.raw"))
+            src = t / "f.vdb"
+            mv.run([mv.RELEASE / "VolFromRaw.exe", t / "d.raw", 5, 5, 5, 0.1, src, 1e-4, "-", 0, 0, 0, t / "v.raw"], cwd=mv.RELEASE)
+            mv.blur_bifrost_velocity(src, t / "b.vdb", shutter=0.5, density="density", temperature=None, velocity="velocity",
+                                     drift=(0.0, 1.0, 0.0))  # 10 voxels a second along y: 5 over the shutter
+            lo, box = mv.read_vdb_box(t / "b.vdb", ("density",))
+            b = box["density"]
+            ys = np.flatnonzero(b.sum((0, 2)) > 1e-3) + lo[1]
+            self.assertGreaterEqual(int(ys.max() - ys.min()), 4)
+            self.assertEqual(int((b.sum((1, 2)) > 1e-3).sum()), 1)  # nothing across it
+            self.assertAlmostEqual(float(b.sum()), 1.0, delta=0.05)
+        g = mv.grain(np.ones((24, 24, 24), np.float32), amplitude=0.6, cell=3.0, seed=0)
+        self.assertGreater(float(g.std()), 0.15)
+        self.assertAlmostEqual(float(g.mean()), 1.0, delta=0.05)
+        self.assertGreaterEqual(float(g.min()), 0.0)
+
     def test_rewrites_names_keeps_placement_and_clips_temperature(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
@@ -562,6 +599,62 @@ class TestVelocityBlur(unittest.TestCase):
         np.testing.assert_allclose(a, mv.velocity_blur(self.d, v_fine, 1.0, shutter=1.0, steps=17), atol=1e-5)
 
 
+class TestTail(unittest.TestCase):
+    """The construct's tail as the reference's: its near part soft (out of focus) and wrapped in a pale mist."""
+
+    def test_fit_column_finds_its_cap_and_width(self):
+        d = np.zeros((21, 40, 21), np.float32)
+        d[6:15, 2:30, 6:15] = 1.0  # a 9-voxel square column standing on y = 2, its top y = 29
+        grid = mv.fit_column(d, lo=[-10, 0, -10], off=(0.0, 0.0, 0.0), fit={"diameter": 18.0, "tau": 4.5})
+        np.testing.assert_allclose(grid["base"], [0.5, 30.0, 0.5])  # its cap: its axis's top, .vbx coordinates
+        self.assertAlmostEqual(grid["density_scale"], 0.5)  # 9 voxels across at density 1: 4.5
+        self.assertGreater(grid["scale"], 1.5)
+
+    def test_defocus_softens_only_what_is_out_of_focus(self):
+        d = np.zeros((40, 21, 21), np.float32)  # (room round them: the caller pads for the spread)
+        d[5, 10, 10] = d[34, 10, 10] = 1.0  # a near speck (x 5) and one in focus (x 34)
+        depth = np.broadcast_to(np.arange(40, dtype=np.float32)[:, None, None], d.shape)  # depth grows with x
+        b = mv.defocus(d, depth, focus=30.0, ramp=20.0, sigma_max=2.0)
+        self.assertAlmostEqual(float(b[34, 10, 10]), 1.0, places=5)  # in focus: as it was
+        self.assertLess(float(b[5, 10, 10]), 0.2)  # out of focus: spread
+        self.assertAlmostEqual(float(b[:20].sum()), 1.0, delta=0.02)  # its mass kept
+
+    def test_construct_detail_on_a_y_up_column(self):
+        # tornado_detail (its axis along z) applied to the Bifrost column (its axis along y), at its own resolution:
+        # the same box, fine structure added inside the smoke, nothing far outside it
+        zz, yy, xx = np.indices((32, 48, 32), dtype=np.float64)
+        r = np.hypot(xx - 16, zz - 16)
+        d = np.clip(9.0 - r, 0.0, 1.0).astype(np.float32).transpose(2, 1, 0).copy()  # x slowest, y up
+        out = mv.construct_detail(d, warp=(1.5, 0.8), warp_scales=(8.0, 4.0), grain=0.5, grain_scale=2.0, erode=0.3)
+        self.assertEqual(out.shape, d.shape)
+        core = np.hypot(np.arange(32)[:, None] - 16, np.arange(32)[None, :] - 16) < 6
+        self.assertGreater(float(out[:, 10:38, :][core[:, None, :].repeat(28, 1)].std()), 0.05)  # textured
+        self.assertLess(float(out[:2].max()), 1e-3)  # nothing at the box's far side
+
+    def test_warp_churns_the_tail_and_spares_the_head(self):
+        # the tail's helical bands broken into clumps: the density displaced by smooth noise below `top` of its height
+        d = np.zeros((30, 60, 30), np.float32)
+        d[10:20, 0:60, 10:20] = 1.0
+        d[:, ::6, :] *= 0.2  # bands across it
+        np.testing.assert_array_equal(mv.warp(d, amplitude=0.0, cell=8.0, top=0.5, seed=0), d)
+        w = mv.warp(d, amplitude=4.0, cell=8.0, top=0.5, seed=0)
+        np.testing.assert_allclose(w[:, 45:], d[:, 45:], atol=1e-5)  # its head as it was
+        self.assertGreater(float(np.abs(w[:, :20] - d[:, :20]).mean()), 0.05)  # its tail moved
+        self.assertAlmostEqual(float(w.sum()), float(d.sum()), delta=0.05 * float(d.sum()))
+
+    def test_mist_wraps_the_tail_thinly(self):
+        d = np.zeros((40, 60, 40), np.float32)
+        d[15:25, 0:60, 15:25] = 1.0  # a column, y up
+        m = mv.mist(d, amplitude=0.05, cell=6.0, reach=6.0, top=0.4, seed=0)
+        added = m - d
+        self.assertGreaterEqual(float(added.min()), 0.0)
+        self.assertLessEqual(float(added.max()), 0.05 + 1e-6)
+        low, high = added[:, :20].sum(), added[:, 40:].sum()
+        self.assertGreater(float(low), 10.0 * float(high) + 1e-6)  # round its tail, not its head
+        outside = added.copy()
+        outside[15:25, :, 15:25] = 0.0
+        self.assertGreater(float(outside.sum()), 0.5 * float(added.sum()))  # outside the column: a veil
+
 class TestFadeFoot(unittest.TestCase):
     """The construct's foot thinned into smoke (the Lanterns reference's tail): a simulated column is densest at its
     source, on the ground -- far denser than the rest once its tail dissipates -- so its bottom is faded in over a
@@ -647,6 +740,65 @@ class TestGlitter(unittest.TestCase):
         self.assertEqual(len(pts), 3000)
         self.assertGreater(float(np.mean((pts[:, 0] > 25.5) & (pts[:, 2] > 25.5))), 0.85)
         self.assertGreater(len(np.unique(np.round(pts, 3), axis=0)), 2900)  # jittered apart
+
+    def test_glint_sprite_is_soft_and_round(self):
+        # a glint's emission over its quad: brightest in the middle in the glitter's colour, fading to nothing at the
+        # edges, the same every way round
+        with tempfile.TemporaryDirectory() as t:
+            path = Path(t) / "glint.png"
+            mv.glitter_sprite(path, (0.3, 1.0, 0.42), sigma=0.2, size=33)
+            import cv2
+            im = cv2.imread(str(path))[..., ::-1].astype(float)  # rgb
+            self.assertEqual(im.shape, (33, 33, 3))
+            self.assertEqual(int(im[16, 16, 1]), 255)
+            self.assertAlmostEqual(im[16, 16, 0] / 255.0, 0.3, delta=0.01)
+            self.assertLess(float(im[0, 0].max()), 3.0)
+            self.assertAlmostEqual(float(im[16, 6, 1]), float(im[6, 16, 1]), delta=1.0)
+
+    def test_glint_sprays_are_soft_and_streaked(self):
+        # a soft glint as a spray of sub-pixel micro-glints (a big quad would hide the smoke behind it): Gaussian
+        # round its centre in the camera's plane, `width` x its size across, spread evenly along its motion
+        cam = {"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}
+        pts = mv.glint_sprays(np.array([[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]]), [0.2, 0.2], [[0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+                              cam, per=400, width=0.25, seed=0)
+        self.assertEqual(pts.shape, (800, 3))
+        a, b = pts[:400], pts[400:]
+        self.assertAlmostEqual(float(np.std(b[:, 0])), 0.05, delta=0.008)  # 0.25 x 0.2 cm across
+        self.assertAlmostEqual(float(np.ptp(a[:, 1])), 1.0 + 0.3, delta=0.25)  # streaked along y over its motion
+        self.assertLess(float(np.std(a[:, 0])), 0.06)
+        self.assertLess(float(np.abs(pts[:, 2]).max()), 1e-9)  # in the camera's plane
+
+    def test_glints_come_in_clusters(self):
+        # glints in small groups, as the reference's (foam-like): each centre a few, close round it
+        centres = np.array([[10.0, 10.0, 10.0], [40.0, 40.0, 40.0]])
+        pts = mv.glitter_clusters(centres, mean_count=3.0, radius=2.0, seed=0)
+        self.assertGreater(len(pts), 2)
+        near = np.min(np.linalg.norm(pts[:, None, :] - centres[None], axis=2), axis=1)
+        self.assertLess(float(np.percentile(near, 95)), 6.0)
+        np.testing.assert_array_equal(pts, mv.glitter_clusters(centres, mean_count=3.0, radius=2.0, seed=0))
+
+    def test_dark_flecks_found(self):
+        # the reference's debris: small near-black specks on its smoke
+        img = np.zeros((90, 160, 3), np.uint8)
+        img[...] = (60, 140, 70)
+        for y, x in ((20, 30), (50, 100), (70, 40)):
+            img[y:y + 2, x:x + 2] = (10, 20, 12)
+        f = mv.dark_flecks(img)
+        self.assertEqual(sorted((round(x), round(y)) for x, y, _ in f), [(30, 20), (40, 70), (100, 50)])
+
+    def test_pixel_rays_invert_the_projection(self):
+        cam = {"position": (1.0, 2.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}
+        p = np.array([[3.0, -1.0, 5.0]])
+        px, py = mv.project_points(p, cam, 800, 450)
+        o, d = mv.pixel_rays(px, py, cam, 800, 450)
+        to_p = (p - o) / np.linalg.norm(p - o, axis=1, keepdims=True)
+        np.testing.assert_allclose(d, to_p, atol=1e-9)
+
+    def test_surface_hit_on_the_camera_side(self):
+        d = self.d  # the ball, radius ~12 round (20, 20, 20)
+        hit = mv.surface_hit(d, np.array([[-100.0, 20.0, 20.0]]), np.array([[1.0, 0.0, 0.0]]), tau_scale=1.0, tau_hit=0.7)
+        self.assertAlmostEqual(float(hit[0, 0]), 8.5, delta=1.5)  # its near surface (x ~ 8)
+        self.assertAlmostEqual(float(hit[0, 1]), 20.0, delta=0.01)
 
     def test_points_project_through_the_shot_camera(self):
         # Falcor's pinhole: the focal length over a 24 mm frame height sets the vertical field of view

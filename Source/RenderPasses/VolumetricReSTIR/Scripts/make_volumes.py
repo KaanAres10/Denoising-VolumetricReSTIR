@@ -293,6 +293,89 @@ def read_vdb_box(vdb, names, clip=None):
     return lo, box
 
 
+def fit_column(d, lo, off, fit):
+    """A simulated column (y up; density `d`, its index box at `lo`, its .vbx offset `off`) fitted to a shot's `fit`
+    (the reference's construct): its cap (the top of its head's axis -- 60-85% of its height, the reference's
+    construct sized by its head -- in .vbx coordinates), its scale (the head's diameter -- twice the density-weighted
+    rms distance from its axis x sqrt 2, a uniform disc's radius -- to fit["diameter"]) and its density scale (an
+    optical depth fit["tau"] across its middle)."""
+    w = np.maximum(d, 0.0).astype(np.float64)
+    prof = w.sum((0, 2))
+    occupied = np.flatnonzero(prof > 0.02 * prof.max())
+    top = int(occupied.max())
+    y0 = int(occupied.min() + 0.60 * (top - occupied.min()))
+    y1 = int(occupied.min() + 0.85 * (top - occupied.min())) + 1
+    wh = w[:, y0:y1, :]  # (centred on itself: a bent column's top is off its foot's axis)
+    cx = float((wh.sum((1, 2)) * np.arange(d.shape[0])).sum() / max(wh.sum(), 1e-30))
+    cz = float((wh.sum((0, 1)) * np.arange(d.shape[2])).sum() / max(wh.sum(), 1e-30))
+    rx, rz = np.arange(d.shape[0]) - cx, np.arange(d.shape[2]) - cz
+    r2 = (wh * (rx[:, None, None] ** 2 + rz[None, None, :] ** 2)).sum() / max(wh.sum(), 1e-30)
+    diameter = 2.0 * float(np.sqrt(2.0 * r2))
+    mid = int(np.average(np.arange(d.shape[1]), weights=prof))  # the density summed along x through its axis there
+    across = float(w[:, mid, int(round(cz))].sum())
+    return {"base": [cx + lo[0] + off[0] + 0.5, top + lo[1] + off[1] + 1.0, cz + lo[2] + off[2] + 0.5],
+            "diameter_voxels": diameter, "scale": fit["diameter"] / diameter,
+            "density_scale": fit["tau"] / max(across, 1e-9)}
+
+
+def defocus(d, depth, focus, ramp, sigma_max, levels=5):
+    """Density `d` softened where it is nearer the camera than `focus` (`depth`: each voxel's distance along the view,
+    the same units), as a lens out of focus there softens it (the reference's tail): blurred by a Gaussian of
+    sigma_max x clip((focus - depth) / ramp, 0, 1) voxels -- `levels` blurs, blended by depth. The caller pads `d` for
+    the spread."""
+    s = sigma_max * np.clip((focus - depth) / ramp, 0.0, 1.0).astype(np.float32)
+    sig = np.linspace(0.0, sigma_max, levels)
+    out = np.zeros_like(d, dtype=np.float32)
+    for k, sk in enumerate(sig):  # tent weights between neighbouring levels
+        w = np.clip(1.0 - np.abs(s - sk) / (sig[1] - sig[0]), 0.0, 1.0)
+        if not w.any():
+            continue
+        b = d if sk == 0 else ndimage.gaussian_filter(d, sk, mode="constant")
+        out += w * b
+    return out
+
+
+def warp(d, amplitude, cell, top, seed=0, chunk=16):
+    """Density `d` (y up) churned below a fraction `top` of its height: looked up at x + amplitude n(x) (voxels; n
+    smooth noise, features `cell` voxels across, a cubic-interpolated lattice per component) faded out by a smoothstep
+    from top / 2 to `top` -- the reference's tail is turbulent clumps where the simulated one is wound into helical
+    bands; its head is left alone. Seeded."""
+    if amplitude == 0:
+        return d
+    prof = np.maximum(d, 0.0).sum((0, 2), dtype=np.float64)
+    occupied = np.flatnonzero(prof > 0.02 * prof.max())
+    frac = (np.arange(d.shape[1]) - occupied.min()) / max(occupied.max() - occupied.min(), 1)
+    fade = (1.0 - smoothstep(top / 2.0, top, frac)).astype(np.float32)
+    rng = np.random.default_rng(seed)
+    lat = [rng.standard_normal(tuple(int(np.ceil(s / cell)) + 4 for s in d.shape)).astype(np.float32) for _ in range(3)]
+    out = np.empty_like(d, dtype=np.float32)
+    for x0 in range(0, d.shape[0], chunk):
+        x1 = min(x0 + chunk, d.shape[0])
+        idx = np.indices((x1 - x0,) + d.shape[1:], dtype=np.float32)
+        idx[0] += x0
+        at = idx / np.float32(cell) + 1.0
+        disp = np.stack([ndimage.map_coordinates(l, at, order=3, mode="nearest") for l in lat])
+        disp *= np.float32(amplitude / 0.6) * fade[None, None, :, None]  # (the lattice's cubic: std ~0.6)
+        out[x0:x1] = ndimage.map_coordinates(d, idx + disp, order=1, mode="constant", cval=0.0)
+    # each height slice's mass as it was (a smooth random displacement is not divergence-free: it gathers and thins)
+    before, after = d.sum((0, 2), dtype=np.float64), out.sum((0, 2), dtype=np.float64)
+    out *= np.where(after > 0, before / np.maximum(after, 1e-30), 1.0).astype(np.float32)[None, :, None]
+    return out
+
+
+def mist(d, amplitude, cell, reach, top, seed=0):
+    """Density `d` (y up) wrapped round its tail in a thin, wispy veil -- the reference's construct trails off in pale
+    smoke: a fbm (features `cell` voxels across) cut to wisps, within ~`reach` voxels of its smoke, fading out up to a
+    fraction `top` of its height, at most `amplitude`. Added. Seeded; the caller pads `d` for the veil."""
+    prof = np.maximum(d, 0.0).sum((0, 2), dtype=np.float64)
+    occupied = np.flatnonzero(prof > 0.02 * prof.max())
+    frac = (np.arange(d.shape[1]) - occupied.min()) / max(occupied.max() - occupied.min(), 1)
+    tail = (1.0 - smoothstep(top / 2.0, top, frac)).astype(np.float32)
+    env = np.clip(2.0 * ndimage.gaussian_filter((d > 0.02 * float(d.max())).astype(np.float32), reach), 0.0, 1.0)
+    wisp = np.clip((fbm(d.shape, cell, 3, seed) - 0.4) / 0.6, 0.0, 1.0) ** 1.5
+    return (d + amplitude * env * tail[None, :, None] * wisp).astype(np.float32)
+
+
 def fade_foot(d, start, end, floor=0.0):
     """Density `d` (x slowest, y up) with its foot faded into smoke (the Lanterns reference's construct thins toward
     its tail): x a smoothstep in the height of its column -- the slices holding at least 2% of the densest's smoke, so
@@ -367,6 +450,58 @@ def project_points(world, camera, width, height, frame_height=24.0):
     return width / 2.0 + k * (p @ r) / z, height / 2.0 - k * (p @ u) / z
 
 
+def pixel_rays(px, py, camera, width, height, frame_height=24.0):
+    """The camera rays through image points (project_points' inverse): their origin and unit directions (world)."""
+    pos = np.asarray(camera["position"], float)
+    f = np.asarray(camera["target"], float) - pos
+    f /= np.linalg.norm(f)
+    r = np.cross(f, (0.0, 1.0, 0.0))
+    r /= np.linalg.norm(r)
+    u = np.cross(r, f)
+    k = camera["focal"] / (frame_height / 2.0) * (height / 2.0)
+    d = (f[None] + ((np.asarray(px, float) - width / 2.0) / k)[:, None] * r[None]
+         - ((np.asarray(py, float) - height / 2.0) / k)[:, None] * u[None])
+    return np.tile(pos, (len(d), 1)), d / np.linalg.norm(d, axis=1, keepdims=True)
+
+
+def surface_hit(d, origin, dirs, tau_scale, tau_hit, step=0.5):
+    """Where rays (array index coordinates, unit directions in that frame) first pass optical depth `tau_hit` into
+    density `d` (`tau_scale` per unit density per voxel): the smoke's visible surface along each; NaN for a miss."""
+    origin, dirs = np.asarray(origin, float), np.asarray(dirs, float)
+    lo, hi = np.zeros(3), np.array(d.shape, float) - 1
+    t0 = np.zeros(len(origin))  # into the box first
+    for a in range(3):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ta, tb = (lo[a] - origin[:, a]) / dirs[:, a], (hi[a] - origin[:, a]) / dirs[:, a]
+        t0 = np.maximum(t0, np.nan_to_num(np.minimum(ta, tb), nan=0.0, neginf=0.0))
+    out = np.full((len(origin), 3), np.nan)
+    tau = np.zeros(len(origin))
+    done = np.zeros(len(origin), bool)
+    for k in range(int(np.ceil(2 * np.linalg.norm(d.shape) / step)) + 1):
+        p = origin + (t0 + k * step)[:, None] * dirs
+        tau += step * tau_scale * ndimage.map_coordinates(d, p.T, order=1, mode="constant", cval=0.0)
+        new = ~done & (tau >= tau_hit)
+        out[new] = p[new]
+        done |= new
+        if done.all():
+            break
+    return out
+
+
+def dark_flecks(img, size=21, rel=0.5, darkest=45.0, largest=60):
+    """The reference's debris (BGR image): spots far darker than the smoke round them -- below `rel` of the local
+    median (`size` px) and `darkest` in luminance, at most `largest` px -- as (x, y, pixels) each."""
+    L = img.astype(np.float64).mean(2)
+    dark = (L < rel * ndimage.median_filter(L, size=size)) & (L < darkest)
+    lab, n = ndimage.label(dark)
+    out = []
+    for i in range(1, n + 1):
+        ys, xs = np.nonzero(lab == i)
+        if len(xs) <= largest:
+            out.append((float(xs.mean()), float(ys.mean()), int(len(xs))))
+    return out
+
+
 def sparkle_mask(img, sigma, k=7, thresh=14.0):
     """Where a reference's sparkles are (BGR image): small bright peaks over the smoke round them -- local maxima of
     the luminance's white top-hat (k px) above `thresh` -- counted per pixel, smoothed (Gaussian, `sigma` px), its
@@ -376,6 +511,51 @@ def sparkle_mask(img, sigma, k=7, thresh=14.0):
     peak = (th == ndimage.maximum_filter(th, size=5)) & (th > thresh)
     m = ndimage.gaussian_filter(peak.astype(np.float64), sigma)
     return m / max(m.max(), 1e-30)
+
+
+def glitter_sprite(path, rgb, sigma=0.2, size=64):
+    """A glint's emission over its quad, as an image (`size` px square, linear): a round Gaussian (`sigma` of the
+    quad's width) in `rgb`, its brightest channel 1 at the middle -- a soft flake, or stretched with its quad a soft
+    streak, where a flat-coloured quad was a hard square."""
+    import cv2
+    c = (np.arange(size) + 0.5) / size - 0.5
+    g = np.exp(-0.5 * (c[:, None] ** 2 + c[None, :] ** 2) / sigma ** 2)
+    g = (g - g.min()) / (g.max() - g.min())
+    col = np.asarray(rgb, float) / max(rgb)
+    img = np.round(255.0 * g[..., None] * col[None, None, :]).astype(np.uint8)
+    cv2.imwrite(str(path), img[..., ::-1])
+
+
+def glint_sprays(centres, sizes, stretch, camera, per, width=0.25, seed=0):
+    """Soft glints as sprays of micro-glints (world points): each glint `per` points, Gaussian round its centre with
+    `width` x its size as sigma in the camera's plane, spread evenly along its motion (`stretch`, the part the camera
+    sees) -- sub-pixel emitters summing to a soft, streaked flake, where one big emissive quad hid the smoke behind
+    it (an opaque dark square round a bright core). Seeded."""
+    rng = np.random.default_rng(seed)
+    pos = np.asarray(camera["position"], float)
+    f = np.asarray(camera["target"], float) - pos
+    f /= np.linalg.norm(f)
+    r = np.cross(f, (0.0, 1.0, 0.0))
+    r /= np.linalg.norm(r)
+    u = np.cross(r, f)
+    c = np.repeat(np.asarray(centres, float), per, axis=0)
+    s = np.repeat(np.asarray(sizes, float), per)
+    st = np.repeat(np.asarray(stretch, float), per, axis=0)
+    st = st - (st @ f)[:, None] * f[None]  # what the camera sees of it
+    g = rng.normal(0.0, 1.0, (len(c), 2)) * (width * s)[:, None]
+    along = rng.uniform(-0.5, 0.5, len(c))[:, None]
+    return c + g[:, :1] * r[None] + g[:, 1:] * u[None] + along * st
+
+
+def glitter_clusters(centres, mean_count, radius, seed=0):
+    """Glints in small groups round `centres` (the reference's are foam-like clumps): each centre 1 + Poisson
+    (mean_count - 1) of them, Gaussian-scattered `radius` round it (the same units). Seeded."""
+    rng = np.random.default_rng(seed)
+    counts = 1 + rng.poisson(max(mean_count - 1.0, 0.0), len(centres))
+    base = np.repeat(np.asarray(centres, float), counts, axis=0)
+    off = rng.normal(0.0, radius, base.shape)
+    off[np.r_[0, np.cumsum(counts)[:-1]]] = 0.0  # each group's first at its centre
+    return base + off
 
 
 def glitter_sizes(n, size, sigma, seed=0):
@@ -473,14 +653,42 @@ def blur_steps(v_max, shutter, voxel, floor=16):
     return max(floor, int(np.ceil(v_max * shutter / voxel / 2.0 - 1e-9)))
 
 
+def flow_streaks(shape, v, voxel, shutter, cell, seed=0, v_voxel=None, d_lo=(0, 0, 0), v_lo=(0, 0, 0)):
+    """A texture of fine lines along a flow: fine Gaussian noise (features `cell` voxels) blurred along velocity `v`
+    over `shutter` (velocity_blur's arguments) and brought back to unit standard deviation -- the reference's fur of
+    streaks along its rings. Blurring the density itself averages fine detail away; blurring the noise and restoring
+    its contrast keeps the lines. Seeded."""
+    n = unit_noise(shape, cell, np.random.default_rng(seed))
+    s = velocity_blur(n, v, voxel, shutter, blur_steps(float(np.percentile(np.linalg.norm(v, axis=-1), 99.5)), shutter, voxel),
+                      v_voxel=v_voxel, d_lo=d_lo, v_lo=v_lo)
+    s -= float(s.mean())
+    return s / max(float(s.std()), 1e-12)
+
+
+def grain(d, amplitude, cell, octaves=2, seed=0):
+    """Density `d` x (1 + amplitude (2 fbm - 1)), at least 0: fine variation (features `cell` voxels across, `octaves`
+    of fbm) that a motion blur draws into streak lines -- a smooth simulated surface leaves the blur nothing to
+    streak. Seeded."""
+    n = fbm(d.shape, cell, octaves, seed)
+    n = (n - float(n.mean())) / max(float(np.abs(n - n.mean()).max()), 1e-12)
+    return (d * np.maximum(1.0 + amplitude * n, 0.0)).astype(np.float32)
+
+
 def blur_bifrost_velocity(src, dst, shutter, steps=None, density="voxel_fog_density", temperature="voxel_temperature",
-                          velocity="voxel_velocity", cutoff=1e-4):
+                          velocity="voxel_velocity", cutoff=1e-4, drift=(0.0, 0.0, 0.0), grain_spec=None, streaks=None):
     """A Bifrost frame motion blurred along its own velocity (velocity_blur: the Lanterns reference's construct is
     streaked along its rotation) over `shutter` seconds, rewritten as clean_bifrost_vdb does -- its box grown by the
     longest smear, in `steps` (blur_steps' unless given). The frame must hold the velocity (bifrost_export.py with BIFROST_PROPERTIES naming voxel_velocity).
+    `drift` (m/s, the volume's frame) is added to the velocity: the construct moving as a whole during the shutter --
+    along its axis, it tilts the streaks from rings round it toward the reference's helices; `grain_spec`
+    (amplitude, cell, octaves, seed) grains the density first (grain), for the blur to streak; `streaks`
+    (amplitude, cell, shutter) multiplies the blurred density by 1 + amplitude x flow_streaks (fine lines along the
+    flow over that shutter, at least 0).
     Returns the box's low corner, its shape and Bifrost's voxel size."""
     lo, d, voxel = vdb_grid(src, density)
     hi = [lo[a] + d.shape[a] - 1 for a in range(3)]
+    if grain_spec:
+        d = grain(d, *grain_spec)
     grids = [d]
     if temperature:  # (None: a frame exported without it)
         tlo, t_box, _ = vdb_grid(src, temperature, clip=(lo, hi))
@@ -492,12 +700,26 @@ def blur_bifrost_velocity(src, dst, shutter, steps=None, density="voxel_fog_dens
     # the smoke's box scaled toward the origin -- inside the box spanning it and the origin -- holds what is needed
     vlo, v, v_voxel = vdb_grid(src, velocity, clip=([min(lo[a], 0) - 1 for a in range(3)],
                                                     [max(hi[a], 0) + 1 for a in range(3)]))
-    v_max = float(np.linalg.norm(v, axis=-1).max())
+    v = v + np.asarray(drift, np.float32)
+    # the smear's reach: the speed under the smoke (99.5th percentile -- a few fast voxels at the domain's edge
+    # padded the box 1.7x and took 27 minutes at a 0.4 s shutter); faster smoke is clipped at the box
+    speed = np.linalg.norm(v, axis=-1)
+    o = [lo[a] - vlo[a] for a in range(3)]  # the density's box on the velocity's grid (same voxel: refined frames)
+    if v_voxel == voxel and all(0 <= o[a] and o[a] + d.shape[a] <= v.shape[a] for a in range(3)):
+        under = speed[o[0]:o[0] + d.shape[0], o[1]:o[1] + d.shape[1], o[2]:o[2] + d.shape[2]][d > 1e-3]
+    else:
+        under = speed.ravel()
+    v_max = float(np.percentile(under, 99.5)) if under.size else float(speed.max())
     pad = int(np.ceil(v_max * shutter / 2.0 / voxel)) + 1
     steps = steps or blur_steps(v_max, shutter, voxel)
     lo = [lo[a] - pad for a in range(3)]
     blurred = [velocity_blur(np.pad(g, pad), v, voxel, shutter, steps, v_voxel=v_voxel, d_lo=lo, v_lo=vlo) for g in grids]
     shape = blurred[0].shape
+    if streaks:
+        amp, cell, s_shutter = streaks
+        lines = flow_streaks(shape, v, voxel, s_shutter, cell, v_voxel=v_voxel, d_lo=lo, v_lo=vlo)
+        blurred[0] = (blurred[0] * np.maximum(1.0 + amp * lines, 0.0)).astype(np.float32)
+        del lines
     with tempfile.TemporaryDirectory() as work:
         write_raw(blurred[0], Path(work) / "density.raw")
         if temperature:
@@ -701,6 +923,14 @@ def tornado_detail(d, up=2.0, warp=(4.0, 1.2), warp_scales=(24.0, 6.0), streaks=
     return out
 
 
+def construct_detail(d, **kw):
+    """tornado_detail on a Bifrost column (y up, where the tornado's axis is z), at its own resolution unless `up` says
+    otherwise, its added helical bands off (the flow wound its own): film detail -- curl-noise filaments, the thin smoke
+    eroded into wisps, fine grain, streaks round its axis (the reference's fur along its rings)."""
+    kw = dict({"up": 1.0, "bands": 0.0, "specks": 0}, **kw)
+    return np.ascontiguousarray(tornado_detail(np.ascontiguousarray(d.transpose(0, 2, 1)), **kw).transpose(0, 2, 1))
+
+
 def write_lantern(shot="lantern", frame=None):
     """A frame of a green tornado shot (lantern.SHOTS: the looping tornado or the dust devil): as it is, or with the
     shot's `detail` added (tornado_detail, written by VolFromRaw a voxel a unit: no grid offset), as
@@ -720,13 +950,18 @@ def write_lantern(shot="lantern", frame=None):
         Path(src).parent.mkdir(parents=True, exist_ok=True)  # averaged with the frames before it over `shutter`
         if g.get("vblur"):  # -- or blurred along its own velocity
             blur_bifrost_velocity(REPO / (g["bifrost_src"] % frame), src, g["vblur"],  # (its temperature only if it glows)
-                                  temperature="voxel_temperature" if "glow" in g else None)
+                                  temperature="voxel_temperature" if "glow" in g else None,
+                                  drift=g.get("drift", (0.0, 0.0, 0.0)), grain_spec=g.get("grain"),
+                                  streaks=g.get("streaks"))
         else:
             k = g.get("shutter", 1)
             blur_bifrost_frames([REPO / (g["bifrost_src"] % f) for f in range(frame - k + 1, frame + 1)], src)
     lo, box = read_vdb_box(src, ("density",))
     d = d_fit = box["density"]
     grid = None
+    if "bifrost_src" in g:  # a simulated column (y up), fitted to the shot's `fit` (the reference's construct) as simulated
+        grid = fit_column(d_fit, lo, g["offset"], g["fit"])
+    post = [k for k in ("foot", "fine", "warp", "mist", "defocus") if k in g]
     with tempfile.TemporaryDirectory() as work:
         vdb = Path(work) / (name + ".vdb")
         if "detail" in g:
@@ -751,8 +986,36 @@ def write_lantern(shot="lantern", frame=None):
             run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb], cwd=RELEASE)
             raw.unlink()
             lo_file, _ = read_vdb_box(vdb, ("density",))
-        elif "foot" in g:  # its foot thinned into smoke (fade_foot), rewritten where it was; fitted as simulated
-            d_fit, d = d, fade_foot(d, *g["foot"])
+        elif post:  # its tail reworked (fade_foot, warp, mist, defocus), padded for their spread, rewritten where it
+            # was (its index placement: the fit and its .vbx coordinates hold)
+            pad = int(np.ceil(max([g["warp"]["amplitude"] if "warp" in g else 0.0,
+                                   sum(g["fine"].get("warp", ())) if "fine" in g else 0.0,
+                                   1.5 * g["mist"]["reach"] if "mist" in g else 0.0,  # (the veil < 15% past it)
+                                   3.0 * g["defocus"]["sigma_max"] if "defocus" in g else 0.0]))) + 1
+            d = np.pad(d, pad)
+            lo = [lo[a] - pad for a in range(3)]
+            if "foot" in g:
+                d = fade_foot(d, *g["foot"])
+            if "fine" in g:  # film detail at its own resolution (construct_detail)
+                d = construct_detail(d, **g["fine"])
+            if "warp" in g:
+                d = warp(d, **g["warp"])
+            if "mist" in g:
+                d = mist(d, **g["mist"])
+            if "defocus" in g:  # each voxel's distance along the camera's view, as the shot places the volume
+                axes = [np.array(sf.rotate(e, g["rotation"])) for e in np.eye(3)]
+                pose = dict(lantern.pose(shot), base=grid["base"], scale=grid["scale"])
+                cam = g["camera"]
+                fwd = np.asarray(cam["target"], float) - np.asarray(cam["position"], float)
+                fwd /= np.linalg.norm(fwd)
+                grad = pose["scale"] * np.column_stack(axes).T @ fwd  # depth per array index step, per axis
+                c0 = float((np.asarray(sf.translation(**pose), float) + pose["scale"] * np.column_stack(axes)
+                            @ (np.asarray(lo, float) + np.asarray(g["offset"], float) + 0.5) - np.asarray(cam["position"], float)) @ fwd)
+                depth = (np.float32(c0) + np.float32(grad[0]) * np.arange(d.shape[0], dtype=np.float32)[:, None, None]
+                         + np.float32(grad[1]) * np.arange(d.shape[1], dtype=np.float32)[None, :, None]
+                         + np.float32(grad[2]) * np.arange(d.shape[2], dtype=np.float32)[None, None, :])
+                d = defocus(d, depth, **g["defocus"])
+                del depth
             raw = Path(work) / (name + ".raw")
             write_raw(d, raw)
             run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb, 1e-4, "-", *lo], cwd=RELEASE)
@@ -765,29 +1028,6 @@ def write_lantern(shot="lantern", frame=None):
     off = vbx_offset(dest, name, lo_file)
     if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
         raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))
-    if "bifrost_src" in g:  # a simulated column (y up), fitted to the shot's `fit` (the reference's construct)
-        w = np.maximum(d_fit, 0.0).astype(np.float64)
-        prof = w.sum((0, 2))
-        occupied = np.flatnonzero(prof > 0.02 * prof.max())
-        top = int(occupied.max())
-        # its head (60-85% of its height: the reference's construct is sized by its head, its tail wider), centred on
-        # itself (a bent column's top is off its foot's axis)
-        y0 = int(occupied.min() + 0.60 * (top - occupied.min()))
-        y1 = int(occupied.min() + 0.85 * (top - occupied.min())) + 1
-        wh = w[:, y0:y1, :]
-        cx = float((wh.sum((1, 2)) * np.arange(d.shape[0])).sum() / max(wh.sum(), 1e-30))
-        cz = float((wh.sum((0, 1)) * np.arange(d.shape[2])).sum() / max(wh.sum(), 1e-30))
-        # its diameter: twice the density-weighted rms distance from its axis x sqrt 2 (a uniform disc's radius)
-        rx, rz = np.arange(d.shape[0]) - cx, np.arange(d.shape[2]) - cz
-        r2 = (wh * (rx[:, None, None] ** 2 + rz[None, None, :] ** 2)).sum() / max(wh.sum(), 1e-30)
-        diameter = 2.0 * float(np.sqrt(2.0 * r2))
-        # its optical depth across at density_scale 1: the density summed along x through the axis, mid-height
-        mid = int(np.average(np.arange(d.shape[1]), weights=prof))
-        across = float(w[:, mid, int(round(cz))].sum())
-        fit = g["fit"]
-        grid = {"base": [cx + lo[0] + off[0] + 0.5, top + lo[1] + off[1] + 1.0, cz + lo[2] + off[2] + 0.5],  # the cap
-                "diameter_voxels": diameter, "scale": fit["diameter"] / diameter,
-                "density_scale": fit["tau"] / max(across, 1e-9)}
     glitter = None
     if "glitter" in g and grid is not None:  # tiny emitters: on the funnel's key-lit surface, or particles in its smoke
         spec = g["glitter"]
@@ -817,14 +1057,61 @@ def write_lantern(shot="lantern", frame=None):
                     inside = (px >= 0) & (px < mw) & (py >= 0) & (py < mh)
                     m = mask[np.clip(py.astype(int), 0, mh - 1), np.clip(px.astype(int), 0, mw - 1)]
                     return np.where(inside, spec.get("mask_floor", 0.01) + m, 0.0)
-            pts = glitter_particles(d, spec["n"], key_index, tau, camera=to_index(g["camera"]["position"]),
-                                    weight=weight, seed=spec.get("seed", 0))
+            cluster = spec.get("cluster")  # (mean glints a group, their scatter in voxels): foam-like clumps
+            pts = glitter_particles(d, int(round(spec["n"] / cluster[0])) if cluster else spec["n"], key_index, tau,
+                                    camera=to_index(g["camera"]["position"]), weight=weight, seed=spec.get("seed", 0))
+            if cluster:
+                pts = glitter_clusters(pts, cluster[0], cluster[1], seed=spec.get("seed", 0))
         else:  # (shadowed: drawn where the key's light reaches)
             pts = glitter_points(d, spec["n"], key_index, spec["threshold"], seed=spec.get("seed", 0),
                                  power=spec.get("power", 4.0), tau_scale=tau if spec.get("shadowed") else None)
         glitter = {"p": [[float(v) for v in sf.to_world([q[a] + lo[a] + off[a] + 0.5 for a in range(3)], **pose)] for q in pts],
                    "size": glitter_sizes(len(pts), spec["size"], spec.get("size_sigma", 0.0), seed=spec.get("seed", 0)),
                    "rgb": list(spec["rgb"]), "radiance": spec["radiance"]}
+        if spec.get("streak") and "bifrost_src" in g and len(pts):  # each glint's motion over its own shutter (s): the
+            # flow's velocity where it is (Bifrost's index space, as the cleaned frame's) and the shot's drift
+            q = np.asarray(pts) + np.asarray(lo, float)
+            qlo, qhi = np.floor(q.min(0)).astype(int) - 1, np.ceil(q.max(0)).astype(int) + 1
+            vlo, v, v_voxel = vdb_grid(REPO / (g["bifrost_src"] % frame), "voxel_velocity", clip=(list(qlo), list(qhi)))
+            vel = np.stack([ndimage.map_coordinates(v[..., c], (q - np.asarray(vlo, float) - 0.5).T, order=1, mode="nearest")
+                            for c in range(3)], axis=1) + np.asarray(g.get("drift", (0.0, 0.0, 0.0)))
+            rot = np.column_stack(axes)
+            glitter["stretch"] = (pose["scale"] * (vel * spec["streak"] / v_voxel) @ rot.T).round(5).tolist()
+        if spec.get("spray"):  # each glint a spray of sub-pixel micro-glints (glint_sprays): soft and streaked
+            per, micro, width = spec["spray"]
+            sizes = glitter["size"] if isinstance(glitter["size"], list) else [glitter["size"]] * len(glitter["p"])
+            sp = glint_sprays(np.asarray(glitter["p"]), sizes, glitter.get("stretch", np.zeros((len(sizes), 3))),
+                              g["camera"], int(per), width=width, seed=spec.get("seed", 0))
+            glitter = {"p": sp.round(5).tolist(), "size": micro, "rgb": glitter["rgb"], "radiance": glitter["radiance"]}
+        elif spec.get("sprite_sigma"):  # a soft glint's emission over its quad (glitter_sprite), beside the volume
+            sprite = out_dir / (name + "_glint.png")
+            glitter_sprite(sprite, spec["rgb"], sigma=spec["sprite_sigma"])
+            glitter["sprite"] = str(sprite)
+    debris = None
+    if "debris" in g and grid is not None:  # the reference's dark flecks (dark_flecks), each where its camera ray meets
+        import cv2  # this volume's visible surface (surface_hit), as large as it is there
+        spec = g["debris"]
+        ref = cv2.imread(str(REPO / spec["mask"]))
+        if ref is None:
+            print("WARNING: %s: no debris reference %s; no debris" % (shot, spec["mask"]))
+        else:
+            flecks = dark_flecks(ref)
+            axes = [np.array(sf.rotate(e, g["rotation"])) for e in np.eye(3)]
+            rot = np.column_stack(axes)
+            pose = dict(lantern.pose(shot), base=grid["base"], scale=grid["scale"])
+            t0 = np.asarray(sf.translation(**pose), float)
+            shift = np.asarray(lo, float) + np.asarray(off, float) + 0.5
+            rh, rw = ref.shape[:2]
+            o, dirs = pixel_rays([f[0] for f in flecks], [f[1] for f in flecks], g["camera"], rw, rh)
+            hits = surface_hit(d, (rot.T @ ((o - t0) / pose["scale"]).T).T - shift, dirs @ rot,
+                               grid["density_scale"] * float(np.mean(np.add(g["sigma_a"], g["sigma_s"]))), spec.get("tau_hit", 0.7))
+            ok = np.isfinite(hits).all(axis=1)
+            world = t0 + pose["scale"] * ((hits[ok] + shift) @ rot.T)
+            dist = np.linalg.norm(world - np.asarray(g["camera"]["position"], float), axis=1)
+            px_world = dist * (24.0 / g["camera"]["focal"]) / rh  # one reference pixel there (cm)
+            debris = {"p": world.round(5).tolist(),
+                      "size": [float(spec.get("scale", 1.0) * np.sqrt(f[2]) * w) for f, w in zip([f for f, k in zip(flecks, ok) if k], px_world)],
+                      "rgb": list(spec.get("rgb", (0.02, 0.03, 0.02)))}
     ix, iy = np.indices(d.shape[:2], dtype=np.float64)
     spec = g.get("glow", {"heights": ()})
     lights = []
@@ -839,7 +1126,7 @@ def write_lantern(shot="lantern", frame=None):
         lights.append({"set": "glow", "p": [float(v) for v in p], "intensity": [spec["power"] / spec["n"] * c for c in spec["rgb"]]})
     path = out_dir / (name + "_lights.json")
     path.write_text(json.dumps(dict({"lights": lights}, **({"grid": grid} if grid else {}),
-                                    **({"glitter": glitter} if glitter else {})), indent=1))
+                                    **({"glitter": glitter} if glitter else {}), **({"debris": debris} if debris else {})), indent=1))
     return dest, path
 
 
