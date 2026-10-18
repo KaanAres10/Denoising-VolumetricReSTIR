@@ -250,8 +250,10 @@ SHOTS = {
 # lime -- its extinction the same (1 in each channel: its density, silhouette and fit unchanged): yellow where the
 # light falls, its own glow green within. Without its sparkles (user: "you still added those sparkle lights, I don't
 # want that"): their thousands of emitters are left out of the scene (its table still holds them).
-# LANTERN_EMISSION "le_scale,cutoff,scale,lights" (0.004, 22, 600, 1): all read when the scene loads
+# LANTERN_EMISSION "le_scale,cutoff,scale,lights[,tint_r,tint_g,tint_b]" (0.004, 22, 600, 1, 0.05, 1, 0.3): all read
+# when the scene loads
 EMISSION = _env("LANTERN_EMISSION") or (0.004, 22.0, 600.0, 1.0)
+EMISSION = EMISSION + (0.05, 1.0, 0.3)[max(0, len(EMISSION) - 4):]
 SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45), sigma_s=(0.75, 0.85, 0.55),
                             src="BifrostVDB/%s_clean%s_t/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),  # (its temperature kept)
                             data=SHOTS["lanternbifrost"]["data"] + "_gl", sparkles=False,
@@ -260,7 +262,7 @@ SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45),
                                     {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 28.0,
                                      "rgb": (1.0, 0.72, 0.1), "radiance": 30.0 * EMISSION[3]}),
                             emission={"le_scale": EMISSION[0], "cutoff": EMISSION[1], "scale": EMISSION[2],
-                                      "tint": (0.05, 1.0, 0.3)})
+                                      "tint": tuple(EMISSION[4:7])})
 SKIES = {
     # matched to the user's Lanterns reference: a teal sky brighter below (55/78/78 at the top right, 81/110/111 at the
     # bottom right), a broad white glow behind the funnel filling the frame's left side, a soft key from the upper left
