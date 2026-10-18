@@ -245,7 +245,7 @@ def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
     g.connect("swirl_force.output", "flow.first.swirl")
     g.connect("pull_force.output", "flow.first.pull")
     g.connect("lift_force.output", "flow.first.lift")
-    if bend > 0:  # drag x bend x (1, 0, 0) x clamp((y - bend_from) / bend_length, 0, 1)
+    if bend:  # drag x bend x (1, 0, 0) x clamp((y - bend_from) / bend_length, 0, 1); either sign
         g.node("inv_bend_length", "Core::Fields::scalar_field", value=("float", _f(1.0 / bend_length)))
         g.node("bend_offset", "Core::Fields::scalar_field", value=("float", _f(-bend_from / bend_length)))
         g.node("bend_raw", "Core::Math::multiply")

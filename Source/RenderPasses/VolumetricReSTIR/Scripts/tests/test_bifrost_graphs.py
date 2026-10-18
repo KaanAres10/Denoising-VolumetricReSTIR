@@ -107,6 +107,9 @@ class TestVortexConstruct(unittest.TestCase):
         self.assertEqual(v["bend_vector.value"], {"x": "2.0f", "y": "0.0f", "z": "0.0f"})  # drag 2 x 1 m/s
         self.assertEqual((v["bend_offset.value"], v["inv_bend_length.value"]), ("-2.0f", "%sf" % (1.0 / 3.0)))
         self.assertEqual(bg.check_graph(c), [])
+        # either way: the drift's sign picks which way the column curves (toward its head, + steepens it here)
+        v = {x["valueName"]: x["value"] for x in bg.vortex_construct(bend=-0.5)["compounds"][0]["values"]}
+        self.assertEqual(v["bend_vector.value"], {"x": "-1.0f", "y": "0.0f", "z": "0.0f"})
 
     def test_a_noisy_source_gives_the_swirl_something_to_streak(self):
         # an even source leaves the swirl nothing to stretch; Bifrost's way (its fire feeds fields into source_air):

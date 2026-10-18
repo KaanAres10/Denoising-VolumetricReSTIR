@@ -77,7 +77,16 @@ def parse_overrides(args):
     return out
 
 
-def simulate(compound, first, last, log=print):
+def prune_frames(out_dir, stem, frame, keep):
+    """Remove <stem>_####.vdb `keep` frames back from `frame` (0: keep all): a long high-resolution run would fill the
+    disk, and only its last frames (a motion blur's shutter) are used."""
+    if keep > 0:
+        old = os.path.join(out_dir, "%s_%04d.vdb" % (stem, frame - keep))
+        if os.path.exists(old):
+            os.remove(old)
+
+
+def simulate(compound, first, last, log=print, out_dir=None, stem=None, keep=0):
     """Put `compound` (NAMESPACE::name, already in a loaded library) on a board in this headless Maya and step frames
     first..last in order, pulling each by its `written` flag. Returns the frames written."""
     import maya.cmds as cmds
@@ -95,6 +104,8 @@ def simulate(compound, first, last, log=print):
         if not ok:
             break
         written.append(f)
+        if out_dir:
+            prune_frames(out_dir, stem, f, keep)
     return written
 
 
@@ -118,7 +129,8 @@ def main(argv):
     import maya.cmds as cmds
     cmds.loadPlugin("bifrostGraph", quiet=True)
     try:
-        frames = simulate(wrapped["compounds"][0]["name"], int(first), int(last))
+        frames = simulate(wrapped["compounds"][0]["name"], int(first), int(last), out_dir=out_dir, stem=stem,
+                          keep=int(os.environ.get("BIFROST_KEEP_LAST", "0")))  # BIFROST_KEEP_LAST: only the last n stay
     finally:
         maya.standalone.uninitialize()
     print("BIFROST_EXPORT wrote %d frames to %s" % (len(frames), out_dir))

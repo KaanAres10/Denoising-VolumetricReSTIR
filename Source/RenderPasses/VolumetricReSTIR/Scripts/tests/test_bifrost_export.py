@@ -68,5 +68,20 @@ class TestWrapGraph(unittest.TestCase):
                          {"switch.condition": ("bool", "true"), "value.value": ("float", "0.05")})
 
 
+class TestKeepLast(unittest.TestCase):
+    def test_only_the_last_frames_stay_on_disk(self):
+        # a 0.02 m construct frame is ~0.5 GB: a 150-frame run would fill the disk; only the last few (the motion
+        # blur's shutter) are used
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as t:
+            for f in range(1, 11):
+                (Path(t) / ("c_%04d.vdb" % f)).write_bytes(b"x")
+                bx.prune_frames(t, "c", f, keep=3)
+            self.assertEqual(sorted(p.name for p in Path(t).iterdir()), ["c_0008.vdb", "c_0009.vdb", "c_0010.vdb"])
+            bx.prune_frames(t, "c", 11, keep=0)  # 0: keep everything
+            self.assertEqual(len(list(Path(t).iterdir())), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

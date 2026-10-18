@@ -78,8 +78,9 @@ SHOTS = {
     # at voxel x = z = 0); at frame 120 the column is 385 voxels long (11.5 m), twisting, flared where it tops out;
     # lying diagonally as the reference's construct (worldRotation z -62: its axis 28 degrees up to the right), its
     # middle at the frame's
-    # its green a touch less saturated than the tornado's (the reference's mid-tones: red / green 0.5, ours was 0.42)
-    "lanternbifrost": dict(GREEN, sigma_a=(0.80, 0.15, 0.68), sigma_s=(0.20, 0.85, 0.32),
+    # its green a touch less saturated than the tornado's (the reference's mid-tones: red / green 0.5, ours was 0.42),
+    # its blue lower (the sky's teal lifted its shadows' blue: 32 to the reference's 22)
+    "lanternbifrost": dict(GREEN, sigma_a=(0.80, 0.15, 0.72), sigma_s=(0.20, 0.85, 0.28), g=0.6,
                            src="BifrostVDB/%s_clean%s/construct_%%04d.vdb" % (CONSTRUCT, "_s%d" % SHUTTER if SHUTTER > 1 else ""),
                            shutter=SHUTTER,
                            bifrost_src="BifrostVDB/%s/construct_%%04d.vdb" % CONSTRUCT,
@@ -88,20 +89,20 @@ SHOTS = {
                            # diameter is the reference's (12.2 cm: half the frame's height, 265 px of 540), its density
                            # for an optical depth of `tau` across its middle, its cap pinned where the reference's ends
                            # (x 880, y 210 of 960 x 540)
-                           fit={"diameter": 14.1, "tau": 8.0, "cap": (17.1, 6.5, 0.0)},
-                           offset=(0.0, 0.0, 0.0), scale=0.06, rotation=(0.0, 0.0, -62.0), anchor=(17.1, 6.5, 0.0),
+                           fit={"diameter": 13.0, "tau": 8.0, "cap": (17.1, 6.5, 0.0)},
+                           offset=(0.0, 0.0, 0.0), scale=0.06, rotation=(0.0, 0.0, -66.0), anchor=(17.1, 6.5, 0.0),
                            base=(0.0, 0.0, 0.0), density_scale=0.25,  # (overridden by the fit)
                            sky="lantern_sky", key=(-0.75, 0.5, 0.45),
                            # the reference's sparkles: 4000 tiny emitters where its surface faces the key (upper left)
                            # (at radiance 40 in a pale green they clipped to white, spread evenly; the reference's
                            # are green, clustered where the surface faces the key squarely: power 8)
-                           glitter={"n": 3000, "threshold": 0.04, "power": 8.0, "size": 0.05, "rgb": (0.15, 1.0, 0.25),
-                                    "radiance": 2.0, "seed": 1},  # red and blue under display white: green, not white
+                           glitter={"n": 5000, "threshold": 0.04, "power": 8.0, "size": 0.07, "rgb": (0.15, 1.0, 0.25),
+                                    "radiance": 1.8, "seed": 1},  # red and blue under display white: green, not white
                            # its own soft boxes: the tornado's, the fill raised (its mid-tones were 105 green to the
                            # reference's 125, its shadows 61 to 80)
-                           panels=({"name": "Key", "dir": (-0.75, 0.5, 0.45), "dist": 36.0, "side": 14.0, "rgb": (0.75, 1.0, 0.8), "radiance": 35.0},
-                                   {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 18.0},
-                                   {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 12.0}),
+                           panels=({"name": "Key", "dir": (-0.75, 0.5, 0.45), "dist": 36.0, "side": 14.0, "rgb": (0.75, 1.0, 0.8), "radiance": 40.0},
+                                   {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 15.0},
+                                   {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 9.0}),
                            camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
     "lanterndust": dict(GREEN, src="Dust_Devil/Dust_Devil/embergen_dust_devil_tornado_a_%d.vdb", data="dustdevil", frame=50,
                         offset=(-128.5, -128.5, -192.5), scale=0.065, rotation=(-90.0, 0.0, 0.0), anchor=(0.0, -11.5, 0.0),
