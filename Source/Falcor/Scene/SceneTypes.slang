@@ -69,6 +69,8 @@ struct VolumeDesc
     float velocityScale;
     int  numMips;
     int usePrevGridForReproj;
+    float emissionTintPad;    ///< (keeps emissionTint on a 16-byte boundary on the GPU: the struct is uploaded by setBlob)
+    float3 emissionTint;      ///< The emission's colour, times the blackbody's (1 = the fork's; Scene::setVolumeEmissionTint).
 };
 
 /** Geometry instance ID.

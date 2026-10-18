@@ -277,7 +277,8 @@ float3 ConvertTempToColor(float temp)
 {
     temp = min(6400, (temp - gScene.volumeDesc.temperatureCutOff) * gScene.volumeDesc.temperatureScale);
     float queryPoint = (temp - 25) / 6400;
-    return gScene.volumeDesc.LeScale * gBlackBodyRadiationTex.SampleLevel(gLinearSampler, queryPoint, 0).rgb;
+    // (tinted after the fork's product: x 1 leaves it bit-identical)
+    return gScene.volumeDesc.emissionTint * (gScene.volumeDesc.LeScale * gBlackBodyRadiationTex.SampleLevel(gLinearSampler, queryPoint, 0).rgb);
 }
 
 float3 Emission(float3 p, bool isLastFrame=false)

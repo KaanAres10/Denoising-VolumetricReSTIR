@@ -667,6 +667,8 @@ namespace Falcor
                     volumeDesc.LeScale = LeScale;
                     volumeDesc.temperatureCutOff = temperatureCutOff;
                     volumeDesc.temperatureScale = temperatureScale;
+                    volumeDesc.emissionTintPad = 0.f;
+                    volumeDesc.emissionTint = float3(1.f);
                 }
 
                 if (typeId == numTypes - 1 && mipId == numMips - 1)
@@ -753,6 +755,14 @@ namespace Falcor
     void Scene::updateVolumeDesc()
     {
         mpSceneBlock->getRootVar()["volumeDesc"].setBlob(mVolumeDesc);
+    }
+
+    void Scene::setVolumeEmissionTint(float3 tint)
+    {
+        // Every frame's descriptor too: an animated sequence swaps them in (advanceVolumeAnimation).
+        mVolumeDesc.emissionTint = tint;
+        if (mpGVDB) for (auto& desc : mpGVDB->mVolumeDescArray) desc.emissionTint = tint;
+        updateVolumeDesc();
     }
 
     void Scene::setVolumeShaderData(const ShaderVar& var, int volumeId)

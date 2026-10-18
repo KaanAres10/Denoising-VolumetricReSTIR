@@ -4404,15 +4404,19 @@ namespace Falcor
         scene.def("addGVDBVolume",
             [](Scene& s, float3 sigma_a, float3 sigma_s, float g, std::string dataFile, int numMips, float densityScale,
                bool hasVelocity, bool hasEmission, float LeScale, float temperatureCutoff, float temperatureScale,
-               float3 worldTranslation, float3 worldRotation, float worldScaling)
+               float3 worldTranslation, float3 worldRotation, float worldScaling, float3 emissionTint)
             {
-                return s.addGVDBVolume(-1, sigma_a, sigma_s, g, dataFile, numMips, densityScale, hasVelocity, hasEmission,
+                uint32_t id = s.addGVDBVolume(-1, sigma_a, sigma_s, g, dataFile, numMips, densityScale, hasVelocity, hasEmission,
                     LeScale, temperatureCutoff, temperatureScale, worldTranslation, worldRotation, worldScaling);
+                if (any(emissionTint != float3(1.f))) s.setVolumeEmissionTint(emissionTint);
+                return id;
             },
             "sigma_a"_a, "sigma_s"_a, "g"_a, "dataFile"_a,
             "numMips"_a = 1, "densityScale"_a = 1.f, "hasVelocity"_a = false, "hasEmission"_a = false, "LeScale"_a = 0.005f,
             "temperatureCutoff"_a = 1.f, "temperatureScale"_a = 100.f,
-            "worldTranslation"_a = float3(0, 0, 0), "worldRotation"_a = float3(0, 0, 0), "worldScaling"_a = 1.f);
+            "worldTranslation"_a = float3(0, 0, 0), "worldRotation"_a = float3(0, 0, 0), "worldScaling"_a = 1.f,
+            "emissionTint"_a = float3(1, 1, 1));
+        scene.def("setVolumeEmissionTint", &Scene::setVolumeEmissionTint, "tint"_a);
         scene.def("addGVDBVolumeSequence", &Scene::addGVDBVolumeSequence,
             "sigma_a"_a, "sigma_s"_a, "g"_a, "dataFilePrefix"_a, "numberFixedLength"_a, "startFrame"_a, "numFrames"_a,
             "numMips"_a = 1, "densityScale"_a = 1.f, "hasVelocity"_a = false, "hasEmission"_a = false, "LeScale"_a = 0.005f,

@@ -491,6 +491,8 @@ namespace Falcor
         // ------------------------------------------------------------------------------------
         VolumeDesc& getCurrentVolumeDesc() { return mVolumeDesc; }
         void updateVolumeDesc();
+        /** The volume's emission colour, multiplying its blackbody emission (1 by default). */
+        void setVolumeEmissionTint(float3 tint);
         int getVolumeNumMips(int volumeId = -1);
         float3 getSceneVolumeCenter() const;
         bool renderVolumeUI(Gui::Widgets& widget);
