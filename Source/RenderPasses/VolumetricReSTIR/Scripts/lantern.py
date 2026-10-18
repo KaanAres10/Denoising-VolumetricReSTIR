@@ -46,6 +46,8 @@ SHUTTER = int(os.environ.get("LANTERN_SHUTTER", "5"))
 # along the flow; the run must have exported voxel_velocity)
 VBLUR = float(os.environ["LANTERN_VBLUR"]) if os.environ.get("LANTERN_VBLUR") else None
 BLUR_TAG = "_v%g" % VBLUR if VBLUR else ("_s%d" % SHUTTER if SHUTTER > 1 else "")
+# its pose: LANTERN_ROTATION "x,y,z" (degrees, as worldRotation) for -- e.g. a yaw turning its head toward the camera
+ROTATION = tuple(float(v) for v in os.environ["LANTERN_ROTATION"].split(",")) if os.environ.get("LANTERN_ROTATION") else None
 # its foot faded into smoke (make_volumes.py fade_foot): LANTERN_FOOT "start,end[,floor]", fractions of its height
 FOOT = tuple(float(v) for v in os.environ["LANTERN_FOOT"].split(",")) if os.environ.get("LANTERN_FOOT") else None
 
@@ -90,14 +92,15 @@ SHOTS = {
                            src="BifrostVDB/%s_clean%s/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),
                            shutter=SHUTTER, **({"vblur": VBLUR} if VBLUR else {}), **({"foot": FOOT} if FOOT else {}),
                            bifrost_src="BifrostVDB/%s/construct_%%04d.vdb" % CONSTRUCT,
-                           data="bc_%s%s%s" % (CONSTRUCT, BLUR_TAG,  # each variant its own import
-                                               "_f" + "_".join("%g" % v for v in FOOT) if FOOT else ""), frame=150,
+                           data="bc_%s%s%s" % (CONSTRUCT, BLUR_TAG,  # each variant its own import (the glitter is posed)
+                                               ("_f" + "_".join("%g" % v for v in FOOT) if FOOT else "")
+                                               + ("_r" + "_".join("%g" % v for v in ROTATION) if ROTATION else "")), frame=150,
                            # fitted per frame (make_volumes.py write_lantern; its _lights.json "grid"): sized so its
                            # diameter is the reference's (12.2 cm: half the frame's height, 265 px of 540), its density
                            # for an optical depth of `tau` across its middle, its cap pinned where the reference's ends
                            # (x 880, y 210 of 960 x 540)
                            fit={"diameter": 13.0, "tau": 8.0, "cap": (17.1, 6.5, 0.0)},
-                           offset=(0.0, 0.0, 0.0), scale=0.06, rotation=(0.0, 0.0, -66.0), anchor=(17.1, 6.5, 0.0),
+                           offset=(0.0, 0.0, 0.0), scale=0.06, rotation=ROTATION or (0.0, 0.0, -66.0), anchor=(17.1, 6.5, 0.0),
                            base=(0.0, 0.0, 0.0), density_scale=0.25,  # (overridden by the fit)
                            sky="lantern_sky", key=(-0.75, 0.5, 0.45),
                            # the reference's sparkles: 4000 tiny emitters where its surface faces the key (upper left)
@@ -151,8 +154,8 @@ def panel_corners(panel, target=(0.0, 0.0, 0.0)):
 
 def glitter_quads(points, camera, size):
     """The construct's glitter (make_volumes.py write_lantern samples it on the funnel's key-lit surface): each point a
-    square `size` cm across facing the camera, wound so its emitting side does (corners a, b, c, d: triangles a b c,
-    a c d). Pure Python: Mogwai's scene builder runs it."""
+    square `size` cm across (or its own, a list) facing the camera, wound so its emitting side does (corners a, b, c,
+    d: triangles a b c, a c d). Pure Python: Mogwai's scene builder runs it."""
     eye, target = camera["position"], camera["target"]
     f = [target[i] - eye[i] for i in range(3)]
     n = sum(v * v for v in f) ** 0.5
@@ -161,6 +164,6 @@ def glitter_quads(points, camera, size):
     n = sum(v * v for v in r) ** 0.5
     r = [v / n for v in r]
     u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]]  # r x f
-    h = size / 2
-    return [[[p[i] + h * (s * r[i] + t * u[i]) for i in range(3)] for s, t in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
-            for p in points]
+    sizes = size if isinstance(size, (list, tuple)) else [size] * len(points)
+    return [[[p[i] + h / 2 * (s * r[i] + t * u[i]) for i in range(3)] for s, t in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+            for p, h in zip(points, sizes)]

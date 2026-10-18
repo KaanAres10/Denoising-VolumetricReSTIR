@@ -603,6 +603,14 @@ class TestGlitter(unittest.TestCase):
         self.assertTrue(np.all(np.abs(r - 11.5) < 1.5), (r.min(), r.max()))  # on the ball's surface
         self.assertGreater(float(np.mean(pts[:, 1] > 20.0)), 0.95)  # on the side facing +y, the key
 
+    def test_sizes_spread_lognormally_round_the_median(self):
+        s = mv.glitter_sizes(4000, 0.035, 0.6, seed=2)
+        self.assertEqual(len(s), 4000)
+        self.assertAlmostEqual(float(np.median(s)), 0.035, delta=0.002)
+        self.assertAlmostEqual(float(np.std(np.log(s))), 0.6, delta=0.03)
+        self.assertEqual(s, mv.glitter_sizes(4000, 0.035, 0.6, seed=2))  # seeded
+        self.assertEqual(mv.glitter_sizes(10, 0.035, 0.0), 0.035)  # no spread: one size
+
     def test_repeatable(self):
         a = mv.glitter_points(self.d, n=50, key=(1.0, 0.0, 0.0), threshold=0.5, seed=3)
         np.testing.assert_array_equal(a, mv.glitter_points(self.d, n=50, key=(1.0, 0.0, 0.0), threshold=0.5, seed=3))

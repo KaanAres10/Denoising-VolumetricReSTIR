@@ -305,6 +305,15 @@ def fade_foot(d, start, end, floor=0.0):
     return (d * w[None, :, None]).astype(np.float32)
 
 
+def glitter_sizes(n, size, sigma, seed=0):
+    """The glitter's sizes (cm): `size` for all of them, or for sigma > 0 one each, lognormal round the median `size`
+    (sigma: the spread of their logs) -- a sub-pixel speck is as bright as its area, so many dim, a few bright, as
+    the Lanterns reference's sparkles are. Seeded."""
+    if sigma <= 0:
+        return size
+    return [float(v) for v in size * np.random.default_rng(seed).lognormal(0.0, sigma, n)]
+
+
 def glitter_points(d, n, key, threshold, seed=0, power=4.0):
     """The construct's glitter (the Lanterns reference's sparkles): `n` points (array index coordinates, x slowest)
     on the surface of density `d` -- voxels at or above `threshold` with a 6-neighbour below it -- drawn by how
@@ -693,7 +702,8 @@ def write_lantern(shot="lantern", frame=None):
                              power=spec.get("power", 4.0))
         pose = dict(lantern.pose(shot), base=grid["base"], scale=grid.get("scale", g["scale"]))
         glitter = {"p": [[float(v) for v in sf.to_world([q[a] + lo[a] + off[a] + 0.5 for a in range(3)], **pose)] for q in pts],
-                   "size": spec["size"], "rgb": list(spec["rgb"]), "radiance": spec["radiance"]}
+                   "size": glitter_sizes(len(pts), spec["size"], spec.get("size_sigma", 0.0), seed=spec.get("seed", 0)),
+                   "rgb": list(spec["rgb"]), "radiance": spec["radiance"]}
     ix, iy = np.indices(d.shape[:2], dtype=np.float64)
     spec = g.get("glow", {"heights": ()})
     lights = []

@@ -63,3 +63,12 @@ class TestGlitterQuads(unittest.TestCase):
         to_cam = [cam["position"][i] - centre[i] for i in range(3)]
         self.assertGreater(sum(n[i] * to_cam[i] for i in range(3)), 0.0)
 
+    def test_a_size_for_each_point(self):
+        # sparkles of many sizes (a sub-pixel speck is as bright as its area): many dim, a few bright
+        import lantern
+        cam = {"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0)}
+        quads = lantern.glitter_quads([(1.0, 2.0, 3.0), (-4.0, 0.0, 0.0)], cam, [0.1, 0.3])
+        sides = [sum((q[1][i] - q[0][i]) ** 2 for i in range(3)) ** 0.5 for q in quads]
+        self.assertAlmostEqual(sides[0], 0.1)
+        self.assertAlmostEqual(sides[1], 0.3)
+
