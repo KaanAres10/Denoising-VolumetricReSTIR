@@ -305,6 +305,79 @@ def fade_foot(d, start, end, floor=0.0):
     return (d * w[None, :, None]).astype(np.float32)
 
 
+def _transmittance(coarse, start, dirs, tau_scale, pool):
+    """exp(-optical depth) from each `start` (coarse index coordinates) along `dirs` (unit, index frame) out of the
+    grid, marched a coarse voxel a step, a step out of the start's own voxel."""
+    tau = np.zeros(len(start))
+    for k in range(int(np.ceil(np.linalg.norm(coarse.shape))) + 1):
+        tau += ndimage.map_coordinates(coarse, (start + (k + 0.75) * dirs).T, order=1, mode="constant", cval=0.0)
+    return np.exp(-tau_scale * pool * tau)
+
+
+def glitter_particles(d, n, key, tau_scale, camera=None, weight=None, seed=0, pool=4, candidates=400000, floor=0.02):
+    """The construct's glitter as particles in its smoke (array index coordinates, x slowest): candidates drawn by
+    density (voxels above `floor`, jittered in them), kept by how much of the key's light reaches them (the
+    transmittance toward `key`, a direction in the index frame, through optical depth `tau_scale` per unit density
+    per voxel), by how much of them the camera sees (toward `camera`, a point in the index frame, if given) and by
+    `weight` (a function of the candidates' coordinates: an art-directed mask), `n` of them (resampled). Even over the lit, seen
+    smoke -- not on its outer boundary, whose key-facing ridges made streams of them. Transmittances are marched on a
+    grid `pool` times coarser. Seeded."""
+    rng = np.random.default_rng(seed)
+    flat = d.ravel()
+    idx = np.flatnonzero(flat > floor)
+    if len(idx) == 0:
+        return np.zeros((0, 3))
+    p = flat[idx].astype(np.float64)
+    pick = rng.choice(idx, size=min(candidates, len(idx)), replace=False, p=p / p.sum())
+    cells = np.column_stack(np.unravel_index(pick, d.shape)).astype(np.float64)
+    pts = cells + rng.uniform(-0.5, 0.5, (len(pick), 3))
+    w = np.ones(len(pts))
+    if tau_scale > 0:
+        s = [m // pool * pool for m in d.shape]
+        coarse = d[:s[0], :s[1], :s[2]].reshape(s[0] // pool, pool, s[1] // pool, pool, s[2] // pool, pool).mean((1, 3, 5))
+        start = (pts + 0.5) / pool - 0.5
+        k = np.asarray(key, float) / np.linalg.norm(key)
+        w *= _transmittance(coarse, start, np.tile(k, (len(pts), 1)), tau_scale, pool)
+        if camera is not None:
+            to_cam = np.asarray(camera, float) - pts
+            w *= _transmittance(coarse, start, to_cam / np.linalg.norm(to_cam, axis=1, keepdims=True), tau_scale, pool)
+    if weight is not None:
+        w *= np.asarray(weight(pts), float)
+    if not (w > 0).any():
+        return np.zeros((0, 3))
+    # resampled with replacement, each draw jittered afresh in its voxel: when few candidates carry the weight (a
+    # small mask), drawing without replacement ran out of them and spilled the rest over the smoke at the mask's floor
+    sel = rng.choice(len(pts), size=n, replace=True, p=w / w.sum())
+    return cells[sel] + rng.uniform(-0.5, 0.5, (n, 3))
+
+
+def project_points(world, camera, width, height, frame_height=24.0):
+    """Image coordinates (px, py; y down) of world points through a shot's pinhole `camera` (position, target,
+    focal mm; y up), as Falcor's camera projects: the focal length over the frame height (mm) sets the vertical
+    field of view."""
+    pos = np.asarray(camera["position"], float)
+    f = np.asarray(camera["target"], float) - pos
+    f /= np.linalg.norm(f)
+    r = np.cross(f, (0.0, 1.0, 0.0))
+    r /= np.linalg.norm(r)
+    u = np.cross(r, f)
+    p = np.asarray(world, float) - pos
+    z = p @ f
+    k = camera["focal"] / (frame_height / 2.0) * (height / 2.0)
+    return width / 2.0 + k * (p @ r) / z, height / 2.0 - k * (p @ u) / z
+
+
+def sparkle_mask(img, sigma, k=7, thresh=14.0):
+    """Where a reference's sparkles are (BGR image): small bright peaks over the smoke round them -- local maxima of
+    the luminance's white top-hat (k px) above `thresh` -- counted per pixel, smoothed (Gaussian, `sigma` px), its
+    peak 1."""
+    L = img.astype(np.float64).mean(2)
+    th = L - ndimage.grey_opening(L, size=(k, k))
+    peak = (th == ndimage.maximum_filter(th, size=5)) & (th > thresh)
+    m = ndimage.gaussian_filter(peak.astype(np.float64), sigma)
+    return m / max(m.max(), 1e-30)
+
+
 def glitter_sizes(n, size, sigma, seed=0):
     """The glitter's sizes (cm): `size` for all of them, or for sigma > 0 one each, lognormal round the median `size`
     (sigma: the spread of their logs) -- a sub-pixel speck is as bright as its area, so many dim, a few bright, as
@@ -716,13 +789,39 @@ def write_lantern(shot="lantern", frame=None):
                 "diameter_voxels": diameter, "scale": fit["diameter"] / diameter,
                 "density_scale": fit["tau"] / max(across, 1e-9)}
     glitter = None
-    if "glitter" in g and grid is not None:  # tiny emitters on the funnel's key-lit surface (glitter_points)
+    if "glitter" in g and grid is not None:  # tiny emitters: on the funnel's key-lit surface, or particles in its smoke
         spec = g["glitter"]
         axes = [np.array(sf.rotate(e, g["rotation"])) for e in np.eye(3)]  # the volume's axes in the world
         key = np.asarray(g["key"], float) / np.linalg.norm(g["key"])
-        pts = glitter_points(d, spec["n"], [float(a @ key) for a in axes], spec["threshold"], seed=spec.get("seed", 0),
-                             power=spec.get("power", 4.0))
+        key_index = [float(a @ key) for a in axes]
         pose = dict(lantern.pose(shot), base=grid["base"], scale=grid.get("scale", g["scale"]))
+        # optical depth per unit density per voxel: the key's light (and the camera's view) through the smoke
+        tau = grid["density_scale"] * float(np.mean(np.add(g["sigma_a"], g["sigma_s"])))
+        if spec.get("particles"):  # glitter_particles: lit and seen, through the reference's sparkle mask if given
+            rot = np.column_stack(axes)  # world = translation + scale x rot @ (.vbx point)
+            t0 = np.asarray(sf.translation(**pose), float)
+            shift = np.asarray(lo, float) + np.asarray(off, float) + 0.5  # array index -> .vbx point
+            to_index = lambda w: rot.T @ ((np.asarray(w, float) - t0) / pose["scale"]) - shift  # noqa: E731
+            weight = None
+            import cv2
+            ref = cv2.imread(str(REPO / spec["mask"])) if spec.get("mask") else None
+            if spec.get("mask") and ref is None:
+                print("WARNING: %s: no glitter mask image %s; the glitter is drawn over all the lit, seen smoke" % (shot, spec["mask"]))
+            if ref is not None:  # the reference's sparkles where each particle shows through the shot's camera
+                mask = sparkle_mask(ref, spec.get("mask_sigma", 12.0) * ref.shape[1] / 800.0)
+                mh, mw = mask.shape
+
+                def weight(q):
+                    world = t0 + pose["scale"] * ((q + shift) @ rot.T)
+                    px, py = project_points(world, g["camera"], mw, mh)
+                    inside = (px >= 0) & (px < mw) & (py >= 0) & (py < mh)
+                    m = mask[np.clip(py.astype(int), 0, mh - 1), np.clip(px.astype(int), 0, mw - 1)]
+                    return np.where(inside, spec.get("mask_floor", 0.01) + m, 0.0)
+            pts = glitter_particles(d, spec["n"], key_index, tau, camera=to_index(g["camera"]["position"]),
+                                    weight=weight, seed=spec.get("seed", 0))
+        else:  # (shadowed: drawn where the key's light reaches)
+            pts = glitter_points(d, spec["n"], key_index, spec["threshold"], seed=spec.get("seed", 0),
+                                 power=spec.get("power", 4.0), tau_scale=tau if spec.get("shadowed") else None)
         glitter = {"p": [[float(v) for v in sf.to_world([q[a] + lo[a] + off[a] + 0.5 for a in range(3)], **pose)] for q in pts],
                    "size": glitter_sizes(len(pts), spec["size"], spec.get("size_sigma", 0.0), seed=spec.get("seed", 0)),
                    "rgb": list(spec["rgb"]), "radiance": spec["radiance"]}

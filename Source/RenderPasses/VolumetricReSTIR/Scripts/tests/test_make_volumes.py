@@ -619,6 +619,55 @@ class TestGlitter(unittest.TestCase):
         free = free[np.linalg.norm(free - 20.0, axis=1) < 14.0]
         self.assertLess(float(np.mean(free[:, 0] >= 19.5)), 0.8)  # without it, both halves
 
+    def test_particles_lie_in_the_smoke_on_its_lit_visible_side(self):
+        # glitter as particles in the smoke: drawn by density, kept where the key's light reaches them (+y) and the
+        # camera sees them (far along -x): in a dense ball, the quarter facing both
+        cam = np.array([-1000.0, 20.0, 20.0])
+        pts = mv.glitter_particles(self.d, n=300, key=(0.0, 1.0, 0.0), tau_scale=3.0, camera=cam, seed=0, pool=1)
+        self.assertEqual(pts.shape, (300, 3))
+        self.assertTrue(np.all(np.linalg.norm(pts - 20.0, axis=1) < 12.5))  # inside the ball
+        self.assertGreater(float(np.mean(pts[:, 1] > 20.0)), 0.9)  # lit
+        self.assertGreater(float(np.mean(pts[:, 0] < 20.0)), 0.9)  # seen
+
+    def test_particles_through_a_screen_weight(self):
+        # an art-directed mask (the reference's sparkle density where each particle shows): none where it is 0
+        pts = mv.glitter_particles(self.d, n=200, key=(0.0, 1.0, 0.0), tau_scale=0.0, seed=1, pool=1,
+                                   weight=lambda p: (p[:, 2] >= 20.0).astype(float))
+        self.assertTrue(np.all(pts[:, 2] >= 19.0))
+        again = mv.glitter_particles(self.d, n=200, key=(0.0, 1.0, 0.0), tau_scale=0.0, seed=1, pool=1,
+                                     weight=lambda p: (p[:, 2] >= 20.0).astype(float))
+        np.testing.assert_array_equal(pts, again)  # seeded
+
+    def test_many_particles_keep_to_a_small_mask(self):
+        # more particles than candidates the mask favours: they crowd its favoured smoke (drawn with replacement, each
+        # jittered in its voxel), not spill over the rest of the smoke at the mask's floor
+        weight = lambda p: 0.001 + ((p[:, 0] > 26.0) & (p[:, 2] > 26.0)).astype(float)  # noqa: E731  a small corner
+        pts = mv.glitter_particles(self.d, n=3000, key=(0.0, 1.0, 0.0), tau_scale=0.0, seed=0, pool=1, candidates=2000,
+                                   weight=weight)
+        self.assertEqual(len(pts), 3000)
+        self.assertGreater(float(np.mean((pts[:, 0] > 25.5) & (pts[:, 2] > 25.5))), 0.85)
+        self.assertGreater(len(np.unique(np.round(pts, 3), axis=0)), 2900)  # jittered apart
+
+    def test_points_project_through_the_shot_camera(self):
+        # Falcor's pinhole: the focal length over a 24 mm frame height sets the vertical field of view
+        cam = {"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}
+        px, py = mv.project_points(np.array([[0.0, 0.0, 0.0], [2.0, 1.0, 0.0], [0.0, 0.0, 26.0]]), cam, 800, 450)
+        k = 50.0 / 12.0 * 225.0
+        np.testing.assert_allclose(px, [400.0, 400.0 + k * 2.0 / 52.0, 400.0])
+        np.testing.assert_allclose(py, [225.0, 225.0 - k * 1.0 / 52.0, 225.0])
+
+    def test_sparkle_mask_finds_the_glints(self):
+        # a reference's sparkles: small bright peaks over its smoke, their density smoothed, peak 1
+        img = np.zeros((90, 160, 3), np.uint8)
+        img[...] = (40, 120, 50)  # green smoke (BGR)
+        rng = np.random.default_rng(0)
+        for y, x in zip(rng.integers(10, 40, 60), rng.integers(10, 70, 60)):  # glints in the upper left only
+            img[y, x] = (150, 230, 160)
+        m = mv.sparkle_mask(img, sigma=4.0)
+        self.assertEqual(m.shape, (90, 160))
+        self.assertAlmostEqual(float(m.max()), 1.0)
+        self.assertGreater(float(m[10:40, 10:70].mean()), 20 * float(m[55:, 100:].mean() + 1e-6))
+
     def test_sizes_spread_lognormally_round_the_median(self):
         s = mv.glitter_sizes(4000, 0.035, 0.6, seed=2)
         self.assertEqual(len(s), 4000)

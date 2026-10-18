@@ -33,23 +33,50 @@ Medium: green -- albedo (0.15, 0.82, 0.28), extinction 1 per channel (no tint in
 Skies (make_volumes.py lantern_sky writes each to VolumetricReSTIRData/authored/<name>.exr): Gaussian lobes of white,
 a glow and a key (direction, peak radiance, width in degrees), over a teal brighter below, scaled by `teal`.
 """
+import hashlib
 import os
 
 import swatch_fire
 
-# which Bifrost run the construct shot reads (BifrostVDB/<it>, bifrost_graphs.vortex_construct's frames): a variant
-# being tuned is picked by LANTERN_CONSTRUCT, which Mogwai inherits as make_volumes.py does
-CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_F2")
-# its motion blur: frames averaged (make_volumes.py blur_bifrost_frames), LANTERN_SHUTTER of them (1: none)
+def _env(name, parse=lambda v: tuple(float(x) for x in v.split(","))):
+    """A tuning knob from the environment (Mogwai inherits it, as make_volumes.py does), or None."""
+    return parse(os.environ[name]) if os.environ.get(name) else None
+
+
+# The construct shot's tuning knobs; unset, each is the construct as matched to the Lanterns reference (2026-10-18).
+# which Bifrost run it reads (BifrostVDB/<it>, bifrost_graphs.vortex_construct's frames): F3, the tuned simulation
+# (0.05 m) refined to 0.025 m, its velocity exported
+CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_F3")
+# its motion blur: along its own velocity over LANTERN_VBLUR seconds (make_volumes.py blur_bifrost_velocity, as a
+# production renderer blurs a volume: smooth streaks along the flow; the run must have exported voxel_velocity), or,
+# for LANTERN_VBLUR 0, LANTERN_SHUTTER frames averaged (make_volumes.py blur_bifrost_frames; 1: none)
+VBLUR = _env("LANTERN_VBLUR", float)
+VBLUR = 0.15 if VBLUR is None else VBLUR
 SHUTTER = int(os.environ.get("LANTERN_SHUTTER", "5"))
-# or blurred along its own velocity over LANTERN_VBLUR seconds (make_volumes.py blur_bifrost_velocity: smooth streaks
-# along the flow; the run must have exported voxel_velocity)
-VBLUR = float(os.environ["LANTERN_VBLUR"]) if os.environ.get("LANTERN_VBLUR") else None
 BLUR_TAG = "_v%g" % VBLUR if VBLUR else ("_s%d" % SHUTTER if SHUTTER > 1 else "")
-# its pose: LANTERN_ROTATION "x,y,z" (degrees, as worldRotation) for -- e.g. a yaw turning its head toward the camera
-ROTATION = tuple(float(v) for v in os.environ["LANTERN_ROTATION"].split(",")) if os.environ.get("LANTERN_ROTATION") else None
+# its pose: LANTERN_POSE "yaw,roll[,size,dx,dy]" -- worldRotation (0, yaw, roll), the fitted diameter x size, the cap
+# moved (dx, dy) cm. Its tail comes toward the camera and its head goes away, as the reference's do (its rings curve
+# round its head's far end, its tail fills the frame's lower left, wide, pale and soft): a 40 degree yaw, sized and
+# placed by the silhouette (preview and render: IoU 0.891 to the side-on 0.872)
+POSE_KNOB = _env("LANTERN_POSE")
+POSE = POSE_KNOB or (40.0, -69.5, 0.895, -2.5, -0.62)
+POSE = POSE + (1.0, 0.0, 0.0)[len(POSE) - 2:]
+ROTATION = (0.0, POSE[0], POSE[1])
+CAP = (17.1 + POSE[3], 6.5 + POSE[4], 0.0)
+# its glitter: LANTERN_GLITTER "shadowed,size_sigma[,n[,size[,radiance]]]" -- drawn only where its key reaches (1;
+# make_volumes.py glitter_points), its sizes spread lognormally (glitter_sizes): the reference's sheen of fine sparkles
+# on its lit side
+GLITTER_KNOB = _env("LANTERN_GLITTER")
+GLITTER = GLITTER_KNOB or (1.0, 0.35, 20000, 0.025, 0.9)
+# its key: LANTERN_KEY "x,y,z" -- the key soft box's direction and the glitter's
+KEY = _env("LANTERN_KEY")
 # its foot faded into smoke (make_volumes.py fade_foot): LANTERN_FOOT "start,end[,floor]", fractions of its height
-FOOT = tuple(float(v) for v in os.environ["LANTERN_FOOT"].split(",")) if os.environ.get("LANTERN_FOOT") else None
+FOOT = _env("LANTERN_FOOT")
+# a tuning variant's import folder: the run's, plus a short hash of the knobs set (the glitter is posed and keyed) --
+# spelled out, the names passed Windows' 260-character path limit and Falcor could not cache the volume's nodes
+VARIANT = "".join("_%s%s" % (k, "_".join("%g" % v for v in t)) for k, t in (("f", FOOT), ("p", POSE_KNOB),
+                                                                         ("g", GLITTER_KNOB), ("k", KEY)) if t)
+VARIANT = VARIANT and "_" + hashlib.md5(VARIANT.encode()).hexdigest()[:8]
 
 GREEN = {"sigma_a": (0.85, 0.18, 0.72), "sigma_s": (0.15, 0.82, 0.28), "g": 0.5}
 SHOTS = {
@@ -92,25 +119,34 @@ SHOTS = {
                            src="BifrostVDB/%s_clean%s/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),
                            shutter=SHUTTER, **({"vblur": VBLUR} if VBLUR else {}), **({"foot": FOOT} if FOOT else {}),
                            bifrost_src="BifrostVDB/%s/construct_%%04d.vdb" % CONSTRUCT,
-                           data="bc_%s%s%s" % (CONSTRUCT, BLUR_TAG,  # each variant its own import (the glitter is posed)
-                                               ("_f" + "_".join("%g" % v for v in FOOT) if FOOT else "")
-                                               + ("_r" + "_".join("%g" % v for v in ROTATION) if ROTATION else "")), frame=150,
+                           data="bc_%s%s%s" % (CONSTRUCT, BLUR_TAG, VARIANT), frame=150,  # each variant its own import
                            # fitted per frame (make_volumes.py write_lantern; its _lights.json "grid"): sized so its
                            # diameter is the reference's (12.2 cm: half the frame's height, 265 px of 540), its density
                            # for an optical depth of `tau` across its middle, its cap pinned where the reference's ends
                            # (x 880, y 210 of 960 x 540)
-                           fit={"diameter": 13.0, "tau": 8.0, "cap": (17.1, 6.5, 0.0)},
-                           offset=(0.0, 0.0, 0.0), scale=0.06, rotation=ROTATION or (0.0, 0.0, -66.0), anchor=(17.1, 6.5, 0.0),
+                           fit={"diameter": 13.0 * POSE[2], "tau": 8.0, "cap": CAP},
+                           offset=(0.0, 0.0, 0.0), scale=0.06, rotation=ROTATION, anchor=CAP,
                            base=(0.0, 0.0, 0.0), density_scale=0.25,  # (overridden by the fit)
-                           sky="lantern_sky", key=(-0.75, 0.5, 0.45),
+                           sky="lantern_sky", key=KEY or (-0.75, 0.5, 0.45),
                            # the reference's sparkles: 4000 tiny emitters where its surface faces the key (upper left)
                            # (at radiance 40 in a pale green they clipped to white, spread evenly; the reference's
                            # are green, clustered where the surface faces the key squarely: power 8)
-                           glitter={"n": 15000, "threshold": 0.04, "power": 6.0, "size": 0.035, "rgb": (0.15, 1.0, 0.25),
-                                    "radiance": 3.0, "seed": 1},  # red and blue under display white: green, not white
+                           # (particles: in its smoke where the key's light reaches and the camera sees them, through
+                           # the reference's own sparkle density -- the user's 13tornado.png, measured where it is
+                           # prepared (make_volumes.py sparkle_mask) -- as a painted emission mask: its sparkles are a
+                           # band along the lit upper flank of the neck into the head's top, none on the head's
+                           # shadowed body or the soft foreground tail; drawn on the smoke's boundary they ran in
+                           # streams along its ridges, half of them on the tail)
+                           glitter=dict({"n": 15000, "threshold": 0.04, "power": 6.0, "size": 0.035, "rgb": (0.3, 1.0, 0.42),
+                                         "radiance": 3.0, "seed": 1,  # pale green, as the reference's (109/187/123 over its smoke)
+                                         "particles": True, "mask": "13tornado.png", "mask_sigma": 12.0, "mask_floor": 0.003},
+                                        shadowed=bool(GLITTER[0]), size_sigma=GLITTER[1],
+                                        **({"n": int(GLITTER[2])} if len(GLITTER) > 2 else {}),
+                                        **({"size": GLITTER[3]} if len(GLITTER) > 3 else {}),
+                                        **({"radiance": GLITTER[4]} if len(GLITTER) > 4 else {})),
                            # its own soft boxes: the tornado's, the fill raised (its mid-tones were 105 green to the
                            # reference's 125, its shadows 61 to 80)
-                           panels=({"name": "Key", "dir": (-0.75, 0.5, 0.45), "dist": 36.0, "side": 14.0, "rgb": (0.75, 1.0, 0.8), "radiance": 40.0},
+                           panels=({"name": "Key", "dir": KEY or (-0.75, 0.5, 0.45), "dist": 36.0, "side": 14.0, "rgb": (0.75, 1.0, 0.8), "radiance": 40.0},
                                    {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 8.0},
                                    {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 9.0}),
                            camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
