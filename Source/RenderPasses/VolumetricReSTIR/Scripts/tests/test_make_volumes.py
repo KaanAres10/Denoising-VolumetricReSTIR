@@ -278,6 +278,24 @@ class TestLanternSkies(unittest.TestCase):
         j, i = np.unravel_index(np.argmax(sky[..., 1] * (d @ k > 0.9)), sky.shape[:2])
         self.assertGreater(float(sky[j, i, 1]), 0.9 * spec["key_radiance"])
 
+    def test_tele_warp_shows_the_wide_lens_sky_in_a_long_lens(self):
+        # a long lens sees a few degrees of sky: the sky it shows is the wide lens's, magnified about the view axis
+        # (tan of the angle x M inside the cone, as a pinhole frames it), compressed outside, behind it fixed
+        M, t1 = 6.0, np.radians(6.0)
+        axis = np.array([[0.0, 0.0, -1.0]])
+        np.testing.assert_allclose(mv.tele_warp(axis, M, t1), axis, atol=1e-12)
+        th = np.radians(3.0)
+        d = np.array([[np.sin(th) * np.cos(0.7), np.sin(th) * np.sin(0.7), -np.cos(th)]])
+        w = mv.tele_warp(d, M, t1)
+        tw = np.arccos(-w[0, 2])
+        self.assertAlmostEqual(float(np.tan(tw)), M * np.tan(th), places=6)
+        self.assertAlmostEqual(float(np.arctan2(w[0, 1], w[0, 0])), 0.7, places=6)  # its azimuth kept
+        np.testing.assert_allclose(mv.tele_warp(np.array([[0.0, 0.0, 1.0]]), M, t1), [[0.0, 0.0, 1.0]], atol=1e-9)
+        ang = np.radians(np.linspace(0.5, 179.5, 200))
+        dd = np.stack([np.sin(ang), np.zeros_like(ang), -np.cos(ang)], axis=1)
+        aw = np.arccos(np.clip(-mv.tele_warp(dd, M, t1)[:, 2], -1, 1))
+        self.assertTrue(np.all(np.diff(aw) > 0))  # monotonic: no sky folded over
+
     def test_lantern_sky_is_still_the_reference_matched_one(self):
         sky = mv.lantern_sky("lantern_sky", width=256)
         self.assertEqual(sky.shape, (128, 256, 3))

@@ -93,6 +93,10 @@ GLITTER = GLITTER_KNOB or (1.0, 0.35, 20000, 0.025, 0.9)
 # seconds (lantern.glitter_quads), soft (a Gaussian `sprite_sigma` of its quad: make_volumes.py glitter_sprite);
 # 0 turns each off
 GLINT_KNOB = _env("LANTERN_GLINT")
+# ... and a second population: LANTERN_FLAKES "n,size,size_sigma,cluster_mean,cluster_radius,per,width,streak" -- fewer,
+# bigger, brighter flakes over the fine sheen (each a spray of `per` micro-glints: the reference's bright flakes on its
+# upper flank), through the same mask; needs the sheen's spray (LANTERN_GLINT's)
+FLAKES_KNOB = _env("LANTERN_FLAKES")
 GLINT = GLINT_KNOB or (0.0, 0.0, 0.0, 0.0)
 GLINT = GLINT + (0.0, 0.0, 0.0)[:max(0, 7 - len(GLINT))]  # ... ",spray_per,spray_micro,spray_width" (glint_sprays)
 # its tail: LANTERN_TAIL "warp_amp,warp_cell,warp_top,mist_amp,mist_cell,mist_reach,mist_top,focus,ramp,sigma_max" --
@@ -111,6 +115,11 @@ KEYSIZE_KNOB = _env("LANTERN_KEYSIZE", float)
 # its soft boxes' radiance: LANTERN_LIGHTS "key,rim,fill" (40, 8, 9; the key's for its 14 cm side)
 LIGHTS_KNOB = _env("LANTERN_LIGHTS")
 LIGHTS = LIGHTS_KNOB or (40.0, 8.0, 9.0)
+# its camera: LANTERN_CAMERA "distance" cm from its target (52), the focal length scaled to keep the framing at the
+# target (50 mm at 52) and the sky seen through a lens that much longer (make_volumes.py lantern_sky tele) -- the
+# reference's narrow neck and big head are a long lens's: at 52 cm its near body came out 1.7x magnified
+CAMERA_KNOB = _env("LANTERN_CAMERA", float)
+CAM_DIST = CAMERA_KNOB or 52.0
 # its key: LANTERN_KEY "x,y,z" -- the key soft box's direction and the glitter's
 KEY = _env("LANTERN_KEY")
 # its foot faded into smoke (make_volumes.py fade_foot): LANTERN_FOOT "start,end[,floor]", fractions of its height
@@ -123,7 +132,8 @@ VARIANT = "".join("_%s%s" % (k, "_".join("%g" % v for v in t)) for k, t in (("f"
                                                                          ("e", DETAIL_KNOB),
                                                                          ("u", TAU_KNOB and (TAU_KNOB,)),
                                                                          ("z", KEYSIZE_KNOB and (KEYSIZE_KNOB,)),
-                                                                         ("o", LIGHTS_KNOB)) if t)
+                                                                         ("o", LIGHTS_KNOB), ("x", FLAKES_KNOB),
+                                                                         ("c", CAMERA_KNOB and (CAMERA_KNOB,))) if t)
 VARIANT = VARIANT and "_" + hashlib.md5(VARIANT.encode()).hexdigest()[:8]
 
 GREEN = {"sigma_a": (0.85, 0.18, 0.72), "sigma_s": (0.15, 0.82, 0.28), "g": 0.5}
@@ -181,7 +191,7 @@ SHOTS = {
                            fit={"diameter": 13.0 * POSE[2], "tau": TAU_KNOB or 8.0, "cap": CAP},
                            offset=(0.0, 0.0, 0.0), scale=0.06, rotation=ROTATION, anchor=CAP,
                            base=(0.0, 0.0, 0.0), density_scale=0.25,  # (overridden by the fit)
-                           sky="lantern_sky", key=KEY or (-0.75, 0.5, 0.45),
+                           sky="lantern_sky" + ("_t%d" % round(CAM_DIST) if CAMERA_KNOB else ""), key=KEY or (-0.75, 0.5, 0.45),
                            # the reference's sparkles: 4000 tiny emitters where its surface faces the key (upper left)
                            # (at radiance 40 in a pale green they clipped to white, spread evenly; the reference's
                            # are green, clustered where the surface faces the key squarely: power 8)
@@ -201,7 +211,11 @@ SHOTS = {
                                         **({"cluster": (GLINT[0], GLINT[1])} if GLINT[0] > 1 else {}),
                                         **({"streak": GLINT[2]} if GLINT[2] > 0 else {}),
                                         **({"sprite_sigma": GLINT[3]} if GLINT[3] > 0 else {}),
-                                        **({"spray": (GLINT[4], GLINT[5], GLINT[6])} if GLINT[4] > 0 else {})),
+                                        **({"spray": (GLINT[4], GLINT[5], GLINT[6])} if GLINT[4] > 0 else {}),
+                                        **({"flakes": {"n": int(FLAKES_KNOB[0]), "size": FLAKES_KNOB[1], "size_sigma": FLAKES_KNOB[2],
+                                                       "cluster": (FLAKES_KNOB[3], FLAKES_KNOB[4]),
+                                                       "spray": (FLAKES_KNOB[5], GLINT[5], FLAKES_KNOB[6]),
+                                                       "streak": FLAKES_KNOB[7], "seed": 2}} if FLAKES_KNOB else {})),
                            # its own soft boxes: the tornado's, the fill raised (its mid-tones were 105 green to the
                            # reference's 125, its shadows 61 to 80)
                            panels=({"name": "Key", "dir": KEY or (-0.75, 0.5, 0.45), "dist": 36.0, "side": KEYSIZE_KNOB or 14.0, "rgb": (0.75, 1.0, 0.8),
@@ -212,7 +226,7 @@ SHOTS = {
                            # make_volumes.py dark_flecks, surface_hit -- LANTERN_DEBRIS=0 leaves them out)
                            **({"debris": {"mask": "13tornado.png", "tau_hit": 0.7, "rgb": (0.02, 0.03, 0.02)}}
                               if os.environ.get("LANTERN_DEBRIS", "1") != "0" else {}),
-                           camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
+                           camera={"position": (0.0, 0.0, CAM_DIST), "target": (0.0, 0.0, 0.0), "focal": 50.0 * CAM_DIST / 52.0}),
     "lanterndust": dict(GREEN, src="Dust_Devil/Dust_Devil/embergen_dust_devil_tornado_a_%d.vdb", data="dustdevil", frame=50,
                         offset=(-128.5, -128.5, -192.5), scale=0.065, rotation=(-90.0, 0.0, 0.0), anchor=(0.0, -11.5, 0.0),
                         base=(0.0, 0.0, -192.5), density_scale=0.13,  # 2 a cm at density 1: its base is dense (1.0)

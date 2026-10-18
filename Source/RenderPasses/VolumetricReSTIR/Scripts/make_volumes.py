@@ -323,11 +323,12 @@ def defocus(d, depth, focus, ramp, sigma_max, levels=5):
     the same units), as a lens out of focus there softens it (the reference's tail): blurred by a Gaussian of
     sigma_max x clip((focus - depth) / ramp, 0, 1) voxels -- `levels` blurs, blended by depth. The caller pads `d` for
     the spread."""
-    s = sigma_max * np.clip((focus - depth) / ramp, 0.0, 1.0).astype(np.float32)
-    sig = np.linspace(0.0, sigma_max, levels)
+    s = (np.float32(sigma_max) * np.clip((np.float32(focus) - depth) / np.float32(ramp), 0.0, 1.0)).astype(np.float32)
+    sig = [float(v) for v in np.linspace(0.0, sigma_max, levels)]  # (Python floats: a NumPy float64 promotes the arrays)
+    step = np.float32(sig[1] - sig[0])
     out = np.zeros_like(d, dtype=np.float32)
     for k, sk in enumerate(sig):  # tent weights between neighbouring levels
-        w = np.clip(1.0 - np.abs(s - sk) / (sig[1] - sig[0]), 0.0, 1.0)
+        w = np.clip(np.float32(1.0) - np.abs(s - np.float32(sk)) / step, 0.0, 1.0)
         if not w.any():
             continue
         b = d if sk == 0 else ndimage.gaussian_filter(d, sk, mode="constant")
@@ -952,6 +953,8 @@ def write_lantern(shot="lantern", frame=None):
     import swatch_fire as sf
     g = lantern.SHOTS[shot]
     frame = g["frame"] if frame is None else frame
+    if g.get("sky") and not (OUT_DIR / (g["sky"] + ".exr")).exists():  # (a longer lens's sky, made on first use)
+        write_sky(g["sky"])
     name = "%s%d" % (g["data"], frame)
     src = str(REPO / (g["src"] % frame))
     out_dir = REPO / "VolumetricReSTIRData" / g["data"]
@@ -1023,7 +1026,9 @@ def write_lantern(shot="lantern", frame=None):
                 depth = (np.float32(c0) + np.float32(grad[0]) * np.arange(d.shape[0], dtype=np.float32)[:, None, None]
                          + np.float32(grad[1]) * np.arange(d.shape[1], dtype=np.float32)[None, :, None]
                          + np.float32(grad[2]) * np.arange(d.shape[2], dtype=np.float32)[None, None, :])
-                d = defocus(d, depth, **g["defocus"])
+                spec = dict(g["defocus"])  # (its focus as for the camera 52 cm from its target: moved with it)
+                spec["focus"] += float(np.linalg.norm(np.asarray(cam["position"], float) - np.asarray(cam["target"], float))) - 52.0
+                d = defocus(d, depth, **spec)
                 del depth
             raw = Path(work) / (name + ".raw")
             write_raw(d, raw)
@@ -1046,6 +1051,26 @@ def write_lantern(shot="lantern", frame=None):
         pose = dict(lantern.pose(shot), base=grid["base"], scale=grid.get("scale", g["scale"]))
         # optical depth per unit density per voxel: the key's light (and the camera's view) through the smoke
         tau = grid["density_scale"] * float(np.mean(np.add(g["sigma_a"], g["sigma_s"])))
+        def glitter_finish(pts, ps):  # world points, sizes, each glint's motion, sprays of micro-glints
+            gl = {"p": [[float(v) for v in sf.to_world([q[a] + lo[a] + off[a] + 0.5 for a in range(3)], **pose)] for q in pts],
+                  "size": glitter_sizes(len(pts), ps["size"], ps.get("size_sigma", 0.0), seed=ps.get("seed", 0)),
+                  "rgb": list(ps["rgb"]), "radiance": ps["radiance"]}
+            if ps.get("streak") and "bifrost_src" in g and len(pts):  # its motion over its own shutter (s): the flow's
+                # velocity where it is (Bifrost's index space, as the cleaned frame's) and the shot's drift
+                q = np.asarray(pts) + np.asarray(lo, float)
+                qlo, qhi = np.floor(q.min(0)).astype(int) - 1, np.ceil(q.max(0)).astype(int) + 1
+                vlo, v, v_voxel = vdb_grid(REPO / (g["bifrost_src"] % frame), "voxel_velocity", clip=(list(qlo), list(qhi)))
+                vel = np.stack([ndimage.map_coordinates(v[..., c], (q - np.asarray(vlo, float) - 0.5).T, order=1, mode="nearest")
+                                for c in range(3)], axis=1) + np.asarray(g.get("drift", (0.0, 0.0, 0.0)))
+                gl["stretch"] = (pose["scale"] * (vel * ps["streak"] / v_voxel) @ np.column_stack(axes).T).round(5).tolist()
+            if ps.get("spray"):  # each glint a spray of sub-pixel micro-glints (glint_sprays): soft and streaked
+                per, micro, width = ps["spray"]
+                sizes = gl["size"] if isinstance(gl["size"], list) else [gl["size"]] * len(gl["p"])
+                sp = glint_sprays(np.asarray(gl["p"]), sizes, gl.get("stretch", np.zeros((len(sizes), 3))),
+                                  g["camera"], int(per), width=width, seed=ps.get("seed", 0))
+                gl = {"p": sp.round(5).tolist(), "size": micro, "rgb": gl["rgb"], "radiance": gl["radiance"]}
+            return gl
+
         if spec.get("particles"):  # glitter_particles: lit and seen, through the reference's sparkle mask if given
             rot = np.column_stack(axes)  # world = translation + scale x rot @ (.vbx point)
             t0 = np.asarray(sf.translation(**pose), float)
@@ -1066,33 +1091,23 @@ def write_lantern(shot="lantern", frame=None):
                     inside = (px >= 0) & (px < mw) & (py >= 0) & (py < mh)
                     m = mask[np.clip(py.astype(int), 0, mh - 1), np.clip(px.astype(int), 0, mw - 1)]
                     return np.where(inside, spec.get("mask_floor", 0.01) + m, 0.0)
-            cluster = spec.get("cluster")  # (mean glints a group, their scatter in voxels): foam-like clumps
-            pts = glitter_particles(d, int(round(spec["n"] / cluster[0])) if cluster else spec["n"], key_index, tau,
-                                    camera=to_index(g["camera"]["position"]), weight=weight, seed=spec.get("seed", 0))
-            if cluster:
-                pts = glitter_clusters(pts, cluster[0], cluster[1], seed=spec.get("seed", 0))
+
+            def population(ps):  # one population of glints: drawn, clustered, sized, streaked, sprayed
+                cluster = ps.get("cluster")  # (mean glints a group, their scatter in voxels): foam-like clumps
+                pts = glitter_particles(d, int(round(ps["n"] / cluster[0])) if cluster else ps["n"], key_index, tau,
+                                        camera=to_index(g["camera"]["position"]), weight=weight, seed=ps.get("seed", 0))
+                if cluster:
+                    pts = glitter_clusters(pts, cluster[0], cluster[1], seed=ps.get("seed", 0))
+                return glitter_finish(pts, ps)
+            glitter = population(spec)
+            if spec.get("flakes") and "spray" in spec:  # a second population, merged: fewer, bigger, brighter flakes
+                fl = population(dict(spec, **spec["flakes"]))
+                glitter["p"] = glitter["p"] + fl["p"]
         else:  # (shadowed: drawn where the key's light reaches)
             pts = glitter_points(d, spec["n"], key_index, spec["threshold"], seed=spec.get("seed", 0),
                                  power=spec.get("power", 4.0), tau_scale=tau if spec.get("shadowed") else None)
-        glitter = {"p": [[float(v) for v in sf.to_world([q[a] + lo[a] + off[a] + 0.5 for a in range(3)], **pose)] for q in pts],
-                   "size": glitter_sizes(len(pts), spec["size"], spec.get("size_sigma", 0.0), seed=spec.get("seed", 0)),
-                   "rgb": list(spec["rgb"]), "radiance": spec["radiance"]}
-        if spec.get("streak") and "bifrost_src" in g and len(pts):  # each glint's motion over its own shutter (s): the
-            # flow's velocity where it is (Bifrost's index space, as the cleaned frame's) and the shot's drift
-            q = np.asarray(pts) + np.asarray(lo, float)
-            qlo, qhi = np.floor(q.min(0)).astype(int) - 1, np.ceil(q.max(0)).astype(int) + 1
-            vlo, v, v_voxel = vdb_grid(REPO / (g["bifrost_src"] % frame), "voxel_velocity", clip=(list(qlo), list(qhi)))
-            vel = np.stack([ndimage.map_coordinates(v[..., c], (q - np.asarray(vlo, float) - 0.5).T, order=1, mode="nearest")
-                            for c in range(3)], axis=1) + np.asarray(g.get("drift", (0.0, 0.0, 0.0)))
-            rot = np.column_stack(axes)
-            glitter["stretch"] = (pose["scale"] * (vel * spec["streak"] / v_voxel) @ rot.T).round(5).tolist()
-        if spec.get("spray"):  # each glint a spray of sub-pixel micro-glints (glint_sprays): soft and streaked
-            per, micro, width = spec["spray"]
-            sizes = glitter["size"] if isinstance(glitter["size"], list) else [glitter["size"]] * len(glitter["p"])
-            sp = glint_sprays(np.asarray(glitter["p"]), sizes, glitter.get("stretch", np.zeros((len(sizes), 3))),
-                              g["camera"], int(per), width=width, seed=spec.get("seed", 0))
-            glitter = {"p": sp.round(5).tolist(), "size": micro, "rgb": glitter["rgb"], "radiance": glitter["radiance"]}
-        elif spec.get("sprite_sigma"):  # a soft glint's emission over its quad (glitter_sprite), beside the volume
+            glitter = glitter_finish(pts, spec)
+        if not spec.get("spray") and spec.get("sprite_sigma"):  # a soft glint's emission over its quad (glitter_sprite)
             sprite = out_dir / (name + "_glint.png")
             glitter_sprite(sprite, spec["rgb"], sigma=spec["sprite_sigma"])
             glitter["sprite"] = str(sprite)
@@ -1349,13 +1364,32 @@ def studio_sky(key=STUDIO_KEY, width=1024, key_radiance=320.0, key_radius=5.0, f
     return sky.astype(np.float32)
 
 
-def lantern_sky(name="lantern_sky", width=1024):
+def tele_warp(d, M, theta1):
+    """Directions `d` (unit, last axis) warped about the view axis (-z) for a lens M x longer: inside `theta1` (radians)
+    tan(angle) x M -- the long lens's frame then shows the wide lens's sky, as a pinhole frames it -- beyond it the
+    angle compressed linearly to 180 degrees (monotonic: the sky's lighting moves a little, nothing folds); the
+    azimuth kept."""
+    d = np.asarray(d, float)
+    th = np.arccos(np.clip(-d[..., 2], -1.0, 1.0))
+    phi = np.arctan2(d[..., 1], d[..., 0])
+    tw1 = np.arctan(M * np.tan(theta1))
+    k = (np.pi - tw1) / (np.pi - theta1)
+    thw = np.where(th <= theta1, np.arctan(M * np.tan(np.minimum(th, theta1))), tw1 + (th - theta1) * k)
+    return np.stack([np.sin(thw) * np.cos(phi), np.sin(thw) * np.sin(phi), -np.cos(thw)], axis=-1)
+
+
+def lantern_sky(name="lantern_sky", width=1024, tele=1.0, theta1=None):
     """A green tornado's sky (lantern.SKIES[name]): white Gaussian lobes -- the glow and the key -- over a teal,
-    brighter below, scaled by the sky's `teal`."""
+    brighter below, scaled by the sky's `teal`; for a lens `tele` x longer (the camera that much farther back),
+    seen through tele_warp so its frame shows the same sky (theta1: its view cone, by default its frame's half
+    diagonal x 1.3)."""
     import lantern
     spec = lantern.SKIES[name]
     h = width // 2
     d = latlong_dir(((np.arange(width) + 0.5) / width)[None, :], ((np.arange(h) + 0.5) / h)[:, None])
+    if tele != 1.0:
+        theta1 = theta1 if theta1 is not None else 1.3 * np.arctan(np.hypot(12.0, 12.0 * 16 / 9) / (50.0 * tele))
+        d = tele_warp(d, tele, theta1)
     sky = np.zeros(d.shape, np.float64)
     for lobe in ("glow", "key"):
         k = np.asarray(spec[lobe], float) / np.linalg.norm(spec[lobe])
@@ -1551,6 +1585,17 @@ def import_vdb(vdb, out_dir, emissive=False):
     return dest
 
 
+def sky_function(name):
+    """The sky maker for `name`: SKIES', or a lantern sky for a longer lens, "<sky>_t<cm>" (the camera <cm> from the
+    target where the sky was matched at 52)."""
+    if name in SKIES:
+        return SKIES[name]
+    base, _, cm = name.rpartition("_t")
+    if base in ("lantern_sky", "lantern_night") and cm.isdigit():
+        return lambda: lantern_sky(base, tele=int(cm) / 52.0)
+    raise KeyError(name)
+
+
 def write_sky(name):
     """VolumetricReSTIRData/authored/<name>.exr (OpenEXR, float)."""
     import os
@@ -1558,7 +1603,7 @@ def write_sky(name):
     import cv2
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / (name + ".exr")
-    if not cv2.imwrite(str(path), SKIES[name]()[..., ::-1].copy()):  # OpenCV writes BGR
+    if not cv2.imwrite(str(path), sky_function(name)()[..., ::-1].copy()):  # OpenCV writes BGR
         raise SystemExit("FAILED: could not write %s" % path)
     return path
 
