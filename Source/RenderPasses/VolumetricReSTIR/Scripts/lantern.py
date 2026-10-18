@@ -46,7 +46,7 @@ def _env(name, parse=lambda v: tuple(float(x) for x in v.split(","))):
 # The construct shot's tuning knobs; unset, each is the construct as matched to the Lanterns reference (2026-10-18).
 # which Bifrost run it reads (BifrostVDB/<it>, bifrost_graphs.vortex_construct's frames): F3, the tuned simulation
 # (0.05 m) refined to 0.025 m, its velocity exported
-CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_F3")
+CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_F4")  # (F4: refined inside the simulation, fine turbulence)
 # its fine detail: LANTERN_DETAIL "warp1,warp2,scale1,scale2,streaks,streak_w_r,streak_w_v,grain,grain_scale,erode,
 # erode_ref" (make_volumes.py construct_detail, tornado_detail's: curl-noise filaments, streaks round its axis, grain,
 # erosion of its thin smoke; voxels) -- the reference's texture is at a voxel or two, the simulation smooth there
@@ -63,7 +63,7 @@ DETAIL_PRE = os.environ.get("LANTERN_DETAIL_PRE", "0") == "1"
 # LANTERN_VBLUR "shutter[,drift[,grain_amp,grain_cell]]": drift (m/s) along its axis -- the construct moving as a
 # whole, which tilts its streaks from rings toward the reference's helices -- and grain (make_volumes.py grain): fine
 # variation in its density for the blur to draw into streak lines
-VBLUR_SPEC = _env("LANTERN_VBLUR") or (0.15,)
+VBLUR_SPEC = _env("LANTERN_VBLUR") or (0.15, 0.0, 0.0, 0.0, 1.2, 1.0, 0.4)
 VBLUR = VBLUR_SPEC[0]
 DRIFT = VBLUR_SPEC[1] if len(VBLUR_SPEC) > 1 else 0.0
 GRAIN = tuple(VBLUR_SPEC[2:4]) if len(VBLUR_SPEC) > 3 and VBLUR_SPEC[2] else None
@@ -79,7 +79,7 @@ BLUR_TAG = (("_v%g" % VBLUR + ("_d%g" % DRIFT if DRIFT else "") + ("_g%g_%g" % G
 # round its head's far end, its tail fills the frame's lower left, wide, pale and soft): a 40 degree yaw, sized and
 # placed by the silhouette (preview and render: IoU 0.891 to the side-on 0.872)
 POSE_KNOB = _env("LANTERN_POSE")
-POSE = POSE_KNOB or (40.0, -69.5, 0.895, -2.5, -0.62)
+POSE = POSE_KNOB or (32.5, -68.25, 1.065, -1.75, -0.12)  # (fitted on its density as rendered, at 320 cm)
 POSE = POSE + (1.0, 0.0, 0.0)[len(POSE) - 2:]
 ROTATION = (0.0, POSE[0], POSE[1])
 CAP = (17.1 + POSE[3], 6.5 + POSE[4], 0.0)
@@ -87,7 +87,7 @@ CAP = (17.1 + POSE[3], 6.5 + POSE[4], 0.0)
 # make_volumes.py glitter_points), its sizes spread lognormally (glitter_sizes): the reference's sheen of fine sparkles
 # on its lit side
 GLITTER_KNOB = _env("LANTERN_GLITTER")
-GLITTER = GLITTER_KNOB or (1.0, 0.35, 20000, 0.025, 0.9)
+GLITTER = GLITTER_KNOB or (1.0, 0.4, 10000, 0.08, 0.6)
 # its glints' look: LANTERN_GLINT "cluster_mean,cluster_radius,streak,sprite_sigma" -- in foam-like clumps (glints a
 # group, their scatter in voxels; make_volumes.py glitter_clusters), each streaked along its motion over `streak`
 # seconds (lantern.glitter_quads), soft (a Gaussian `sprite_sigma` of its quad: make_volumes.py glitter_sprite);
@@ -97,7 +97,8 @@ GLINT_KNOB = _env("LANTERN_GLINT")
 # bigger, brighter flakes over the fine sheen (each a spray of `per` micro-glints: the reference's bright flakes on its
 # upper flank), through the same mask; needs the sheen's spray (LANTERN_GLINT's)
 FLAKES_KNOB = _env("LANTERN_FLAKES")
-GLINT = GLINT_KNOB or (0.0, 0.0, 0.0, 0.0)
+FLAKES = FLAKES_KNOB or (300, 0.25, 0.4, 3.0, 3.0, 40, 0.3, 0.015)
+GLINT = GLINT_KNOB or (1.5, 2.0, 0.01, 0.0, 4, 0.02, 0.3)
 GLINT = GLINT + (0.0, 0.0, 0.0)[:max(0, 7 - len(GLINT))]  # ... ",spray_per,spray_micro,spray_width" (glint_sprays)
 # its tail: LANTERN_TAIL "warp_amp,warp_cell,warp_top,mist_amp,mist_cell,mist_reach,mist_top,focus,ramp,sigma_max" --
 # churned out of its helical bands below warp_top of its height (make_volumes.py warp: voxels), wrapped in a pale wispy
@@ -105,7 +106,7 @@ GLINT = GLINT + (0.0, 0.0, 0.0)[:max(0, 7 - len(GLINT))]  # ... ",spray_per,spra
 # where nearer the camera than `focus` cm (defocus: sigma_max voxels by focus - ramp): the reference's tail is near and
 # out of focus, turbulent, pale with smoke; 0 turns each off
 TAIL_KNOB = _env("LANTERN_TAIL")
-TAIL = TAIL_KNOB or (0.0,) * 10
+TAIL = TAIL_KNOB or (8.0, 12.0, 0.6, 0.01, 16.0, 16.0, 0.6, 44.0, 10.0, 5.0)
 # its optical depth across its middle (LANTERN_TAU; the fit's, 8): thicker smoke shows its fine structure as a surface,
 # thin smoke averages it over its depth (at 8 the mean free path was ~40 voxels)
 TAU_KNOB = _env("LANTERN_TAU", float)
@@ -114,19 +115,20 @@ TAU_KNOB = _env("LANTERN_TAU", float)
 KEYSIZE_KNOB = _env("LANTERN_KEYSIZE", float)
 # its soft boxes' radiance: LANTERN_LIGHTS "key,rim,fill" (40, 8, 9; the key's for its 14 cm side)
 LIGHTS_KNOB = _env("LANTERN_LIGHTS")
-LIGHTS = LIGHTS_KNOB or (40.0, 8.0, 9.0)
+LIGHTS = LIGHTS_KNOB or (70.0, 10.0, 14.0)
 # its camera: LANTERN_CAMERA "distance" cm from its target (52), the focal length scaled to keep the framing at the
 # target (50 mm at 52) and the sky seen through a lens that much longer (make_volumes.py lantern_sky tele) -- the
 # reference's narrow neck and big head are a long lens's: at 52 cm its near body came out 1.7x magnified
 CAMERA_KNOB = _env("LANTERN_CAMERA", float)
-CAM_DIST = CAMERA_KNOB or 52.0
+CAM_DIST = CAMERA_KNOB or 320.0
 # its key: LANTERN_KEY "x,y,z" -- the key soft box's direction and the glitter's
 KEY = _env("LANTERN_KEY")
 # its foot faded into smoke (make_volumes.py fade_foot): LANTERN_FOOT "start,end[,floor]", fractions of its height
-FOOT = _env("LANTERN_FOOT")
+FOOT_KNOB = _env("LANTERN_FOOT")
+FOOT = FOOT_KNOB or (0.4, 0.62, 0.22)  # (its visible tail to smoke)
 # a tuning variant's import folder: the run's, plus a short hash of the knobs set (the glitter is posed and keyed) --
 # spelled out, the names passed Windows' 260-character path limit and Falcor could not cache the volume's nodes
-VARIANT = "".join("_%s%s" % (k, "_".join("%g" % v for v in t)) for k, t in (("f", FOOT), ("p", POSE_KNOB),
+VARIANT = "".join("_%s%s" % (k, "_".join("%g" % v for v in t)) for k, t in (("f", FOOT_KNOB), ("p", POSE_KNOB),
                                                                          ("g", GLITTER_KNOB), ("k", KEY),
                                                                          ("l", GLINT_KNOB), ("t", TAIL_KNOB),
                                                                          ("e", DETAIL_KNOB),
@@ -188,10 +190,10 @@ SHOTS = {
                            # diameter is the reference's (12.2 cm: half the frame's height, 265 px of 540), its density
                            # for an optical depth of `tau` across its middle, its cap pinned where the reference's ends
                            # (x 880, y 210 of 960 x 540)
-                           fit={"diameter": 13.0 * POSE[2], "tau": TAU_KNOB or 8.0, "cap": CAP},
+                           fit={"diameter": 13.0 * POSE[2], "tau": TAU_KNOB or 20.0, "cap": CAP},
                            offset=(0.0, 0.0, 0.0), scale=0.06, rotation=ROTATION, anchor=CAP,
                            base=(0.0, 0.0, 0.0), density_scale=0.25,  # (overridden by the fit)
-                           sky="lantern_sky" + ("_t%d" % round(CAM_DIST) if CAMERA_KNOB else ""), key=KEY or (-0.75, 0.5, 0.45),
+                           sky="lantern_sky" + ("_t%d" % round(CAM_DIST) if round(CAM_DIST) != 52 else ""), key=KEY or (-0.75, 0.5, 0.45),
                            # the reference's sparkles: 4000 tiny emitters where its surface faces the key (upper left)
                            # (at radiance 40 in a pale green they clipped to white, spread evenly; the reference's
                            # are green, clustered where the surface faces the key squarely: power 8)
@@ -212,10 +214,10 @@ SHOTS = {
                                         **({"streak": GLINT[2]} if GLINT[2] > 0 else {}),
                                         **({"sprite_sigma": GLINT[3]} if GLINT[3] > 0 else {}),
                                         **({"spray": (GLINT[4], GLINT[5], GLINT[6])} if GLINT[4] > 0 else {}),
-                                        **({"flakes": {"n": int(FLAKES_KNOB[0]), "size": FLAKES_KNOB[1], "size_sigma": FLAKES_KNOB[2],
-                                                       "cluster": (FLAKES_KNOB[3], FLAKES_KNOB[4]),
-                                                       "spray": (FLAKES_KNOB[5], GLINT[5], FLAKES_KNOB[6]),
-                                                       "streak": FLAKES_KNOB[7], "seed": 2}} if FLAKES_KNOB else {})),
+                                        **({"flakes": {"n": int(FLAKES[0]), "size": FLAKES[1], "size_sigma": FLAKES[2],
+                                                       "cluster": (FLAKES[3], FLAKES[4]),
+                                                       "spray": (FLAKES[5], GLINT[5], FLAKES[6]),
+                                                       "streak": FLAKES[7], "seed": 2}} if FLAKES else {})),
                            # its own soft boxes: the tornado's, the fill raised (its mid-tones were 105 green to the
                            # reference's 125, its shadows 61 to 80)
                            panels=({"name": "Key", "dir": KEY or (-0.75, 0.5, 0.45), "dist": 36.0, "side": KEYSIZE_KNOB or 14.0, "rgb": (0.75, 1.0, 0.8),

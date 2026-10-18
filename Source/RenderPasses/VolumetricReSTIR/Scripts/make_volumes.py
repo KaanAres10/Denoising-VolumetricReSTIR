@@ -941,6 +941,46 @@ def construct_detail(d, **kw):
     return np.ascontiguousarray(tornado_detail(np.ascontiguousarray(d.transpose(0, 2, 1)), **kw).transpose(0, 2, 1))
 
 
+def post_process(d, lo, g, grid, shot):
+    """A construct frame's density `d` (its index box at `lo`) reworked as its shot says -- fade_foot, its fine detail
+    (construct_detail), warp, mist, defocus (each voxel's distance along the camera's view, as the shot places the
+    volume with the fit `grid`) -- padded for their spread: the reworked density and its box's corner. Shared by
+    write_lantern and the pose's preview fit (the silhouette as rendered)."""
+    import lantern
+    import swatch_fire as sf
+    pad = int(np.ceil(max([g["warp"]["amplitude"] if "warp" in g else 0.0,
+                           sum(g["fine"].get("warp", ())) if "fine" in g else 0.0,
+                           1.5 * g["mist"]["reach"] if "mist" in g else 0.0,  # (the veil < 15% past it)
+                           3.0 * g["defocus"]["sigma_max"] if "defocus" in g else 0.0]))) + 1
+    d = np.pad(d, pad)
+    lo = [lo[a] - pad for a in range(3)]
+    if "foot" in g:
+        d = fade_foot(d, *g["foot"])
+    if "fine" in g:  # film detail at its own resolution (construct_detail)
+        d = construct_detail(d, **g["fine"])
+    if "warp" in g:
+        d = warp(d, **g["warp"])
+    if "mist" in g:
+        d = mist(d, **g["mist"])
+    if "defocus" in g:  # each voxel's distance along the camera's view, as the shot places the volume
+        axes = [np.array(sf.rotate(e, g["rotation"])) for e in np.eye(3)]
+        pose = dict(lantern.pose(shot), base=grid["base"], scale=grid["scale"])
+        cam = g["camera"]
+        fwd = np.asarray(cam["target"], float) - np.asarray(cam["position"], float)
+        fwd /= np.linalg.norm(fwd)
+        grad = pose["scale"] * np.column_stack(axes).T @ fwd  # depth per array index step, per axis
+        c0 = float((np.asarray(sf.translation(**pose), float) + pose["scale"] * np.column_stack(axes)
+                    @ (np.asarray(lo, float) + np.asarray(g["offset"], float) + 0.5) - np.asarray(cam["position"], float)) @ fwd)
+        depth = (np.float32(c0) + np.float32(grad[0]) * np.arange(d.shape[0], dtype=np.float32)[:, None, None]
+                 + np.float32(grad[1]) * np.arange(d.shape[1], dtype=np.float32)[None, :, None]
+                 + np.float32(grad[2]) * np.arange(d.shape[2], dtype=np.float32)[None, None, :])
+        spec = dict(g["defocus"])  # (its focus as for the camera 52 cm from its target: moved with it)
+        spec["focus"] += float(np.linalg.norm(np.asarray(cam["position"], float) - np.asarray(cam["target"], float))) - 52.0
+        d = defocus(d, depth, **spec)
+        del depth
+    return d, lo
+
+
 def write_lantern(shot="lantern", frame=None):
     """A frame of a green tornado shot (lantern.SHOTS: the looping tornado or the dust devil): as it is, or with the
     shot's `detail` added (tornado_detail, written by VolFromRaw a voxel a unit: no grid offset), as
@@ -1000,36 +1040,7 @@ def write_lantern(shot="lantern", frame=None):
             lo_file, _ = read_vdb_box(vdb, ("density",))
         elif post:  # its tail reworked (fade_foot, warp, mist, defocus), padded for their spread, rewritten where it
             # was (its index placement: the fit and its .vbx coordinates hold)
-            pad = int(np.ceil(max([g["warp"]["amplitude"] if "warp" in g else 0.0,
-                                   sum(g["fine"].get("warp", ())) if "fine" in g else 0.0,
-                                   1.5 * g["mist"]["reach"] if "mist" in g else 0.0,  # (the veil < 15% past it)
-                                   3.0 * g["defocus"]["sigma_max"] if "defocus" in g else 0.0]))) + 1
-            d = np.pad(d, pad)
-            lo = [lo[a] - pad for a in range(3)]
-            if "foot" in g:
-                d = fade_foot(d, *g["foot"])
-            if "fine" in g:  # film detail at its own resolution (construct_detail)
-                d = construct_detail(d, **g["fine"])
-            if "warp" in g:
-                d = warp(d, **g["warp"])
-            if "mist" in g:
-                d = mist(d, **g["mist"])
-            if "defocus" in g:  # each voxel's distance along the camera's view, as the shot places the volume
-                axes = [np.array(sf.rotate(e, g["rotation"])) for e in np.eye(3)]
-                pose = dict(lantern.pose(shot), base=grid["base"], scale=grid["scale"])
-                cam = g["camera"]
-                fwd = np.asarray(cam["target"], float) - np.asarray(cam["position"], float)
-                fwd /= np.linalg.norm(fwd)
-                grad = pose["scale"] * np.column_stack(axes).T @ fwd  # depth per array index step, per axis
-                c0 = float((np.asarray(sf.translation(**pose), float) + pose["scale"] * np.column_stack(axes)
-                            @ (np.asarray(lo, float) + np.asarray(g["offset"], float) + 0.5) - np.asarray(cam["position"], float)) @ fwd)
-                depth = (np.float32(c0) + np.float32(grad[0]) * np.arange(d.shape[0], dtype=np.float32)[:, None, None]
-                         + np.float32(grad[1]) * np.arange(d.shape[1], dtype=np.float32)[None, :, None]
-                         + np.float32(grad[2]) * np.arange(d.shape[2], dtype=np.float32)[None, None, :])
-                spec = dict(g["defocus"])  # (its focus as for the camera 52 cm from its target: moved with it)
-                spec["focus"] += float(np.linalg.norm(np.asarray(cam["position"], float) - np.asarray(cam["target"], float))) - 52.0
-                d = defocus(d, depth, **spec)
-                del depth
+            d, lo = post_process(d, lo, g, grid, shot)
             raw = Path(work) / (name + ".raw")
             write_raw(d, raw)
             run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb, 1e-4, "-", *lo], cwd=RELEASE)
