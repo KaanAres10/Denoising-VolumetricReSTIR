@@ -294,7 +294,8 @@ class TestLoaders(StudyEnv):
     def test_the_construct_glowing_from_within(self):
         # the decorrelation study's construct (user, 2026-10-18: "multiple scattering", "construct glows itself"): the
         # matched construct placed as lanternbifrost places it, emitting through Bifrost's own temperature -- the
-        # blackbody tinted its energy's green; its 2 bounces are the study's (label lanternglow_b2)
+        # blackbody tinted its energy's green; lit by big yellow soft boxes; its 2 bounces are the study's (label
+        # lanternglow_b2)
         import lantern
         g = lantern.SHOTS["lanternglow"]
         vr, m = fresh_vr()
@@ -307,8 +308,13 @@ class TestLoaders(StudyEnv):
         e = g["emission"]
         self.assertEqual((v["hasEmission"], v["LeScale"], v["temperatureCutoff"], v["temperatureScale"], v["emissionTint"]),
                          (True, e["le_scale"], e["cutoff"], e["scale"], e["tint"]))
-        same = ("sigma_a", "sigma_s", "g", "densityScale", "worldTranslation", "worldRotation", "worldScaling", "numMips")
+        same = ("g", "densityScale", "worldTranslation", "worldRotation", "worldScaling", "numMips")
         self.assertEqual({k: v[k] for k in same}, {k: v0[k] for k in same})
+        # its own albedo (near-neutral: the yellow light shows on it), its extinction the matched one's per channel --
+        # the same density, silhouette and fit
+        self.assertEqual((v["sigma_a"], v["sigma_s"]), (g["sigma_a"], g["sigma_s"]))
+        ext = lambda c: [round(a + b, 6) for a, b in zip(c["sigma_a"], c["sigma_s"])]
+        self.assertEqual(ext(v), ext(v0))
         self.assertNotIn("emissionTint", v0)  # (the matched construct's call as it was)
         self.assertFalse(v0["hasEmission"])
         self.assertFalse(info["params"]["mUseAnalyticLights"])

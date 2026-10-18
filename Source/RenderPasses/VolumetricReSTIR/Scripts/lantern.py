@@ -237,18 +237,27 @@ SHOTS = {
                         camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
 }
 # The construct for the decorrelation study, glowing from within (user, 2026-10-18: "make the scene such that mutation
-# is useful", choosing "multiple scattering" and "construct glows itself"): the matched construct as it is, its smoke
-# emitting by Bifrost's own simulated temperature -- the blackbody at (T - cutoff) x scale kelvin (black below ~800 K,
-# white by 6400) times LeScale, tinted its energy's green (a Lantern's construct is light; with little red, the cooler
-# smoke's orange blackbody glows a dim green, not brown) -- motion blurred with its density. Its glow varies through its
-# depth, which the mutations' depth moves explore; its multiple scattering is the study's 2 bounces (label
-# lanternglow_b2), its soft boxes dimmed for the light the second bounce adds (+27% in its mid-tones).
-# LANTERN_EMISSION "le_scale,cutoff,scale,lights" (0.0015, 22, 600, 0.75): all read when the scene loads
-EMISSION = _env("LANTERN_EMISSION") or (0.0015, 22.0, 600.0, 0.75)
-SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"],
+# is useful", choosing "multiple scattering" and "construct glows itself"): the matched construct's smoke (its draw,
+# fit and glitter) emitting by Bifrost's own simulated temperature -- the blackbody at (T - cutoff) x scale kelvin
+# (black below ~800 K, white by 6400) times LeScale, tinted its energy's green (with little red, the cooler smoke's
+# orange blackbody glows a dim green, not brown) -- motion blurred with its density. Its glow varies through its depth,
+# which the mutations' depth moves explore; its multiple scattering is the study's 2 bounces (label lanternglow_b2).
+# Lit by two big yellow soft boxes instead of the three tinted ones (user: "not many lights but maybe big yellow
+# lights"; of a Yellow Lantern lit by his own light, "I want this yellow to appear on the volumetric to influence
+# greatly"; and, of this look, "keep this look"): a key from the upper left and a rim from behind the right, each
+# twice the side (28 cm, close to the smoke: its light varies across each, which the light moves explore). Its smoke
+# near-neutral, a little warm -- the matched construct's green albedo scatters little red, so yellow light came off it
+# lime -- its extinction the same (1 in each channel: its density, silhouette and fit unchanged): yellow where the
+# light falls, its own glow green within.
+# LANTERN_EMISSION "le_scale,cutoff,scale,lights" (0.004, 22, 600, 1): all read when the scene loads
+EMISSION = _env("LANTERN_EMISSION") or (0.004, 22.0, 600.0, 1.0)
+SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45), sigma_s=(0.75, 0.85, 0.55),
                             src="BifrostVDB/%s_clean%s_t/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),  # (its temperature kept)
                             data=SHOTS["lanternbifrost"]["data"] + "_gl",
-                            panels=tuple(dict(p, radiance=p["radiance"] * EMISSION[3]) for p in SHOTS["lanternbifrost"]["panels"]),
+                            panels=({"name": "Key", "dir": KEY or (-0.75, 0.5, 0.45), "dist": 36.0, "side": 28.0,
+                                     "rgb": (1.0, 0.78, 0.12), "radiance": 30.0 * EMISSION[3]},
+                                    {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 28.0,
+                                     "rgb": (1.0, 0.72, 0.1), "radiance": 30.0 * EMISSION[3]}),
                             emission={"le_scale": EMISSION[0], "cutoff": EMISSION[1], "scale": EMISSION[2],
                                       "tint": (0.05, 1.0, 0.3)})
 SKIES = {
