@@ -381,11 +381,17 @@ def blur_bifrost_frames(srcs, dst, density="voxel_fog_density", temperature="vox
     return ulo, shape, voxel
 
 
-def blur_bifrost_velocity(src, dst, shutter, steps=16, density="voxel_fog_density", temperature="voxel_temperature",
+def blur_steps(v_max, shutter, voxel, floor=16):
+    """Motion blur steps for a smear of v_max x shutter (m) on `voxel` (m) voxels: one every 2 voxels, at least
+    `floor` -- fewer leave the streak as copies."""
+    return max(floor, int(np.ceil(v_max * shutter / voxel / 2.0 - 1e-9)))
+
+
+def blur_bifrost_velocity(src, dst, shutter, steps=None, density="voxel_fog_density", temperature="voxel_temperature",
                           velocity="voxel_velocity", cutoff=1e-4):
     """A Bifrost frame motion blurred along its own velocity (velocity_blur: the Lanterns reference's construct is
     streaked along its rotation) over `shutter` seconds, rewritten as clean_bifrost_vdb does -- its box grown by the
-    longest smear. The frame must hold the velocity (bifrost_export.py with BIFROST_PROPERTIES naming voxel_velocity).
+    longest smear, in `steps` (blur_steps' unless given). The frame must hold the velocity (bifrost_export.py with BIFROST_PROPERTIES naming voxel_velocity).
     Returns the box's low corner, its shape and Bifrost's voxel size."""
     lo, d, voxel = vdb_grid(src, density)
     hi = [lo[a] + d.shape[a] - 1 for a in range(3)]
@@ -400,7 +406,9 @@ def blur_bifrost_velocity(src, dst, shutter, steps=16, density="voxel_fog_densit
     # the smoke's box scaled toward the origin -- inside the box spanning it and the origin -- holds what is needed
     vlo, v, v_voxel = vdb_grid(src, velocity, clip=([min(lo[a], 0) - 1 for a in range(3)],
                                                     [max(hi[a], 0) + 1 for a in range(3)]))
-    pad = int(np.ceil(float(np.linalg.norm(v, axis=-1).max()) * shutter / 2.0 / voxel)) + 1
+    v_max = float(np.linalg.norm(v, axis=-1).max())
+    pad = int(np.ceil(v_max * shutter / 2.0 / voxel)) + 1
+    steps = steps or blur_steps(v_max, shutter, voxel)
     lo = [lo[a] - pad for a in range(3)]
     blurred = [velocity_blur(np.pad(g, pad), v, voxel, shutter, steps, v_voxel=v_voxel, d_lo=lo, v_lo=vlo) for g in grids]
     shape = blurred[0].shape
@@ -625,7 +633,8 @@ def write_lantern(shot="lantern", frame=None):
     if "bifrost_src" in g and not Path(src).exists():  # a Bifrost frame, rewritten for gImportVDB on first use --
         Path(src).parent.mkdir(parents=True, exist_ok=True)  # averaged with the frames before it over `shutter`
         if g.get("vblur"):  # -- or blurred along its own velocity
-            blur_bifrost_velocity(REPO / (g["bifrost_src"] % frame), src, g["vblur"])
+            blur_bifrost_velocity(REPO / (g["bifrost_src"] % frame), src, g["vblur"],  # (its temperature only if it glows)
+                                  temperature="voxel_temperature" if "glow" in g else None)
         else:
             k = g.get("shutter", 1)
             blur_bifrost_frames([REPO / (g["bifrost_src"] % f) for f in range(frame - k + 1, frame + 1)], src)

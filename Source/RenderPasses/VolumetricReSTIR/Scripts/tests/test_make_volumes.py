@@ -457,6 +457,9 @@ class TestBifrostClean(unittest.TestCase):
             self.assertLessEqual(int(along.min()), -1)  # past the frame's own box (x 1..2): 2.5 voxels each way
             self.assertGreaterEqual(int(along.max()), 4)
             self.assertEqual(int((b.sum((0, 2)) > 1e-3).sum()), 1)  # nothing across the flow
+            # its steps, unless given, from the longest smear (a step every 2 voxels): no copies in a long shutter
+            self.assertEqual(mv.blur_steps(v_max=1.0, shutter=0.5, voxel=0.1), 16)  # 5 voxels: the floor
+            self.assertEqual(mv.blur_steps(v_max=3.0, shutter=0.8, voxel=0.025), 48)  # 96 voxels
             # a frame exported without its temperature: the density alone
             mv.blur_bifrost_velocity(src, t / "dens.vdb", shutter=0.5, density="density", temperature=None, velocity="velocity")
             lo3, box3 = mv.read_vdb_box(t / "dens.vdb", ("density",))
