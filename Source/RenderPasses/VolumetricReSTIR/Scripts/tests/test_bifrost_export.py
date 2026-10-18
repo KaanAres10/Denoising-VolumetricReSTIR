@@ -63,6 +63,12 @@ class TestWrapGraph(unittest.TestCase):
         libs = cfg["AminoConfigurations"][0]["jsonLibs"]
         self.assertEqual(libs, [{"path": "C:/work/lib", "files": []}])
 
+    def test_properties_from_the_environment(self):
+        # what the renderer reads unless BIFROST_PROPERTIES asks for more (the velocity, for its motion blur)
+        self.assertEqual(bx.export_properties({}), bx.PROPERTIES)
+        self.assertEqual(bx.export_properties({"BIFROST_PROPERTIES": "voxel_fog_density voxel_velocity"}),
+                         "voxel_fog_density voxel_velocity")
+
     def test_overrides_parse_from_the_command_line(self):
         self.assertEqual(bx.parse_overrides(["switch.condition=bool:true", "value.value=float:0.05"]),
                          {"switch.condition": ("bool", "true"), "value.value": ("float", "0.05")})

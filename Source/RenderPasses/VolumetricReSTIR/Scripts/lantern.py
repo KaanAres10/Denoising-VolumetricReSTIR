@@ -42,6 +42,12 @@ import swatch_fire
 CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_F2")
 # its motion blur: frames averaged (make_volumes.py blur_bifrost_frames), LANTERN_SHUTTER of them (1: none)
 SHUTTER = int(os.environ.get("LANTERN_SHUTTER", "5"))
+# or blurred along its own velocity over LANTERN_VBLUR seconds (make_volumes.py blur_bifrost_velocity: smooth streaks
+# along the flow; the run must have exported voxel_velocity)
+VBLUR = float(os.environ["LANTERN_VBLUR"]) if os.environ.get("LANTERN_VBLUR") else None
+BLUR_TAG = "_v%g" % VBLUR if VBLUR else ("_s%d" % SHUTTER if SHUTTER > 1 else "")
+# its foot faded into smoke (make_volumes.py fade_foot): LANTERN_FOOT "start,end[,floor]", fractions of its height
+FOOT = tuple(float(v) for v in os.environ["LANTERN_FOOT"].split(",")) if os.environ.get("LANTERN_FOOT") else None
 
 GREEN = {"sigma_a": (0.85, 0.18, 0.72), "sigma_s": (0.15, 0.82, 0.28), "g": 0.5}
 SHOTS = {
@@ -81,10 +87,11 @@ SHOTS = {
     # its green a touch less saturated than the tornado's (the reference's mid-tones: red / green 0.5, ours was 0.42),
     # its blue lower (the sky's teal lifted its shadows' blue: 32 to the reference's 22)
     "lanternbifrost": dict(GREEN, sigma_a=(0.80, 0.15, 0.72), sigma_s=(0.20, 0.85, 0.28), g=0.6,
-                           src="BifrostVDB/%s_clean%s/construct_%%04d.vdb" % (CONSTRUCT, "_s%d" % SHUTTER if SHUTTER > 1 else ""),
-                           shutter=SHUTTER,
+                           src="BifrostVDB/%s_clean%s/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),
+                           shutter=SHUTTER, **({"vblur": VBLUR} if VBLUR else {}), **({"foot": FOOT} if FOOT else {}),
                            bifrost_src="BifrostVDB/%s/construct_%%04d.vdb" % CONSTRUCT,
-                           data="bifrostconstruct", frame=150,
+                           data="bc_%s%s%s" % (CONSTRUCT, BLUR_TAG,  # each variant its own import
+                                               "_f" + "_".join("%g" % v for v in FOOT) if FOOT else ""), frame=150,
                            # fitted per frame (make_volumes.py write_lantern; its _lights.json "grid"): sized so its
                            # diameter is the reference's (12.2 cm: half the frame's height, 265 px of 540), its density
                            # for an optical depth of `tau` across its middle, its cap pinned where the reference's ends

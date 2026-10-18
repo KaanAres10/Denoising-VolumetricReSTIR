@@ -235,13 +235,44 @@ def write_teapot_fire(seed=0):
 
 
 def vdb_grid(vdb, name, clip=None):
-    """One grid of a .vdb (VdbToRaw.exe): its active box's low corner, the box as an array (x slowest) and the voxel
-    size; `clip` ((lo, hi), inclusive index coordinates) cuts the box first."""
+    """One grid of a .vdb (VdbToRaw.exe): its active box's low corner, the box as an array (x slowest; a vector grid's
+    components last) and the voxel size; `clip` ((lo, hi), inclusive index coordinates) cuts the box first."""
     with tempfile.TemporaryDirectory() as work:
         extra = [*clip[0], *clip[1]] if clip else []
         out = run([RELEASE / "VdbToRaw.exe", vdb, name, Path(work) / name, *extra], cwd=RELEASE).split()
-        arr = np.fromfile(str(Path(work) / name), np.float32).reshape([int(v) for v in out[5:8]])
+        components = int(out[11]) if len(out) > 11 else 1
+        shape = [int(v) for v in out[5:8]] + ([components] if components > 1 else [])
+        arr = np.fromfile(str(Path(work) / name), np.float32).reshape(shape)
     return [int(v) for v in out[1:4]], arr, float(out[9])
+
+
+def velocity_blur(d, v, voxel, shutter, steps=16, v_voxel=None, d_lo=(0, 0, 0), v_lo=(0, 0, 0), chunk=16):
+    """Density `d` (x slowest; voxel size `voxel`, m) motion blurred along velocity `v` (m/s, components last), as a
+    production renderer blurs a volume: the mean over the `shutter` (s, centred on the frame) of d at x - v(x) t,
+    `steps` times -- smooth streaks along the flow, where frames averaged leave copies. `v` may be on its own grid
+    (post_refine_aero leaves the velocity at the simulation's resolution): voxel size `v_voxel`, and each array's
+    first voxel at index `d_lo` / `v_lo` of its grid (index i at i x voxel in the world, as OpenVDB's linear
+    transform puts it)."""
+    v_voxel = voxel if v_voxel is None else v_voxel
+    same = v.shape[:3] == d.shape and v_voxel == voxel and tuple(d_lo) == tuple(v_lo)
+    ts = ((np.arange(steps) + 0.5) / steps - 0.5) * shutter
+    d = np.asarray(d, np.float32)
+    out = np.zeros_like(d)
+    for x0 in range(0, d.shape[0], chunk):
+        x1 = min(x0 + chunk, d.shape[0])
+        idx = np.indices((x1 - x0,) + d.shape[1:], dtype=np.float32)
+        idx[0] += x0
+        if same:
+            vel = np.moveaxis(v[x0:x1], -1, 0)
+        else:  # the velocity where each density voxel is, on the velocity's grid
+            at = [(idx[a] + d_lo[a]) * (voxel / v_voxel) - v_lo[a] for a in range(3)]
+            vel = np.stack([ndimage.map_coordinates(v[..., c], at, order=1, mode="nearest") for c in range(3)])
+        vel = vel.astype(np.float32) / voxel  # voxels a second
+        acc = np.zeros(idx.shape[1:], np.float32)
+        for t in ts:
+            acc += ndimage.map_coordinates(d, idx - vel * np.float32(t), order=1, mode="constant", cval=0.0)
+        out[x0:x1] = acc / steps
+    return out
 
 
 def read_vdb_box(vdb, names, clip=None):
@@ -260,6 +291,18 @@ def read_vdb_box(vdb, names, clip=None):
         b[o[0]:o[0] + arr.shape[0], o[1]:o[1] + arr.shape[1], o[2]:o[2] + arr.shape[2]] = arr
         box[g] = b
     return lo, box
+
+
+def fade_foot(d, start, end, floor=0.0):
+    """Density `d` (x slowest, y up) with its foot faded into smoke (the Lanterns reference's construct thins toward
+    its tail): x a smoothstep in the height of its column -- the slices holding at least 2% of the densest's smoke, so
+    a faint ground haze does not count -- from `floor` at `start` to 1 at `end` (fractions of that height)."""
+    prof = np.maximum(d, 0.0).sum((0, 2), dtype=np.float64)
+    occupied = np.flatnonzero(prof > 0.02 * prof.max())
+    y = (np.arange(d.shape[1]) - occupied.min()) / max(occupied.max() - occupied.min(), 1)
+    t = np.clip((y - start) / (end - start), 0.0, 1.0)
+    w = floor + (1.0 - floor) * t * t * (3.0 - 2.0 * t)
+    return (d * w[None, :, None]).astype(np.float32)
 
 
 def glitter_points(d, n, key, threshold, seed=0, power=4.0):
@@ -327,6 +370,38 @@ def blur_bifrost_frames(srcs, dst, density="voxel_fog_density", temperature="vox
         run([RELEASE / "VolFromRaw.exe", Path(work) / "density.raw", *shape, 1.0, dst, cutoff,
              Path(work) / "temperature.raw", *ulo], cwd=RELEASE)
     return ulo, shape, voxel
+
+
+def blur_bifrost_velocity(src, dst, shutter, steps=16, density="voxel_fog_density", temperature="voxel_temperature",
+                          velocity="voxel_velocity", cutoff=1e-4):
+    """A Bifrost frame motion blurred along its own velocity (velocity_blur: the Lanterns reference's construct is
+    streaked along its rotation) over `shutter` seconds, rewritten as clean_bifrost_vdb does -- its box grown by the
+    longest smear. The frame must hold the velocity (bifrost_export.py with BIFROST_PROPERTIES naming voxel_velocity).
+    Returns the box's low corner, its shape and Bifrost's voxel size."""
+    lo, d, voxel = vdb_grid(src, density)
+    hi = [lo[a] + d.shape[a] - 1 for a in range(3)]
+    grids = [d]
+    if temperature:  # (None: a frame exported without it)
+        tlo, t_box, _ = vdb_grid(src, temperature, clip=(lo, hi))
+        t = np.zeros_like(d)
+        o = [tlo[a] - lo[a] for a in range(3)]
+        t[o[0]:o[0] + t_box.shape[0], o[1]:o[1] + t_box.shape[1], o[2]:o[2] + t_box.shape[2]] = t_box
+        grids.append(t)
+    # the velocity under the smoke: on a grid as fine or coarser (post_refine_aero leaves it at the simulation's), so
+    # the smoke's box scaled toward the origin -- inside the box spanning it and the origin -- holds what is needed
+    vlo, v, v_voxel = vdb_grid(src, velocity, clip=([min(lo[a], 0) - 1 for a in range(3)],
+                                                    [max(hi[a], 0) + 1 for a in range(3)]))
+    pad = int(np.ceil(float(np.linalg.norm(v, axis=-1).max()) * shutter / 2.0 / voxel)) + 1
+    lo = [lo[a] - pad for a in range(3)]
+    blurred = [velocity_blur(np.pad(g, pad), v, voxel, shutter, steps, v_voxel=v_voxel, d_lo=lo, v_lo=vlo) for g in grids]
+    shape = blurred[0].shape
+    with tempfile.TemporaryDirectory() as work:
+        write_raw(blurred[0], Path(work) / "density.raw")
+        if temperature:
+            write_raw(blurred[1], Path(work) / "temperature.raw")
+        run([RELEASE / "VolFromRaw.exe", Path(work) / "density.raw", *shape, 1.0, dst, cutoff,
+             Path(work) / "temperature.raw" if temperature else "-", *lo], cwd=RELEASE)
+    return lo, shape, voxel
 
 
 def write_sequence(seq, frame=None):
@@ -540,10 +615,13 @@ def write_lantern(shot="lantern", frame=None):
     out_dir = REPO / "VolumetricReSTIRData" / g["data"]
     if "bifrost_src" in g and not Path(src).exists():  # a Bifrost frame, rewritten for gImportVDB on first use --
         Path(src).parent.mkdir(parents=True, exist_ok=True)  # averaged with the frames before it over `shutter`
-        k = g.get("shutter", 1)
-        blur_bifrost_frames([REPO / (g["bifrost_src"] % f) for f in range(frame - k + 1, frame + 1)], src)
+        if g.get("vblur"):  # -- or blurred along its own velocity
+            blur_bifrost_velocity(REPO / (g["bifrost_src"] % frame), src, g["vblur"])
+        else:
+            k = g.get("shutter", 1)
+            blur_bifrost_frames([REPO / (g["bifrost_src"] % f) for f in range(frame - k + 1, frame + 1)], src)
     lo, box = read_vdb_box(src, ("density",))
-    d = box["density"]
+    d = d_fit = box["density"]
     grid = None
     with tempfile.TemporaryDirectory() as work:
         vdb = Path(work) / (name + ".vdb")
@@ -569,6 +647,13 @@ def write_lantern(shot="lantern", frame=None):
             run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb], cwd=RELEASE)
             raw.unlink()
             lo_file, _ = read_vdb_box(vdb, ("density",))
+        elif "foot" in g:  # its foot thinned into smoke (fade_foot), rewritten where it was; fitted as simulated
+            d_fit, d = d, fade_foot(d, *g["foot"])
+            raw = Path(work) / (name + ".raw")
+            write_raw(d, raw)
+            run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb, 1e-4, "-", *lo], cwd=RELEASE)
+            raw.unlink()
+            lo_file, _ = read_vdb_box(vdb, ("density",))
         else:
             shutil.copy(src, str(vdb))
             lo_file = lo
@@ -577,7 +662,7 @@ def write_lantern(shot="lantern", frame=None):
     if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
         raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))
     if "bifrost_src" in g:  # a simulated column (y up), fitted to the shot's `fit` (the reference's construct)
-        w = np.maximum(d, 0.0).astype(np.float64)
+        w = np.maximum(d_fit, 0.0).astype(np.float64)
         prof = w.sum((0, 2))
         occupied = np.flatnonzero(prof > 0.02 * prof.max())
         top = int(occupied.max())

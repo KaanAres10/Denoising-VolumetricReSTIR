@@ -20,8 +20,11 @@
  #      /OUT:build\windows-vs2022\bin\Release\VolFromRaw.exe openvdb.lib
  #
  # Usage: VolFromRaw <in.raw> <nx> <ny> <nz> <voxelSize> <out.vdb> [cutoff=1e-4] [temperature.raw|-] [<ox> <oy> <oz>]
+ #                   [velocity.raw]
  #   (the origin: the index of the array's first voxel, 0 0 0 by default -- a re-written Bifrost frame keeps its own
- #   placement, so a sequence's frames line up; "-" for no temperature)
+ #   placement, so a sequence's frames line up; "-" for no temperature; a velocity array -- three floats a voxel,
+ #   the components fastest -- is written as a Vec3SGrid named "velocity" where the density is active: the tests'
+ #   stand-in for Bifrost's voxel_velocity)
  **************************************************************************/
 #include <openvdb/openvdb.h>
 
@@ -69,11 +72,28 @@ static openvdb::FloatGrid::Ptr toGrid(const std::vector<float>& data, long long 
     return grid;
 }
 
+// The velocity where the density is active (its grid's topology).
+static openvdb::Vec3SGrid::Ptr toVectorGrid(const std::vector<float>& v, const openvdb::FloatGrid& density, double voxelSize,
+    const openvdb::Coord& origin, long long ny, long long nz)
+{
+    openvdb::Vec3SGrid::Ptr grid = openvdb::Vec3SGrid::create(openvdb::Vec3s(0.f));
+    grid->setName("velocity");
+    grid->setTransform(openvdb::math::Transform::createLinearTransform(voxelSize));
+    openvdb::Vec3SGrid::Accessor acc = grid->getAccessor();
+    for (openvdb::FloatGrid::ValueOnCIter it = density.cbeginValueOn(); it; ++it)
+    {
+        const openvdb::Coord c = it.getCoord() - origin;
+        const size_t i = static_cast<size_t>((c.x() * ny + c.y()) * nz + c.z()) * 3;
+        acc.setValue(it.getCoord(), openvdb::Vec3s(v[i], v[i + 1], v[i + 2]));
+    }
+    return grid;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 7)
     {
-        printf("Usage: VolFromRaw <in.raw> <nx> <ny> <nz> <voxelSize> <out.vdb> [cutoff=1e-4] [temperature.raw|-] [<ox> <oy> <oz>]\n");
+        printf("Usage: VolFromRaw <in.raw> <nx> <ny> <nz> <voxelSize> <out.vdb> [cutoff=1e-4] [temperature.raw|-] [<ox> <oy> <oz>] [velocity.raw]\n");
         return 1;
     }
     const long long nx = atoll(argv[2]), ny = atoll(argv[3]), nz = atoll(argv[4]);
@@ -82,14 +102,17 @@ int main(int argc, char** argv)
     if (nx <= 0 || ny <= 0 || nz <= 0 || voxelSize <= 0) { printf("ERROR: bad dimensions or voxel size\n"); return 1; }
 
     const size_t count = static_cast<size_t>(nx * ny * nz);
-    std::vector<float> data, temperature;
+    std::vector<float> data, temperature, velocity;
     if (!readRaw(argv[1], count, data)) return 2;
     if (argc > 8 && std::string(argv[8]) != "-" && !readRaw(argv[8], count, temperature)) return 2;
+    if (argc > 12 && !readRaw(argv[12], count * 3, velocity)) return 2;
     const openvdb::Coord origin = argc > 11 ? openvdb::Coord(atoi(argv[9]), atoi(argv[10]), atoi(argv[11])) : openvdb::Coord(0, 0, 0);
 
     openvdb::initialize();
     openvdb::GridPtrVec grids{toGrid(data, nx, ny, nz, voxelSize, cutoff, "density", origin)};
     if (!temperature.empty()) grids.push_back(toGrid(temperature, nx, ny, nz, voxelSize, cutoff, "temperature", origin));
+    if (!velocity.empty())
+        grids.push_back(toVectorGrid(velocity, *openvdb::gridPtrCast<openvdb::FloatGrid>(grids[0]), voxelSize, origin, ny, nz));
     openvdb::io::File out(argv[6]);
     out.write(grids);
     out.close();

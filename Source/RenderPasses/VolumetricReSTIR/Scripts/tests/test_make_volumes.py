@@ -431,6 +431,39 @@ class TestBifrostClean(unittest.TestCase):
             lo2, box = mv.read_vdb_box(t / "blur.vdb", ("density",))
             np.testing.assert_allclose(box["density"].ravel(), [0.5, 0.5, 0.5, 0.5])
 
+    def test_velocity_blur_of_a_frame_smears_past_its_box(self):
+        # one frame blurred along its own velocity (blur_bifrost_velocity): a blob moving 10 voxels a second along x,
+        # a 0.5 s shutter -- smeared 5 voxels, its box grown to hold the smear, its mass kept
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            d = np.zeros((4, 3, 3), np.float32)
+            d[1:3, 1, 1] = 1.0
+            temp = np.full(d.shape, 300.0, np.float32)
+            v = np.zeros(d.shape + (3,), np.float32)
+            v[..., 0] = 10.0 * 0.1  # m/s, voxel 0.1 m
+            mv.write_raw(d, t / "d.raw")
+            mv.write_raw(temp, t / "t.raw")
+            v.tofile(str(t / "v.raw"))
+            src = t / "f.vdb"
+            mv.run([mv.RELEASE / "VolFromRaw.exe", t / "d.raw", 4, 3, 3, 0.1, src, 1e-4, t / "t.raw", 0, 0, 0, t / "v.raw"],
+                   cwd=mv.RELEASE)
+            lo, shape, voxel = mv.blur_bifrost_velocity(src, t / "blur.vdb", shutter=0.5, steps=16, density="density",
+                                                        temperature="temperature", velocity="velocity")
+            self.assertAlmostEqual(voxel, 0.1, places=6)
+            lo2, box = mv.read_vdb_box(t / "blur.vdb", ("density",))
+            b = box["density"]
+            self.assertAlmostEqual(float(b.sum()), 2.0, delta=0.05)
+            along = np.flatnonzero(b.sum((1, 2)) > 1e-3) + lo2[0]
+            self.assertLessEqual(int(along.min()), -1)  # past the frame's own box (x 1..2): 2.5 voxels each way
+            self.assertGreaterEqual(int(along.max()), 4)
+            self.assertEqual(int((b.sum((0, 2)) > 1e-3).sum()), 1)  # nothing across the flow
+            # a frame exported without its temperature: the density alone
+            mv.blur_bifrost_velocity(src, t / "dens.vdb", shutter=0.5, density="density", temperature=None, velocity="velocity")
+            lo3, box3 = mv.read_vdb_box(t / "dens.vdb", ("density",))
+            np.testing.assert_allclose(box3["density"], b, atol=1e-6)
+            with self.assertRaises(SystemExit):
+                mv.vdb_grid(t / "dens.vdb", "temperature")
+
     def test_rewrites_names_keeps_placement_and_clips_temperature(self):
         with tempfile.TemporaryDirectory() as t:
             t = Path(t)
@@ -453,6 +486,105 @@ class TestBifrostClean(unittest.TestCase):
             np.testing.assert_allclose(box["density"], 0.5)
             self.assertEqual(box["temperature"].shape, (4, 3, 2))  # clipped to the smoke, not the ambient domain
             self.assertEqual(float(box["temperature"][1, 1, 0]), 1500.0)
+
+
+@unittest.skipUnless((mv.RELEASE / "VolFromRaw.exe").exists() and (mv.RELEASE / "VdbToRaw.exe").exists(), "needs the tools")
+class TestVelocityGrid(unittest.TestCase):
+    """A vector grid (Bifrost's voxel_velocity) read back as an array with its components last."""
+
+    def test_velocity_round_trips(self):
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            d = np.ones((3, 2, 2), np.float32)
+            v = np.zeros((3, 2, 2, 3), np.float32)
+            v[..., 0] = 1.5
+            v[1, 1, 1] = (0.25, -2.0, 3.0)
+            mv.write_raw(d, t / "d.raw")
+            v.tofile(str(t / "v.raw"))  # x slowest, the components fastest
+            mv.run([mv.RELEASE / "VolFromRaw.exe", t / "d.raw", 3, 2, 2, 0.05, t / "f.vdb", 1e-4, "-", 4, 5, 6, t / "v.raw"],
+                   cwd=mv.RELEASE)
+            lo, arr, voxel = mv.vdb_grid(t / "f.vdb", "velocity")
+            self.assertEqual(lo, [4, 5, 6])
+            self.assertEqual(arr.shape, (3, 2, 2, 3))
+            np.testing.assert_allclose(arr, v)
+            self.assertAlmostEqual(voxel, 0.05, places=6)
+            lo_d, arr_d, _ = mv.vdb_grid(t / "f.vdb", "density")  # the density as it was
+            self.assertEqual(arr_d.shape, (3, 2, 2))
+
+
+class TestVelocityBlur(unittest.TestCase):
+    """Volume motion blur along the velocity, as a production renderer blurs a volume (its density looked up at
+    x - v(x) t over the shutter): smooth streaks along the flow -- rings where the construct only spins."""
+
+    def setUp(self):
+        self.d = np.zeros((41, 9, 41), np.float32)
+        self.d[28:31, 3:6, 19:22] = 1.0  # a small blob, 9 voxels right of the middle (x 29, z 20)
+
+    def test_still_smoke_is_left_alone(self):
+        v = np.zeros(self.d.shape + (3,), np.float32)
+        np.testing.assert_allclose(mv.velocity_blur(self.d, v, 1.0, shutter=0.5, steps=8), self.d, atol=1e-6)
+
+    def test_uniform_flow_smears_along_it_keeping_the_mass(self):
+        v = np.zeros(self.d.shape + (3,), np.float32)
+        v[..., 2] = 8.0  # 8 voxels a second along z (voxel 1)
+        b = mv.velocity_blur(self.d, v, 1.0, shutter=1.0, steps=17)
+        self.assertAlmostEqual(float(b.sum()), float(self.d.sum()), delta=0.02 * float(self.d.sum()))
+        prof_z = b.sum((0, 1))
+        span = np.flatnonzero(prof_z > 1e-3)
+        self.assertGreaterEqual(span.max() - span.min(), 9)  # 3 voxels long, smeared over the shutter's 8
+        np.testing.assert_allclose(b.sum((1, 2)), self.d.sum((1, 2)), atol=1e-3)  # nothing across the flow
+
+    def test_spin_smears_round_the_axis_not_across_it(self):
+        x, z = np.meshgrid(np.arange(41) - 20.0, np.arange(41) - 20.0, indexing="ij")
+        v = np.zeros(self.d.shape + (3,), np.float32)
+        v[..., 0] = (-z)[:, None, :]  # a solid-body spin about the y axis through (20, 20), 1 rad/s
+        v[..., 2] = x[:, None, :]
+        b = mv.velocity_blur(self.d, v, 1.0, shutter=1.0, steps=17)
+        w = b.sum(1)
+        r = np.sqrt(x ** 2 + z ** 2)
+        mean_r = float((w * r).sum() / w.sum())
+        self.assertAlmostEqual(mean_r, 9.0, delta=1.0)  # still at its radius
+        theta = np.arctan2(z, x)
+        spread = float(np.sqrt((w * theta ** 2).sum() / w.sum()))
+        self.assertGreater(spread, 0.2)  # smeared ~1 radian round the axis (a 3-voxel blob spans ~0.3)
+
+    def test_finer_density_than_velocity(self):
+        # a refined volume (post_refine_aero leaves the velocity at the simulation's resolution): the velocity
+        # sampled where each density voxel is, by its own voxel size
+        v = np.zeros((21, 5, 21, 3), np.float32)
+        v[..., 2] = 4.0  # 4 m/s along z on a grid of 2 m voxels
+        a = mv.velocity_blur(self.d, v, 1.0, shutter=1.0, steps=17, v_voxel=2.0)
+        v_fine = np.zeros(self.d.shape + (3,), np.float32)
+        v_fine[..., 2] = 4.0
+        np.testing.assert_allclose(a, mv.velocity_blur(self.d, v_fine, 1.0, shutter=1.0, steps=17), atol=1e-5)
+
+
+class TestFadeFoot(unittest.TestCase):
+    """The construct's foot thinned into smoke (the Lanterns reference's tail): a simulated column is densest at its
+    source, on the ground -- far denser than the rest once its tail dissipates -- so its bottom is faded in over a
+    fraction of its height."""
+
+    def setUp(self):
+        self.d = np.zeros((5, 24, 5), np.float32)
+        self.d[1:4, 2:22, 1:4] = 1.0  # a column standing on y = 2, its top y = 21: 20 slices
+
+    def test_bottom_faded_top_untouched(self):
+        f = mv.fade_foot(self.d, 0.0, 0.25)
+        prof = f[2, :, 2]
+        self.assertEqual(float(prof[2]), 0.0)  # its foot, gone
+        np.testing.assert_array_equal(f[:, 7:, :], self.d[:, 7:, :])  # above a quarter of its height: as it was
+        self.assertTrue(np.all(np.diff(prof[2:8]) > 0))  # faded in smoothly
+        self.assertEqual(f.dtype, np.float32)
+
+    def test_floor_keeps_some_smoke(self):
+        f = mv.fade_foot(self.d, 0.0, 0.25, floor=0.2)
+        self.assertAlmostEqual(float(f[2, 2, 2]), 0.2, places=6)
+
+    def test_column_found_above_a_faint_ground_haze(self):
+        d = self.d.copy()
+        d[:, 0, :] = 1e-4  # haze far below 2% of the column's slices
+        f = mv.fade_foot(d, 0.0, 0.25)
+        np.testing.assert_array_equal(f[:, 7:, :], d[:, 7:, :])
 
 
 class TestGlitter(unittest.TestCase):

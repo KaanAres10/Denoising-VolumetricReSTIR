@@ -29,6 +29,12 @@ GRAPHS = BIFROST + r"\resources\graphs"
 PROPERTIES = "voxel_fog_density voxel_temperature"  # what the renderer reads (all of them: the fire's 120 frames, 7.3 GB)
 
 
+def export_properties(env):
+    """The properties written: PROPERTIES, or BIFROST_PROPERTIES from `env` (e.g. adding voxel_velocity, which
+    make_volumes.py's motion blur follows)."""
+    return env.get("BIFROST_PROPERTIES") or PROPERTIES
+
+
 def wrap_graph(definition, compound, volume_output, out_dir, stem, overrides, properties=PROPERTIES):
     """A copy of `definition` with `compound` renamed into NAMESPACE (<short name>_vdb) and extended to write
     `volume_output` (node.port of an Object holding volumes) to <out_dir>/<stem>_####.vdb each frame, its `properties`
@@ -116,7 +122,8 @@ def main(argv):
     lib = os.path.join(out_dir, "_bifrost_lib").replace("\\", "/")
     os.makedirs(lib, exist_ok=True)
     with open(graph, encoding="utf-8") as fh:
-        wrapped = wrap_graph(json.load(fh), compound, volume_output, out_dir, stem, overrides)
+        wrapped = wrap_graph(json.load(fh), compound, volume_output, out_dir, stem, overrides,
+                             properties=export_properties(os.environ))
     with open(os.path.join(lib, stem + "_vdb.json"), "w", encoding="utf-8") as fh:
         json.dump(wrapped, fh, indent=1)
     config = os.path.join(lib, "config.json")
