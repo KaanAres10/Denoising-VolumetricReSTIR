@@ -248,12 +248,13 @@ SHOTS = {
 # twice the side (28 cm, close to the smoke: its light varies across each, which the light moves explore). Its smoke
 # near-neutral, a little warm -- the matched construct's green albedo scatters little red, so yellow light came off it
 # lime -- its extinction the same (1 in each channel: its density, silhouette and fit unchanged): yellow where the
-# light falls, its own glow green within.
+# light falls, its own glow green within. Without its sparkles (user: "you still added those sparkle lights, I don't
+# want that"): their thousands of emitters are left out of the scene (its table still holds them).
 # LANTERN_EMISSION "le_scale,cutoff,scale,lights" (0.004, 22, 600, 1): all read when the scene loads
 EMISSION = _env("LANTERN_EMISSION") or (0.004, 22.0, 600.0, 1.0)
 SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45), sigma_s=(0.75, 0.85, 0.55),
                             src="BifrostVDB/%s_clean%s_t/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),  # (its temperature kept)
-                            data=SHOTS["lanternbifrost"]["data"] + "_gl",
+                            data=SHOTS["lanternbifrost"]["data"] + "_gl", sparkles=False,
                             panels=({"name": "Key", "dir": KEY or (-0.75, 0.5, 0.45), "dist": 36.0, "side": 28.0,
                                      "rgb": (1.0, 0.78, 0.12), "radiance": 30.0 * EMISSION[3]},
                                     {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 28.0,

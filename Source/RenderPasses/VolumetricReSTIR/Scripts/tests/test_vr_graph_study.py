@@ -324,6 +324,21 @@ class TestLoaders(StudyEnv):
         table = lambda d: json.load(open(vr.DATA_DIR + r"\%s\%s%d_lights.json" % (d, d, g["frame"])))
         t, t0 = table(g["data"]), table(lantern.SHOTS["lanternbifrost"]["data"])
         self.assertEqual({k: t[k] for k in ("grid", "glitter", "debris")}, {k: t0[k] for k in ("grid", "glitter", "debris")})
+        # without its sparkles (user, 2026-10-18: "you still added those sparkle lights, I don't want that"): the
+        # glitter's emitters are left out of the scene -- the matched construct keeps them
+        def nodes(shot, m):
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            builder = Recorder()
+            scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+                     "float3": lambda *a: tuple(a), "float2": lambda *a: tuple(a), "float4": lambda *a: tuple(a),
+                     "Material": lambda n: types.SimpleNamespace(name=n, loadTexture=lambda *a: None),
+                     "TriangleMesh": lambda: Recorder(), "MaterialTextureSlot": types.SimpleNamespace(Emissive=0)}
+            with open(path) as fh:
+                exec(fh.read(), scope)
+            return [c[1][0] for c in builder.calls if c[0] == "addNode"]
+        self.assertNotIn("Glitter", nodes("lanternglow", m))
+        self.assertIn("Glitter", nodes("lanternbifrost", m0))
+        self.assertEqual(sorted(n for n in nodes("lanternglow", m) if n.startswith("SoftBox")), ["SoftBoxKey", "SoftBoxRim"])
 
     def test_the_looping_tornado_stands_as_its_preview_shows_it(self):
         # the user (2026-10-17): the original looping tornado, as JangaFX's preview shows it -- upright (z up -> y up,
