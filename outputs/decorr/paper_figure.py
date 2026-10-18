@@ -119,7 +119,9 @@ def prepare(root, label, without, with_, exposure_pct=99.0, paper_display=False)
         y0, y1 = max(0, ys.min() - my), min(ref.shape[0], ys.max() + my)
         x0, x1 = max(0, xs.min() - mx), min(ref.shape[1], xs.max() + mx)
         mask = mask[y0:y1, x0:x1]
-    else:
+    else:  # (no noreuse run: the numbers are over the whole lit region, and the figure says so -- not "in the medium")
+        print("WARNING: %s has no noreuse/c.medium.npy: relMSE over the lit region, not the medium"
+              % os.path.join(root, label), file=sys.stderr)
         mask = None
         y0, y1, x0, x1 = lit_region(ref)
     ref = ref[y0:y1, x0:x1]
@@ -152,8 +154,9 @@ def draw(fig, gs, a, p, names):
         for j, e in enumerate(errs):
             ax = fig.add_subplot(gs[3, 2 * j:2 * j + 2])
             ax.imshow(e, cmap="RdBu_r", vmin=-lim, vmax=lim)
-            ax.set_title("error vs reference, in the medium\n(red too bright, blue too dark)  RMS %.4f"
-                         % float(np.sqrt(np.mean(e[inside] ** 2))), fontsize=11)
+            ax.set_title("error vs reference, in the %s\n(red too bright, blue too dark)  RMS %.4f"
+                         % ("medium" if p.mask is not None else "lit region", float(np.sqrt(np.mean(e[inside] ** 2)))),
+                         fontsize=11)
             ax.axis("off")
         ax = fig.add_subplot(gs[3, 4:6])
         ax.text(0.5, 0.5, "Same colour scale in both maps.\nThe red and blue patches in the first map are\n"
@@ -174,7 +177,8 @@ def draw(fig, gs, a, p, names):
                 corrs.append("blotch corr. %.3f" % rho)
             if col is not None and col > 1e-3:
                 corrs.append("colour corr. %.3f" % col)
-            info = "\nrelMSE in the medium %.4f" % relmse(img) + ("\n" + ", ".join(corrs) if corrs else "")
+            region = "medium" if p.mask is not None else "lit region"
+            info = "\nrelMSE in the %s %.4f" % (region, relmse(img)) + ("\n" + ", ".join(corrs) if corrs else "")
         ax.set_title(name + info, fontsize=12)
         for (y, x), colour in zip(boxes, BOX_COLOURS):
             ax.add_patch(Rectangle((x, y), size, size, fill=False, ec=colour, lw=2.2))
