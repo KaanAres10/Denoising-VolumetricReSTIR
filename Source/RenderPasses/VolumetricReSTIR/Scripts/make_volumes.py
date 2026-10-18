@@ -675,7 +675,8 @@ def grain(d, amplitude, cell, octaves=2, seed=0):
 
 
 def blur_bifrost_velocity(src, dst, shutter, steps=None, density="voxel_fog_density", temperature="voxel_temperature",
-                          velocity="voxel_velocity", cutoff=1e-4, drift=(0.0, 0.0, 0.0), grain_spec=None, streaks=None):
+                          velocity="voxel_velocity", cutoff=1e-4, drift=(0.0, 0.0, 0.0), grain_spec=None, streaks=None,
+                          pre_fine=None):
     """A Bifrost frame motion blurred along its own velocity (velocity_blur: the Lanterns reference's construct is
     streaked along its rotation) over `shutter` seconds, rewritten as clean_bifrost_vdb does -- its box grown by the
     longest smear, in `steps` (blur_steps' unless given). The frame must hold the velocity (bifrost_export.py with BIFROST_PROPERTIES naming voxel_velocity).
@@ -683,12 +684,20 @@ def blur_bifrost_velocity(src, dst, shutter, steps=None, density="voxel_fog_dens
     along its axis, it tilts the streaks from rings round it toward the reference's helices; `grain_spec`
     (amplitude, cell, octaves, seed) grains the density first (grain), for the blur to streak; `streaks`
     (amplitude, cell, shutter) multiplies the blurred density by 1 + amplitude x flow_streaks (fine lines along the
-    flow over that shutter, at least 0).
+    flow over that shutter, at least 0); `pre_fine` (construct_detail's arguments) adds film detail to the density
+    before it is blurred, as production adds detail to a simulation and the render's motion blur smears it (added
+    after the blur it stayed as crisp billows, which the reference does not have).
     Returns the box's low corner, its shape and Bifrost's voxel size."""
     lo, d, voxel = vdb_grid(src, density)
+    if pre_fine:  # room for its warp (the frame's box is tight round its smoke)
+        p0 = int(np.ceil(sum(pre_fine.get("warp", ())))) + 2
+        d = np.pad(d, p0)
+        lo = [lo[a] - p0 for a in range(3)]
     hi = [lo[a] + d.shape[a] - 1 for a in range(3)]
     if grain_spec:
         d = grain(d, *grain_spec)
+    if pre_fine:
+        d = construct_detail(d, **pre_fine)
     grids = [d]
     if temperature:  # (None: a frame exported without it)
         tlo, t_box, _ = vdb_grid(src, temperature, clip=(lo, hi))
@@ -952,7 +961,7 @@ def write_lantern(shot="lantern", frame=None):
             blur_bifrost_velocity(REPO / (g["bifrost_src"] % frame), src, g["vblur"],  # (its temperature only if it glows)
                                   temperature="voxel_temperature" if "glow" in g else None,
                                   drift=g.get("drift", (0.0, 0.0, 0.0)), grain_spec=g.get("grain"),
-                                  streaks=g.get("streaks"))
+                                  streaks=g.get("streaks"), pre_fine=g.get("pre_fine"))
         else:
             k = g.get("shutter", 1)
             blur_bifrost_frames([REPO / (g["bifrost_src"] % f) for f in range(frame - k + 1, frame + 1)], src)

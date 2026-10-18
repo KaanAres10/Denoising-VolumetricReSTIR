@@ -47,6 +47,16 @@ def _env(name, parse=lambda v: tuple(float(x) for x in v.split(","))):
 # which Bifrost run it reads (BifrostVDB/<it>, bifrost_graphs.vortex_construct's frames): F3, the tuned simulation
 # (0.05 m) refined to 0.025 m, its velocity exported
 CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_F3")
+# its fine detail: LANTERN_DETAIL "warp1,warp2,scale1,scale2,streaks,streak_w_r,streak_w_v,grain,grain_scale,erode,
+# erode_ref" (make_volumes.py construct_detail, tornado_detail's: curl-noise filaments, streaks round its axis, grain,
+# erosion of its thin smoke; voxels) -- the reference's texture is at a voxel or two, the simulation smooth there
+DETAIL_KNOB = _env("LANTERN_DETAIL")
+DETAIL = DETAIL_KNOB
+FINE = DETAIL and {"warp": (DETAIL[0], DETAIL[1]), "warp_scales": (DETAIL[2], DETAIL[3]), "streaks": DETAIL[4],
+                   "streak_width": (DETAIL[5], DETAIL[6]), "grain": DETAIL[7], "grain_scale": DETAIL[8], "erode": DETAIL[9],
+                   "erode_ref": DETAIL[10]}
+# ... applied before the velocity blur when there is one (LANTERN_DETAIL_PRE=1): the blur smears it into streaks
+DETAIL_PRE = os.environ.get("LANTERN_DETAIL_PRE", "0") == "1"
 # its motion blur: along its own velocity over LANTERN_VBLUR seconds (make_volumes.py blur_bifrost_velocity, as a
 # production renderer blurs a volume: smooth streaks along the flow; the run must have exported voxel_velocity), or,
 # for LANTERN_VBLUR 0, LANTERN_SHUTTER frames averaged (make_volumes.py blur_bifrost_frames; 1: none)
@@ -61,7 +71,8 @@ GRAIN = tuple(VBLUR_SPEC[2:4]) if len(VBLUR_SPEC) > 3 and VBLUR_SPEC[2] else Non
 STREAKS = tuple(VBLUR_SPEC[4:7]) if len(VBLUR_SPEC) > 6 and VBLUR_SPEC[4] else None
 SHUTTER = int(os.environ.get("LANTERN_SHUTTER", "5"))
 BLUR_TAG = (("_v%g" % VBLUR + ("_d%g" % DRIFT if DRIFT else "") + ("_g%g_%g" % GRAIN if GRAIN else "")
-             + ("_l%g_%g_%g" % STREAKS if STREAKS else "")) if VBLUR
+             + ("_l%g_%g_%g" % STREAKS if STREAKS else "")
+             + ("_e" + hashlib.md5(repr(DETAIL).encode()).hexdigest()[:6] if DETAIL and DETAIL_PRE else "")) if VBLUR
             else ("_s%d" % SHUTTER if SHUTTER > 1 else ""))
 # its pose: LANTERN_POSE "yaw,roll[,size,dx,dy]" -- worldRotation (0, yaw, roll), the fitted diameter x size, the cap
 # moved (dx, dy) cm. Its tail comes toward the camera and its head goes away, as the reference's do (its rings curve
@@ -91,17 +102,15 @@ GLINT = GLINT + (0.0, 0.0, 0.0)[:max(0, 7 - len(GLINT))]  # ... ",spray_per,spra
 # out of focus, turbulent, pale with smoke; 0 turns each off
 TAIL_KNOB = _env("LANTERN_TAIL")
 TAIL = TAIL_KNOB or (0.0,) * 10
-# its fine detail: LANTERN_DETAIL "warp1,warp2,scale1,scale2,streaks,streak_w_r,streak_w_v,grain,grain_scale,erode,
-# erode_ref" (make_volumes.py construct_detail, tornado_detail's: curl-noise filaments, streaks round its axis, grain,
-# erosion of its thin smoke; voxels) -- the reference's texture is at a voxel or two, the simulation smooth there
-DETAIL_KNOB = _env("LANTERN_DETAIL")
-DETAIL = DETAIL_KNOB
 # its optical depth across its middle (LANTERN_TAU; the fit's, 8): thicker smoke shows its fine structure as a surface,
 # thin smoke averages it over its depth (at 8 the mean free path was ~40 voxels)
 TAU_KNOB = _env("LANTERN_TAU", float)
 # its key soft box's side (LANTERN_KEYSIZE cm, 14; its radiance scaled to keep its power): a smaller, harder key casts
 # the fine structure's own small shadows
 KEYSIZE_KNOB = _env("LANTERN_KEYSIZE", float)
+# its soft boxes' radiance: LANTERN_LIGHTS "key,rim,fill" (40, 8, 9; the key's for its 14 cm side)
+LIGHTS_KNOB = _env("LANTERN_LIGHTS")
+LIGHTS = LIGHTS_KNOB or (40.0, 8.0, 9.0)
 # its key: LANTERN_KEY "x,y,z" -- the key soft box's direction and the glitter's
 KEY = _env("LANTERN_KEY")
 # its foot faded into smoke (make_volumes.py fade_foot): LANTERN_FOOT "start,end[,floor]", fractions of its height
@@ -113,7 +122,8 @@ VARIANT = "".join("_%s%s" % (k, "_".join("%g" % v for v in t)) for k, t in (("f"
                                                                          ("l", GLINT_KNOB), ("t", TAIL_KNOB),
                                                                          ("e", DETAIL_KNOB),
                                                                          ("u", TAU_KNOB and (TAU_KNOB,)),
-                                                                         ("z", KEYSIZE_KNOB and (KEYSIZE_KNOB,))) if t)
+                                                                         ("z", KEYSIZE_KNOB and (KEYSIZE_KNOB,)),
+                                                                         ("o", LIGHTS_KNOB)) if t)
 VARIANT = VARIANT and "_" + hashlib.md5(VARIANT.encode()).hexdigest()[:8]
 
 GREEN = {"sigma_a": (0.85, 0.18, 0.72), "sigma_s": (0.15, 0.82, 0.28), "g": 0.5}
@@ -158,10 +168,7 @@ SHOTS = {
                            shutter=SHUTTER, **({"vblur": VBLUR, "drift": (0.0, DRIFT, 0.0)} if VBLUR else {}),
                            **({"grain": GRAIN + (2, 0)} if VBLUR and GRAIN else {}), **({"foot": FOOT} if FOOT else {}),
                            **({"streaks": STREAKS} if VBLUR and STREAKS else {}),
-                           **({"fine": {"warp": (DETAIL[0], DETAIL[1]), "warp_scales": (DETAIL[2], DETAIL[3]),
-                                          "streaks": DETAIL[4], "streak_width": (DETAIL[5], DETAIL[6]), "grain": DETAIL[7],
-                                          "grain_scale": DETAIL[8], "erode": DETAIL[9], "erode_ref": DETAIL[10]}}
-                              if DETAIL else {}),
+                           **({"pre_fine": FINE} if DETAIL and DETAIL_PRE and VBLUR else ({"fine": FINE} if DETAIL else {})),
                            **({"warp": {"amplitude": TAIL[0], "cell": TAIL[1], "top": TAIL[2]}} if TAIL[0] else {}),
                            **({"mist": {"amplitude": TAIL[3], "cell": TAIL[4], "reach": TAIL[5], "top": TAIL[6]}} if TAIL[3] else {}),
                            **({"defocus": {"focus": TAIL[7], "ramp": TAIL[8], "sigma_max": TAIL[9]}} if TAIL[9] else {}),
@@ -198,9 +205,9 @@ SHOTS = {
                            # its own soft boxes: the tornado's, the fill raised (its mid-tones were 105 green to the
                            # reference's 125, its shadows 61 to 80)
                            panels=({"name": "Key", "dir": KEY or (-0.75, 0.5, 0.45), "dist": 36.0, "side": KEYSIZE_KNOB or 14.0, "rgb": (0.75, 1.0, 0.8),
-                                    "radiance": 40.0 * (14.0 / (KEYSIZE_KNOB or 14.0)) ** 2},
-                                   {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 8.0},
-                                   {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 9.0}),
+                                    "radiance": LIGHTS[0] * (14.0 / (KEYSIZE_KNOB or 14.0)) ** 2},
+                                   {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": LIGHTS[1]},
+                                   {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": LIGHTS[2]}),
                            # (debris: the reference's dark flecks, each where its camera ray meets the smoke's surface:
                            # make_volumes.py dark_flecks, surface_hit -- LANTERN_DEBRIS=0 leaves them out)
                            **({"debris": {"mask": "13tornado.png", "tau_hit": 0.7, "rgb": (0.02, 0.03, 0.02)}}

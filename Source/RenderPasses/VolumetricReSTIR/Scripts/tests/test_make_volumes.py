@@ -467,6 +467,29 @@ class TestBifrostClean(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 mv.vdb_grid(t / "dens.vdb", "temperature")
 
+    def test_detail_before_the_blur(self):
+        # film detail added to the frame before it is blurred (pre_fine): the blurred frame differs, its mass kept
+        with tempfile.TemporaryDirectory() as t:
+            t = Path(t)
+            zz, yy, xx = np.indices((24, 30, 24), dtype=np.float64)
+            d = np.clip(7.0 - np.hypot(xx - 12, zz - 12), 0.0, 1.0).astype(np.float32).transpose(2, 1, 0).copy()
+            d[:, :6] = d[:, 24:] = 0.0  # (room round it: the warp reaches past its ends)
+            v = np.zeros(d.shape + (3,), np.float32)
+            v[..., 0] = 1.0
+            mv.write_raw(d, t / "d.raw")
+            v.tofile(str(t / "v.raw"))
+            src = t / "f.vdb"
+            mv.run([mv.RELEASE / "VolFromRaw.exe", t / "d.raw", *d.shape, 0.1, src, 1e-4, "-", 0, 0, 0, t / "v.raw"], cwd=mv.RELEASE)
+            kw = dict(shutter=0.2, density="density", temperature=None, velocity="velocity")
+            mv.blur_bifrost_velocity(src, t / "a.vdb", **kw)
+            mv.blur_bifrost_velocity(src, t / "b.vdb", pre_fine={"warp": (1.5, 0.8), "warp_scales": (6.0, 3.0), "grain": 0.5,
+                                                                   "grain_scale": 2.0}, **kw)
+            a = mv.read_vdb_box(t / "a.vdb", ("density",))[1]["density"]
+            b = mv.read_vdb_box(t / "b.vdb", ("density",))[1]["density"]
+            self.assertAlmostEqual(float(b.sum()), float(a.sum()), delta=0.1 * float(a.sum()))
+            n = min(a.size, b.size)
+            self.assertGreater(float(np.abs(np.sort(a.ravel())[-n:] - np.sort(b.ravel())[-n:]).mean()), 1e-3)
+
     def test_flow_streaks_run_along_the_flow(self):
         # fine noise blurred along the velocity and brought back to full contrast: a texture of fine lines along the
         # flow -- smooth along it, varying across it
