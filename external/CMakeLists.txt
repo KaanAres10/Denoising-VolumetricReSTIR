@@ -721,11 +721,15 @@ if(FALCOR_HAS_D3D12 AND (CMAKE_SYSTEM_NAME STREQUAL "Windows"))
     set(DXC_VERSION "1.8.2505")
     set(DXC_URL "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2505/dxc_2025_05_24.zip")
     FetchPackage(dxc URL ${DXC_URL})
-    copy_file(${dxc_SOURCE_DIR}/bin/x64/dxcompiler.dll .)
-    copy_file(${dxc_SOURCE_DIR}/bin/x64/dxil.dll .)
-    # The copy_file() calls above never run on the VS generator (see the Agility SDK note above), so
-    # deploycommon.bat is what puts DXC beside the executable. It deploys this fetched DXC only when
-    # FALCOR_USE_FETCHED_DXC is ON (root CMakeLists.txt); otherwise the packman one, 1.7.2207.
+    # Only when FALCOR_USE_FETCHED_DXC is ON (root CMakeLists.txt): these copies DO run on the VS generator, in a
+    # full build (target falcor-copy-files, outside the plugins' dependencies) -- unguarded, a full build put the
+    # fetched 1.8.2505 over the packman 1.7.2207 deploycommon.bat had deployed, and every shader compiled
+    # differently (up to 2/255 on a few pixels; the locked captures failed). deploycommon.bat deploys the
+    # chosen one either way. (Configured before the option is declared: unset on the first run, i.e. OFF.)
+    if(FALCOR_USE_FETCHED_DXC)
+        copy_file(${dxc_SOURCE_DIR}/bin/x64/dxcompiler.dll .)
+        copy_file(${dxc_SOURCE_DIR}/bin/x64/dxil.dll .)
+    endif()
     set(FALCOR_DXC_DIR ${dxc_SOURCE_DIR} PARENT_SCOPE)
 
     add_library(dxcompiler SHARED IMPORTED GLOBAL)
