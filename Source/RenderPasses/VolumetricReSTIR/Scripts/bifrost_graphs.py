@@ -87,6 +87,7 @@ def check_graph(compound):
 
 
 VOLUME_OUTPUT = "refine.refined_aero"  # what bifrost_export.py writes: the refined volume
+SIM_VOLUME_OUTPUT = "simulate_aero.aero_volume"  # ... or, refined inside the simulation (sim_refine), the solver's own
 
 
 def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, source_radius=1.0, fog=2.0, temperature=60.0,
@@ -95,7 +96,8 @@ def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
                      tail_radius=2.2, tail_fog=0.0, source_noise=0.0, noise_frequency=2.0, tail_thin=0.0,
                      source_arms=0, source_arm_amp=0.8,
                      pyro_drag=1.5, pyro_vorticity=4.0, pyro_frequency=1.0, einstein=1.0, vorticity=0.3,
-                     refine_levels=1, style="busy", height=14.0, width=12.0):
+                     refine_levels=1, style="busy", height=14.0, width=12.0,
+                     sim_refine=0, sharpening=None, einstein_fine=None, einstein_coarse=None, einstein_frequency=None):
     """The Lanterns construct as an Aero simulation (module docstring), with Bifrost's production detail.
     The flow, reached through `drag` (1/s) and confined to the vortex's core (x exp(-|r|^2 / `core`^2), r the offset
     from the axis: spun as a solid body, the whole domain flung the head into a 12 m sheet): a swirl round the y axis
@@ -116,7 +118,10 @@ def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
     masked by 1 - clamp(y / base_height, 0, 1): the reference's construct thins into smoke toward its tail. Detail: Bifrost's
     aero_pyroclastic_influence (`pyro_drag`, `pyro_vorticity`, `pyro_frequency`: billowy detail) and
     aero_einstein_influence (`einstein`: coarse and fine turbulence), vorticity confinement (`vorticity`), the solver's
-    `style`; then post_refine_aero, `refine_levels` levels (each doubles the resolution of all but the velocity) --
+    `style` -- the Einstein turbulence's fine and coarse parts and frequency scale (`einstein_fine`, `einstein_coarse`,
+    `einstein_frequency`) set apart if given; refinement inside the simulation (aero_refinement_settings, `sim_refine`
+    levels, (radius, amount) of `sharpening`): the solver resolves finer detail, Bifrost's own upres; then
+    post_refine_aero, `refine_levels` levels (each doubles the resolution of all but the velocity, adding no detail) --
     its output is the volume exported (VOLUME_OUTPUT). The fluid detail size `detail` (m, absolute), inside a `width` x
     `height` x `width` box (m) standing on the ground."""
     g = Graph("vortex_construct")
@@ -165,6 +170,13 @@ def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
            style=("Simulation::Aero::TransportStyle", style), enable_buoyancy=("bool", "true"),
            kill_voxel_fog_threshold=("float", _f(0.005)))
     g.connect("bounds.cube_mesh", "aero_solver_settings.simulation_bounds")
+    if sim_refine:  # refinement inside the simulation: finer detail resolved, not upsampled
+        kw = {"enable_refinement": ("bool", "true"), "refinement_levels": ("int", "%dL" % sim_refine)}
+        if sharpening:
+            kw.update(apply_filter=("bool", "true"), sharpening_radius=("int", "%dL" % sharpening[0]),
+                      sharpening_amount=("float", _f(sharpening[1])))
+        g.node("sim_refinement", "Simulation::Aero::aero_refinement_settings", **kw)
+        g.connect("sim_refinement.refinement_settings", "aero_solver_settings.additional_settings.refinement")
     # the prescribed flow, as a vector field (r: the offset from the y axis; y: the height)
     g.node("position", "Core::Fields::position_field")
     g.node("flat", "Core::Fields::vector_field", value=("Math::float3", _v3(1, 0, 1)))
@@ -269,7 +281,9 @@ def vortex_construct(detail=0.03, swirl=1.5, pull=0.3, lift=2.5, drag=2.0, sourc
     # Bifrost's production detail
     g.node("pyroclastic", "Simulation::Influence::aero_pyroclastic_influence", drag=("float", _f(pyro_drag)),
            vorticity=("float", _f(pyro_vorticity)), frequency=("float", _f(pyro_frequency)))
-    g.node("einstein", "Simulation::Influence::aero_einstein_influence", master_magnitude=("float", _f(einstein)))
+    ekw = {k: ("float", _f(v)) for k, v in (("fine_turbulence", einstein_fine), ("coarse_turbulence", einstein_coarse),
+                                             ("frequency_scale", einstein_frequency)) if v is not None}
+    g.node("einstein", "Simulation::Influence::aero_einstein_influence", master_magnitude=("float", _f(einstein)), **ekw)
     g.node("vorticity", "Simulation::Influence::vorticity_influence", vorticity=("float", _f(vorticity)))
     g.node("simulate_aero", "Simulation::Aero::simulate_aero")
     g.connect("source_air.air_source", "simulate_aero.sources.air")

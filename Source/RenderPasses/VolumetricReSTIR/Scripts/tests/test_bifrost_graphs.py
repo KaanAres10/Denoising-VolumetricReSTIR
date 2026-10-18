@@ -205,6 +205,28 @@ class TestVortexConstruct(unittest.TestCase):
         self.assertIn(("refine.refined_aero", ".volume"), conns)
         self.assertEqual(bg.VOLUME_OUTPUT, "refine.refined_aero")
 
+    def test_refinement_inside_the_simulation_and_fine_turbulence(self):
+        # Bifrost's own upres: aero_refinement_settings in the solver's additional settings (the solver resolves the
+        # finer detail, where post_refine_aero only upsamples); the Einstein turbulence's fine and coarse parts set
+        # apart -- off by default (the graph as before)
+        self.assertNotIn("sim_refinement", self.nodes)
+        c = bg.vortex_construct(sim_refine=1, sharpening=(2, 0.5), einstein_fine=3.0, einstein_coarse=0.2,
+                                einstein_frequency=2.0)["compounds"][0]
+        self.assertEqual(bg.check_graph(c), [])
+        nodes = {n["nodeName"]: n for n in c["compoundNodes"]}
+        values = {v["valueName"]: v["value"] for v in c["values"]}
+        conns = {(x["source"], x["target"]) for x in c["connections"]}
+        self.assertEqual(nodes["sim_refinement"]["nodeType"], "Simulation::Aero::aero_refinement_settings")
+        self.assertIn(("sim_refinement.refinement_settings", "aero_solver_settings.additional_settings.refinement"), conns)
+        self.assertEqual(nodes["aero_solver_settings"]["fanInPortNames"]["additional_settings"], ["refinement"])
+        self.assertEqual(values["sim_refinement.enable_refinement"], "true")
+        self.assertEqual(values["sim_refinement.refinement_levels"], "1L")
+        self.assertEqual(values["sim_refinement.sharpening_radius"], "2L")
+        self.assertEqual(values["sim_refinement.apply_filter"], "true")  # its sharpening filter on: fog kept crisp
+        self.assertEqual(values["einstein.fine_turbulence"], "3.0f")
+        self.assertEqual(values["einstein.coarse_turbulence"], "0.2f")
+        self.assertEqual(values["einstein.frequency_scale"], "2.0f")
+
     def test_exports_through_the_wrapper(self):
         w = bx.wrap_graph(self.d, self.c["name"], bg.VOLUME_OUTPUT, "C:/out", "construct", {})
         self.assertEqual(bg.check_graph(w["compounds"][0]), [])
