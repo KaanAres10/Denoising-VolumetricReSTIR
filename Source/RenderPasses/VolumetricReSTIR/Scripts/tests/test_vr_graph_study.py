@@ -340,6 +340,70 @@ class TestLoaders(StudyEnv):
         self.assertIn("Glitter", nodes("lanternbifrost", m0))
         self.assertEqual(sorted(n for n in nodes("lanternglow", m) if n.startswith("SoftBox")), ["SoftBoxKey", "SoftBoxRim"])
 
+    def test_the_glowing_construct_on_a_ground(self):
+        # a scene variant for the mutation study (user, 2026-10-18: "ground and shadows", "try each one separately"): a
+        # flat ground under the construct (lantern.py LANTERN_GROUND), its shadow and glow on it -- a large grey quad at
+        # the ground's height, facing up; off by default
+        import lantern
+        g = dict(lantern.SHOTS["lanternglow"], ground={"y": -10.5, "extent": 2000.0, "rgb": (0.3, 0.3, 0.3)})
+        self.assertNotIn("ground", lantern.SHOTS["lanternglow"])
+        saved = lantern.SHOTS["lanternglow"]
+        lantern.SHOTS["lanternglow"] = g
+        try:
+            vr, m = fresh_vr()
+            vr.SCENES["lanternglow"]()
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            builder = Recorder()
+            meshes = []
+            scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+                     "float3": lambda *a: tuple(a), "float2": lambda *a: tuple(a), "float4": lambda *a: tuple(a),
+                     "Material": lambda n: types.SimpleNamespace(name=n, loadTexture=lambda *a: None),
+                     "TriangleMesh": lambda: meshes.append(Recorder()) or meshes[-1],
+                     "MaterialTextureSlot": types.SimpleNamespace(Emissive=0)}
+            with open(path) as fh:
+                exec(fh.read(), scope)
+        finally:
+            lantern.SHOTS["lanternglow"] = saved
+        nodes = [c[1][0] for c in builder.calls if c[0] == "addNode"]
+        self.assertIn("Ground", nodes)
+        ground = meshes[nodes.index("Ground")]
+        verts = [c[1] for c in ground.calls if c[0] == "addVertex"]
+        self.assertEqual(len(verts), 4)
+        self.assertTrue(all(v[0][1] == -10.5 and v[1] == (0.0, 1.0, 0.0) for v in verts))  # at its height, facing up
+
+    def test_the_glowing_construct_behind_slats(self):
+        # a scene variant (user, 2026-10-18: "light shafts through gaps", "try each one separately"): boards across the
+        # key's light (lantern.py LANTERN_SLATS), its light falling through the gaps as stripes in the smoke -- boards
+        # `board` cm tall, `gap` cm apart, filling `size` cm, square to the key's direction at `dist` cm from the target
+        import lantern
+        import numpy as np
+        slats = {"dist": 24.0, "size": 20.0, "board": 2.5, "gap": 2.5, "rgb": (0.03, 0.03, 0.03)}
+        saved = lantern.SHOTS["lanternglow"]
+        lantern.SHOTS["lanternglow"] = dict(saved, slats=slats)
+        try:
+            vr, m = fresh_vr()
+            vr.SCENES["lanternglow"]()
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            builder = Recorder()
+            meshes = []
+            scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+                     "float3": lambda *a: tuple(a), "float2": lambda *a: tuple(a), "float4": lambda *a: tuple(a),
+                     "Material": lambda n: types.SimpleNamespace(name=n, loadTexture=lambda *a: None),
+                     "TriangleMesh": lambda: meshes.append(Recorder()) or meshes[-1],
+                     "MaterialTextureSlot": types.SimpleNamespace(Emissive=0)}
+            with open(path) as fh:
+                exec(fh.read(), scope)
+        finally:
+            lantern.SHOTS["lanternglow"] = saved
+        nodes = [c[1][0] for c in builder.calls if c[0] == "addNode"]
+        self.assertIn("Slats", nodes)
+        verts = np.array([c[1][0] for c in meshes[nodes.index("Slats")].calls if c[0] == "addVertex"])
+        self.assertEqual(len(verts), 4 * 4)  # 20 cm / (2.5 + 2.5): four boards, a quad each
+        key = np.asarray(saved["panels"][0]["dir"], float)
+        key /= np.linalg.norm(key)
+        np.testing.assert_allclose(verts @ key, 24.0, atol=1e-6)  # square to the key's direction, 24 cm out
+        self.assertNotIn("slats", saved)
+
     def test_the_looping_tornado_stands_as_its_preview_shows_it(self):
         # the user (2026-10-17): the original looping tornado, as JangaFX's preview shows it -- upright (z up -> y up,
         # turned only about its own axis), its own structure with the Lanterns construct's detail added

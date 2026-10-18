@@ -254,7 +254,17 @@ SHOTS = {
 # when the scene loads
 EMISSION = _env("LANTERN_EMISSION") or (0.004, 22.0, 600.0, 1.0)
 EMISSION = EMISSION + (0.05, 1.0, 0.3)[max(0, len(EMISSION) - 4):]
+# scene variants for the study (user: "ground and shadows", "try each one separately"): LANTERN_GROUND "y[,extent,r,g,b]"
+# -- a flat ground at height y (cm; -10.5 just under its tail), the smoke's shadow and glow on it
+GROUND_KNOB = _env("LANTERN_GROUND")
+# ... LANTERN_SLATS "dist,size,board,gap[,key_side]" -- boards `board` cm tall, `gap` cm apart over `size` cm, square to
+# the key's direction `dist` cm from the target, the key `key_side` cm (4; its power kept): through a 28 cm soft box's
+# gaps the shadows blur wider than the gaps -- light shafts need a small light
+SLATS_KNOB = _env("LANTERN_SLATS")
 SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45), sigma_s=(0.75, 0.85, 0.55),
+                            **({"ground": {"y": GROUND_KNOB[0], "extent": GROUND_KNOB[1] if len(GROUND_KNOB) > 1 else 2000.0,
+                                           "rgb": tuple(GROUND_KNOB[2:5]) if len(GROUND_KNOB) > 4 else (0.3, 0.3, 0.28)}}
+                               if GROUND_KNOB else {}),
                             src="BifrostVDB/%s_clean%s_t/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),  # (its temperature kept)
                             data=SHOTS["lanternbifrost"]["data"] + "_gl", sparkles=False,
                             panels=({"name": "Key", "dir": KEY or (-0.75, 0.5, 0.45), "dist": 36.0, "side": 28.0,
@@ -263,6 +273,12 @@ SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45),
                                      "rgb": (1.0, 0.72, 0.1), "radiance": 30.0 * EMISSION[3]}),
                             emission={"le_scale": EMISSION[0], "cutoff": EMISSION[1], "scale": EMISSION[2],
                                       "tint": tuple(EMISSION[4:7])})
+if SLATS_KNOB:  # (the slats variant: its boards, and its key small at the same power)
+    _side = SLATS_KNOB[4] if len(SLATS_KNOB) > 4 else 4.0
+    _key = SHOTS["lanternglow"]["panels"][0]
+    SHOTS["lanternglow"]["slats"] = {"dist": SLATS_KNOB[0], "size": SLATS_KNOB[1], "board": SLATS_KNOB[2],
+                                     "gap": SLATS_KNOB[3], "rgb": (0.03, 0.03, 0.03)}
+    SHOTS["lanternglow"]["panels"] = (dict(_key, side=_side, radiance=_key["radiance"] * (_key["side"] / _side) ** 2),) +         tuple(SHOTS["lanternglow"]["panels"][1:])
 SKIES = {
     # matched to the user's Lanterns reference: a teal sky brighter below (55/78/78 at the top right, 81/110/111 at the
     # bottom right), a broad white glow behind the funnel filling the frame's left side, a soft key from the upper left

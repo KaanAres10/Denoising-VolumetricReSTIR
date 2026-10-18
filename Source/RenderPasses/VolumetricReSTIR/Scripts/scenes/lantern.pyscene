@@ -30,6 +30,43 @@ for panel in lantern.SHOTS[SHOT].get('panels', ()):
     box.emissiveColor = float3(*panel['rgb'])
     box.emissiveFactor = panel['radiance']
     sceneBuilder.addMeshInstance(sceneBuilder.addNode('SoftBox' + panel['name']), sceneBuilder.addTriangleMesh(mesh, box))
+ground = lantern.SHOTS[SHOT].get('ground')  # (a scene variant) a flat ground under it: a large diffuse quad facing up
+if ground:
+    e, y = ground['extent'], ground['y']
+    mesh = TriangleMesh()
+    for c, uv in zip(((-e, y, -e), (e, y, -e), (e, y, e), (-e, y, e)), ((0, 0), (1, 0), (1, 1), (0, 1))):
+        mesh.addVertex(float3(*c), float3(0.0, 1.0, 0.0), float2(*uv))
+    mesh.addTriangle(0, 2, 1)  # wound to face up
+    mesh.addTriangle(0, 3, 2)
+    floor = Material('Ground')
+    floor.baseColor = float4(*ground['rgb'], 1.0)
+    floor.roughness = 1.0
+    floor.metallic = 0.0
+    sceneBuilder.addMeshInstance(sceneBuilder.addNode('Ground'), sceneBuilder.addTriangleMesh(mesh, floor))
+slats = lantern.SHOTS[SHOT].get('slats')  # (a scene variant) boards across the key's light: it falls through the gaps
+if slats:  # as stripes in the smoke -- each board a quad square to the key's direction, wound both ways (shadow rays
+    # meet it from the smoke's side)
+    kd = lantern.SHOTS[SHOT]['panels'][0]['dir']
+    k = [c / sum(v * v for v in kd) ** 0.5 for c in kd]
+    centre = [t + slats['dist'] * c for t, c in zip(target, k)]
+    a = [-k[2], 0.0, k[0]]  # k x up: across the boards
+    n = sum(v * v for v in a) ** 0.5
+    a = [v / n for v in a]
+    b = [a[1] * k[2] - a[2] * k[1], a[2] * k[0] - a[0] * k[2], a[0] * k[1] - a[1] * k[0]]  # up the stack
+    h, pitch = slats['size'] / 2, slats['board'] + slats['gap']
+    mesh = TriangleMesh()
+    for i in range(int(slats['size'] // pitch)):
+        v0 = -h + i * pitch
+        for u, v in ((-h, v0), (h, v0), (h, v0 + slats['board']), (-h, v0 + slats['board'])):
+            mesh.addVertex(float3(*[centre[j] + u * a[j] + v * b[j] for j in range(3)]), float3(*k), float2(0, 0))
+        q = 4 * i
+        for tri in ((q, q + 1, q + 2), (q, q + 2, q + 3), (q, q + 2, q + 1), (q, q + 3, q + 2)):
+            mesh.addTriangle(*tri)
+    boards = Material('Slats')
+    boards.baseColor = float4(*slats['rgb'], 1.0)
+    boards.roughness = 1.0
+    boards.metallic = 0.0
+    sceneBuilder.addMeshInstance(sceneBuilder.addNode('Slats'), sceneBuilder.addTriangleMesh(mesh, boards))
 glitter = table.get('glitter') if lantern.SHOTS[SHOT].get('sparkles', True) else None  # the construct's sparkles
 if glitter:  # (a shot can leave them out): emissive quads facing the camera (lantern.glitter_quads), streaked along
     # their motion if the table says how far each moves, soft if it names a sprite
