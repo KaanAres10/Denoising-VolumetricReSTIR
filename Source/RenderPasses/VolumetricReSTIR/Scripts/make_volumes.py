@@ -314,11 +314,14 @@ def glitter_sizes(n, size, sigma, seed=0):
     return [float(v) for v in size * np.random.default_rng(seed).lognormal(0.0, sigma, n)]
 
 
-def glitter_points(d, n, key, threshold, seed=0, power=4.0):
+def glitter_points(d, n, key, threshold, seed=0, power=4.0, tau_scale=None, pool=4):
     """The construct's glitter (the Lanterns reference's sparkles): `n` points (array index coordinates, x slowest)
     on the surface of density `d` -- voxels at or above `threshold` with a 6-neighbour below it -- drawn by how
     squarely their outward normal (minus the density gradient, central differences two voxels apart) faces `key`
-    (a direction in the same index frame), to the power `power`, jittered within their voxel. Seeded."""
+    (a direction in the same index frame), to the power `power`, and, for a `tau_scale` (optical depth per unit
+    density per voxel), by how much of the key's light reaches them -- the transmittance through the smoke toward
+    it, marched on a grid `pool` times coarser: the reference's sparkles are where its key lands -- jittered within
+    their voxel. Seeded."""
     rng = np.random.default_rng(seed)
     mask = d >= threshold
     surf = np.argwhere(mask & ~ndimage.binary_erosion(mask))
@@ -334,6 +337,16 @@ def glitter_points(d, n, key, threshold, seed=0, power=4.0):
     normal = -grad / np.maximum(np.linalg.norm(grad, axis=1, keepdims=True), 1e-12)
     k = np.asarray(key, float) / np.linalg.norm(key)
     w = np.clip(normal @ k, 0.0, None) ** power
+    if tau_scale is not None:  # the key's light reaching each, through the smoke
+        live = np.flatnonzero(w > 0)
+        s = [n_ // pool * pool for n_ in d.shape]
+        coarse = d[:s[0], :s[1], :s[2]].reshape(s[0] // pool, pool, s[1] // pool, pool, s[2] // pool, pool).mean((1, 3, 5))
+        start = (surf[live] + 0.5) / pool - 0.5 + 0.75 * k  # a step out of its own voxel
+        tau = np.zeros(len(live))
+        for step in range(int(np.ceil(np.linalg.norm(coarse.shape))) + 1):
+            at = (start + step * k).T
+            tau += ndimage.map_coordinates(coarse, at, order=1, mode="constant", cval=0.0)
+        w[live] *= np.exp(-tau_scale * pool * tau)
     if w.sum() <= 0:
         return np.zeros((0, 3))
     pick = rng.choice(len(surf), size=min(n, int((w > 0).sum())), replace=False, p=w / w.sum())

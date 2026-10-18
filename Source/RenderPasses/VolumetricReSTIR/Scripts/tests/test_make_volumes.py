@@ -606,6 +606,19 @@ class TestGlitter(unittest.TestCase):
         self.assertTrue(np.all(np.abs(r - 11.5) < 1.5), (r.min(), r.max()))  # on the ball's surface
         self.assertGreater(float(np.mean(pts[:, 1] > 20.0)), 0.95)  # on the side facing +y, the key
 
+    def test_only_where_the_key_reaches(self):
+        # a slab over half the ball's key-facing side shades it: with the smoke's optical depth given, the glitter
+        # keeps to where the key's light lands (the reference's sparkles are on its lit side only)
+        d = self.d.copy()
+        d[:20, 34:37, :] = 0.4  # a slab above the ball's x < 20 half, between it and the key (+y): thin smoke, no glitter of its own
+        pts = mv.glitter_points(d, n=200, key=(0.0, 1.0, 0.0), threshold=0.5, seed=0, tau_scale=5.0, pool=1)
+        on_ball = pts[np.linalg.norm(pts - 20.0, axis=1) < 14.0]
+        self.assertEqual(len(on_ball), 200)  # (the slab is too thin to glitter)
+        self.assertGreater(float(np.mean(on_ball[:, 0] >= 19.5)), 0.95)  # the unshaded half
+        free = mv.glitter_points(d, n=200, key=(0.0, 1.0, 0.0), threshold=0.5, seed=0)
+        free = free[np.linalg.norm(free - 20.0, axis=1) < 14.0]
+        self.assertLess(float(np.mean(free[:, 0] >= 19.5)), 0.8)  # without it, both halves
+
     def test_sizes_spread_lognormally_round_the_median(self):
         s = mv.glitter_sizes(4000, 0.035, 0.6, seed=2)
         self.assertEqual(len(s), 4000)
