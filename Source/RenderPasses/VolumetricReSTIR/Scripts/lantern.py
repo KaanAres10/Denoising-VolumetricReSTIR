@@ -236,6 +236,21 @@ SHOTS = {
                         glow={"n": 5, "heights": (-170.0, -110.0, -40.0, 40.0, 120.0), "rgb": (0.7, 1.0, 0.75), "power": 4200.0, "outside": 8.0},
                         camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
 }
+# The construct for the decorrelation study, glowing from within (user, 2026-10-18: "make the scene such that mutation
+# is useful", choosing "multiple scattering" and "construct glows itself"): the matched construct as it is, its smoke
+# emitting by Bifrost's own simulated temperature -- the blackbody at (T - cutoff) x scale kelvin (black below ~800 K,
+# white by 6400) times LeScale, tinted its energy's green (a Lantern's construct is light; with little red, the cooler
+# smoke's orange blackbody glows a dim green, not brown) -- motion blurred with its density. Its glow varies through its
+# depth, which the mutations' depth moves explore; its multiple scattering is the study's 2 bounces (label
+# lanternglow_b2), its soft boxes dimmed for the light the second bounce adds (+27% in its mid-tones).
+# LANTERN_EMISSION "le_scale,cutoff,scale,lights" (0.0015, 22, 600, 0.75): all read when the scene loads
+EMISSION = _env("LANTERN_EMISSION") or (0.0015, 22.0, 600.0, 0.75)
+SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"],
+                            src="BifrostVDB/%s_clean%s_t/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),  # (its temperature kept)
+                            data=SHOTS["lanternbifrost"]["data"] + "_gl",
+                            panels=tuple(dict(p, radiance=p["radiance"] * EMISSION[3]) for p in SHOTS["lanternbifrost"]["panels"]),
+                            emission={"le_scale": EMISSION[0], "cutoff": EMISSION[1], "scale": EMISSION[2],
+                                      "tint": (0.05, 1.0, 0.3)})
 SKIES = {
     # matched to the user's Lanterns reference: a teal sky brighter below (55/78/78 at the top right, 81/110/111 at the
     # bottom right), a broad white glow behind the funnel filling the frame's left side, a soft key from the upper left

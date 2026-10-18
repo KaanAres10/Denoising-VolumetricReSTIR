@@ -665,9 +665,11 @@ def load_lantern(shot="lantern"):
         pose["scale"] = grid.get("scale", pose["scale"])  # a simulated column: fitted to the reference
         density = grid.get("density_scale", density)
     m.loadScene(SCENE_DIR + r"\lantern_%s.pyscene" % shot)
+    em = g.get("emission")  # (lanternglow: its smoke's own glow, by Bifrost's temperature, tinted)
+    glow = {"hasEmission": True, "LeScale": em["le_scale"], "temperatureCutoff": em["cutoff"],
+            "temperatureScale": em["scale"], "emissionTint": float3(*em["tint"])} if em else {"hasEmission": False, "LeScale": 1.0}
     m.scene.addGVDBVolume(sigma_a=float3(*g["sigma_a"]), sigma_s=float3(*g["sigma_s"]), g=env_float("VR_PHASE_G", g["g"]),
-                          dataFile=stem, numMips=4, densityScale=_density(density),
-                          hasVelocity=False, hasEmission=False, LeScale=1.0,
+                          dataFile=stem, numMips=4, densityScale=_density(density), hasVelocity=False, **glow,
                           worldTranslation=float3(*swatch_fire_translation(pose)), worldRotation=float3(*g["rotation"]),
                           worldScaling=pose["scale"])
     m.scene.setEnvMap(DATA_DIR + r"\authored\%s.exr" % g["sky"])
@@ -728,6 +730,9 @@ SCENES = {"plume": load_plume, "bistro": load_bistro, "explosion": load_explosio
           "teapotbifrost": lambda: load_teapot_sequence("bifrostfire"),
           "lantern": load_lantern, "lanterndust": lambda: load_lantern("lanterndust"),
           "lanternbifrost": lambda: load_lantern("lanternbifrost"),
+          # The construct glowing from within, for the study (user, 2026-10-18: "multiple scattering", "construct
+          # glows itself"; its 2 bounces: label lanternglow_b2).
+          "lanternglow": lambda: load_lantern("lanternglow"),
           "bunnycathedral": lambda: load_bunny(SCENE_DIR + r"\bunny_cathedral.pyscene", POINT_LIGHTS_OCCLUDED),
           "wdassunset": load_wdas_sunset,
           "emeraldnight": load_emerald_night}

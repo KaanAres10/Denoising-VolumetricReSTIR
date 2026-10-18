@@ -724,6 +724,23 @@ class TestFadeFoot(unittest.TestCase):
         np.testing.assert_array_equal(f[:, 7:, :], d[:, 7:, :])
 
 
+class TestPlaceInBox(unittest.TestCase):
+    """A grid moved onto another index box (the construct's temperature onto its reworked density's padded box, for
+    its glow): its voxels where they were in the index space, zero where it does not reach, clipped where it spills."""
+
+    def test_moved_into_a_larger_box(self):
+        t = np.arange(8, dtype=np.float32).reshape(2, 2, 2)
+        out = mv.place_in_box(t, (5, 5, 5), (4, 2, 3), (4, 5, 5))
+        self.assertEqual((out.shape, out.dtype), ((4, 2, 3), np.float32))
+        np.testing.assert_array_equal(out[1:3, :, 0:2], t)
+        self.assertEqual(float(out.sum()), float(t.sum()))  # zero elsewhere
+
+    def test_clipped_where_it_spills(self):
+        t = np.ones((4, 1, 1), np.float32)
+        out = mv.place_in_box(t, (-2, 0, 0), (3, 1, 1), (0, 0, 0))  # t covers x -2..1, the box 0..2
+        np.testing.assert_array_equal(out[:, 0, 0], (1.0, 1.0, 0.0))
+
+
 class TestGlitter(unittest.TestCase):
     """The construct's glitter (the Lanterns reference's sparkles): points on the volume's surface where it faces the
     key light -- a speck of smoke cannot be brighter than the light reaching it, so the glints are tiny emitters."""

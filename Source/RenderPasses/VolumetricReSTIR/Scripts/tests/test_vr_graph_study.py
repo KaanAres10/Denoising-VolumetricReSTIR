@@ -291,6 +291,34 @@ class TestLoaders(StudyEnv):
             self.assertAlmostEqual(sum(l.intensity[1] for l in lights), glow["power"] * glow["rgb"][1], places=6)
             self.assertEqual(info["params"]["mUseAnalyticLights"], glow["n"] > 0)  # never on with no point lights
 
+    def test_the_construct_glowing_from_within(self):
+        # the decorrelation study's construct (user, 2026-10-18: "multiple scattering", "construct glows itself"): the
+        # matched construct placed as lanternbifrost places it, emitting through Bifrost's own temperature -- the
+        # blackbody tinted its energy's green; its 2 bounces are the study's (label lanternglow_b2)
+        import lantern
+        g = lantern.SHOTS["lanternglow"]
+        vr, m = fresh_vr()
+        info = vr.SCENES["lanternglow"]()
+        v = volume_call(m)
+        vr0, m0 = fresh_vr()
+        vr0.SCENES["lanternbifrost"]()
+        v0 = volume_call(m0)
+        self.assertTrue(v["dataFile"].endswith("%s%d" % (g["data"], g["frame"])), v["dataFile"])
+        e = g["emission"]
+        self.assertEqual((v["hasEmission"], v["LeScale"], v["temperatureCutoff"], v["temperatureScale"], v["emissionTint"]),
+                         (True, e["le_scale"], e["cutoff"], e["scale"], e["tint"]))
+        same = ("sigma_a", "sigma_s", "g", "densityScale", "worldTranslation", "worldRotation", "worldScaling", "numMips")
+        self.assertEqual({k: v[k] for k in same}, {k: v0[k] for k in same})
+        self.assertNotIn("emissionTint", v0)  # (the matched construct's call as it was)
+        self.assertFalse(v0["hasEmission"])
+        self.assertFalse(info["params"]["mUseAnalyticLights"])
+        # the matched construct as it is: its fit, its glitter and its flecks the same draw (prepared from the same
+        # density box -- its temperature moved onto it, not the two grids' union, which reshaped every seeded draw)
+        import json
+        table = lambda d: json.load(open(vr.DATA_DIR + r"\%s\%s%d_lights.json" % (d, d, g["frame"])))
+        t, t0 = table(g["data"]), table(lantern.SHOTS["lanternbifrost"]["data"])
+        self.assertEqual({k: t[k] for k in ("grid", "glitter", "debris")}, {k: t0[k] for k in ("grid", "glitter", "debris")})
+
     def test_the_looping_tornado_stands_as_its_preview_shows_it(self):
         # the user (2026-10-17): the original looping tornado, as JangaFX's preview shows it -- upright (z up -> y up,
         # turned only about its own axis), its own structure with the Lanterns construct's detail added

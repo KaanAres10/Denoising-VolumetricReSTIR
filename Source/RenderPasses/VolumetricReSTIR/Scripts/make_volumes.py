@@ -941,6 +941,17 @@ def construct_detail(d, **kw):
     return np.ascontiguousarray(tornado_detail(np.ascontiguousarray(d.transpose(0, 2, 1)), **kw).transpose(0, 2, 1))
 
 
+def place_in_box(t, t_lo, shape, lo):
+    """Grid `t` (its index box's corner `t_lo`) on the index box `shape` at `lo`: float32, its voxels where they were,
+    zero where it does not reach, clipped where it spills out."""
+    out = np.zeros(shape, np.float32)
+    a = [max(t_lo[k], lo[k]) for k in range(3)]
+    b = [min(t_lo[k] + t.shape[k], lo[k] + shape[k]) for k in range(3)]
+    if all(a[k] < b[k] for k in range(3)):
+        out[tuple(slice(a[k] - lo[k], b[k] - lo[k]) for k in range(3))] = t[tuple(slice(a[k] - t_lo[k], b[k] - t_lo[k]) for k in range(3))]
+    return out
+
+
 def post_process(d, lo, g, grid, shot):
     """A construct frame's density `d` (its index box at `lo`) reworked as its shot says -- fade_foot, its fine detail
     (construct_detail), warp, mist, defocus (each voxel's distance along the camera's view, as the shot places the
@@ -1002,7 +1013,7 @@ def write_lantern(shot="lantern", frame=None):
         Path(src).parent.mkdir(parents=True, exist_ok=True)  # averaged with the frames before it over `shutter`
         if g.get("vblur"):  # -- or blurred along its own velocity
             blur_bifrost_velocity(REPO / (g["bifrost_src"] % frame), src, g["vblur"],  # (its temperature only if it glows)
-                                  temperature="voxel_temperature" if "glow" in g else None,
+                                  temperature="voxel_temperature" if "glow" in g or "emission" in g else None,
                                   drift=g.get("drift", (0.0, 0.0, 0.0)), grain_spec=g.get("grain"),
                                   streaks=g.get("streaks"), pre_fine=g.get("pre_fine"))
         else:
@@ -1010,6 +1021,9 @@ def write_lantern(shot="lantern", frame=None):
             blur_bifrost_frames([REPO / (g["bifrost_src"] % f) for f in range(frame - k + 1, frame + 1)], src)
     lo, box = read_vdb_box(src, ("density",))
     d = d_fit = box["density"]
+    if "emission" in g:  # its glow's temperature on the density's own box (the two grids' union reshaped every
+        tlo, tbox = read_vdb_box(src, ("temperature",))  # seeded draw over it: the glitter, the tail's churn)
+        box["temperature"] = place_in_box(tbox["temperature"], tlo, d.shape, lo)
     grid = None
     if "bifrost_src" in g:  # a simulated column (y up), fitted to the shot's `fit` (the reference's construct) as simulated
         grid = fit_column(d_fit, lo, g["offset"], g["fit"])
@@ -1040,16 +1054,21 @@ def write_lantern(shot="lantern", frame=None):
             lo_file, _ = read_vdb_box(vdb, ("density",))
         elif post:  # its tail reworked (fade_foot, warp, mist, defocus), padded for their spread, rewritten where it
             # was (its index placement: the fit and its .vbx coordinates hold)
+            t_lo = lo
             d, lo = post_process(d, lo, g, grid, shot)
             raw = Path(work) / (name + ".raw")
             write_raw(d, raw)
-            run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb, 1e-4, "-", *lo], cwd=RELEASE)
+            t_raw = "-"
+            if "emission" in g:  # its glow: Bifrost's own temperature, on the reworked density's box (not reworked:
+                t_raw = Path(work) / (name + "_t.raw")  # smooth, and it emits only where the smoke is)
+                write_raw(place_in_box(box["temperature"], t_lo, d.shape, lo), t_raw)
+            run([RELEASE / "VolFromRaw.exe", raw, *d.shape, 1.0, vdb, 1e-4, t_raw, *lo], cwd=RELEASE)
             raw.unlink()
             lo_file, _ = read_vdb_box(vdb, ("density",))
         else:
             shutil.copy(src, str(vdb))
             lo_file = lo
-        dest = import_vdb(vdb, out_dir)
+        dest = import_vdb(vdb, out_dir, emissive="emission" in g)
     off = vbx_offset(dest, name, lo_file)
     if any(abs(off[a] - g["offset"][a]) > 1e-3 for a in range(3)):
         raise SystemExit("FAILED: %s's grid offset %s is not %s" % (name, off, g["offset"]))

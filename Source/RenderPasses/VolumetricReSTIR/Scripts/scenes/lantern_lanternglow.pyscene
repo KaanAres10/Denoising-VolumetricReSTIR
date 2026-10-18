@@ -1,0 +1,3 @@
+# The Lanterns construct glowing from within (lantern.py's lanternglow: the decorrelation study).
+SHOT = 'lanternglow'
+exec(open(r'C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReSTIR\Scripts\scenes\lantern.pyscene').read())
