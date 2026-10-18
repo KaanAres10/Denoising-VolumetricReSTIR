@@ -39,9 +39,9 @@ import swatch_fire
 
 # which Bifrost run the construct shot reads (BifrostVDB/<it>, bifrost_graphs.vortex_construct's frames): a variant
 # being tuned is picked by LANTERN_CONSTRUCT, which Mogwai inherits as make_volumes.py does
-CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_C5")
+CONSTRUCT = os.environ.get("LANTERN_CONSTRUCT", "shape_F2")
 # its motion blur: frames averaged (make_volumes.py blur_bifrost_frames), LANTERN_SHUTTER of them (1: none)
-SHUTTER = int(os.environ.get("LANTERN_SHUTTER", "1"))
+SHUTTER = int(os.environ.get("LANTERN_SHUTTER", "5"))
 
 GREEN = {"sigma_a": (0.85, 0.18, 0.72), "sigma_s": (0.15, 0.82, 0.28), "g": 0.5}
 SHOTS = {
@@ -96,12 +96,12 @@ SHOTS = {
                            # the reference's sparkles: 4000 tiny emitters where its surface faces the key (upper left)
                            # (at radiance 40 in a pale green they clipped to white, spread evenly; the reference's
                            # are green, clustered where the surface faces the key squarely: power 8)
-                           glitter={"n": 5000, "threshold": 0.04, "power": 8.0, "size": 0.07, "rgb": (0.15, 1.0, 0.25),
-                                    "radiance": 1.8, "seed": 1},  # red and blue under display white: green, not white
+                           glitter={"n": 15000, "threshold": 0.04, "power": 6.0, "size": 0.035, "rgb": (0.15, 1.0, 0.25),
+                                    "radiance": 3.0, "seed": 1},  # red and blue under display white: green, not white
                            # its own soft boxes: the tornado's, the fill raised (its mid-tones were 105 green to the
                            # reference's 125, its shadows 61 to 80)
                            panels=({"name": "Key", "dir": (-0.75, 0.5, 0.45), "dist": 36.0, "side": 14.0, "rgb": (0.75, 1.0, 0.8), "radiance": 40.0},
-                                   {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 15.0},
+                                   {"name": "Rim", "dir": (0.92, 0.2, -0.35), "dist": 44.0, "side": 14.0, "rgb": (0.55, 1.0, 0.95), "radiance": 8.0},
                                    {"name": "Fill", "dir": (0.6, -0.55, 0.6), "dist": 34.0, "side": 12.0, "rgb": (0.3, 1.0, 0.45), "radiance": 9.0}),
                            camera={"position": (0.0, 0.0, 52.0), "target": (0.0, 0.0, 0.0), "focal": 50.0}),
     "lanterndust": dict(GREEN, src="Dust_Devil/Dust_Devil/embergen_dust_devil_tornado_a_%d.vdb", data="dustdevil", frame=50,
