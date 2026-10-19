@@ -1,8 +1,10 @@
 """Do mutations break up the copies among paths whose first vertex is a SURFACE? On a run pair's raw captures
 (run_study.sh's sampleIdentity output, kept captures of every chain), the share of surface samples that hold exactly
 the same sample as a neighbour (9x9 window), split by what the sample connects to: the env map (lightID -1, the
-light move reaches these) and everything else -- on the night shots (no soft boxes, no point lights) the paths that
-bounce off the surface into the glowing smoke (path tag 1, whose lightID holds the glowing point's position).
+light move reaches these) and everything else but self-emission without a bounce (lightID -3: no random state, so
+every such pixel hashes alike, a "copy" by construction, and no bounce move applies) -- on the night shots (no soft
+boxes, no point lights) the paths that bounce off the surface into the glowing smoke (path tag 1, whose lightID
+holds the glowing point's position).
 
 Passes when the mutated run's copies among those glow paths are below `--ratio` of the plain run's.
 
@@ -20,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import m_corr as mc  # noqa: E402
 
 AT_SURFACE = 256  # FinalShading.cs.slang's sampleIdentity: .y = (hash >> 24) | 256 for a surface sample
+SELF_EMISSION = -3  # HostDeviceSharedConstants.slang kSelfEmissionLightID
 
 
 def identities(run_dir):
@@ -54,7 +57,7 @@ def shares(run_dir):
     for key, surf, lid in identities(run_dir):
         d = copies(key)
         sky.append(d[surf & (lid == -1)].mean())
-        glow.append(d[surf & (lid != -1) & (key != 0)].mean())
+        glow.append(d[surf & (lid != -1) & (lid != SELF_EMISSION) & (key != 0)].mean())
     return float(np.mean(sky)), float(np.mean(glow))
 
 
