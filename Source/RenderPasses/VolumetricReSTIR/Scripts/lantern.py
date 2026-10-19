@@ -257,6 +257,10 @@ EMISSION = EMISSION + (0.05, 1.0, 0.3)[max(0, len(EMISSION) - 4):]
 # scene variants for the study (user: "ground and shadows", "try each one separately"): LANTERN_GROUND "y[,extent,r,g,b]"
 # -- a flat ground at height y (cm; -10.5 just under its tail), the smoke's shadow and glow on it
 GROUND_KNOB = _env("LANTERN_GROUND")
+# (LANTERN_GROUND's sixth value: its roughness, 1 by default -- low for a wet ground reflecting it)
+# ... LANTERN_CORE "x,y,z,intensity[,r,g,b]" -- its energy source (user, 2026-10-19: "energy source inside it"): one
+# point light at its core (world cm), intensity x colour (green by default)
+CORE_KNOB = _env("LANTERN_CORE")
 # ... LANTERN_SLATS "dist,size,board,gap[,key_side]" -- boards `board` cm tall, `gap` cm apart over `size` cm, square to
 # the key's direction `dist` cm from the target, the key `key_side` cm (4; its power kept): through a 28 cm soft box's
 # gaps the shadows blur wider than the gaps -- light shafts need a small light
@@ -271,7 +275,8 @@ NIGHT_KNOB = _env("LANTERN_NIGHT")
 SKYFILE_KNOB = os.environ.get("LANTERN_SKYFILE")
 SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45), sigma_s=(0.75, 0.85, 0.55),
                             **({"ground": {"y": GROUND_KNOB[0], "extent": GROUND_KNOB[1] if len(GROUND_KNOB) > 1 else 2000.0,
-                                           "rgb": tuple(GROUND_KNOB[2:5]) if len(GROUND_KNOB) > 4 else (0.3, 0.3, 0.28)}}
+                                           "rgb": tuple(GROUND_KNOB[2:5]) if len(GROUND_KNOB) > 4 else (0.3, 0.3, 0.28),
+                                           "roughness": GROUND_KNOB[5] if len(GROUND_KNOB) > 5 else 1.0}}
                                if GROUND_KNOB else {}),
                             src="BifrostVDB/%s_clean%s_t/construct_%%04d.vdb" % (CONSTRUCT, BLUR_TAG),  # (its temperature kept)
                             data=SHOTS["lanternbifrost"]["data"] + "_gl", sparkles=False,
@@ -281,6 +286,9 @@ SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45),
                                      "rgb": (1.0, 0.72, 0.1), "radiance": 30.0 * EMISSION[3]}),
                             emission={"le_scale": EMISSION[0], "cutoff": EMISSION[1], "scale": EMISSION[2],
                                       "tint": tuple(EMISSION[4:7])})
+if CORE_KNOB:  # (the energy-source variant)
+    _rgb = tuple(CORE_KNOB[4:7]) if len(CORE_KNOB) > 6 else (0.2, 1.0, 0.3)
+    SHOTS["lanternglow"]["core"] = {"p": tuple(CORE_KNOB[:3]), "intensity": tuple(CORE_KNOB[3] * c for c in _rgb)}
 if NIGHT_KNOB:  # (the night variant: its glow the light)
     SHOTS["lanternglow"].update(panels=(), sky="lantern_night_t%d" % round(CAM_DIST))
     SHOTS["lanternglow"]["emission"] = dict(SHOTS["lanternglow"]["emission"], le_scale=NIGHT_KNOB[0])

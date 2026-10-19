@@ -16,6 +16,12 @@ for k, l in enumerate(table['lights']):
     light.intensity = float3(*l['intensity'])
     light.position = float3(*l['p'])
     sceneBuilder.addLight(light)
+core = lantern.SHOTS[SHOT].get('core')  # (a scene variant) its energy source: one point light at its core
+if core:
+    light = PointLight('Core')
+    light.intensity = float3(*core['intensity'])
+    light.position = float3(*core['p'])
+    sceneBuilder.addLight(light)
 target = lantern.SHOTS[SHOT]['camera']['target']
 for panel in lantern.SHOTS[SHOT].get('panels', ()):
     corners = lantern.panel_corners(panel, target)
@@ -40,7 +46,7 @@ if ground:
     mesh.addTriangle(0, 3, 2)
     floor = Material('Ground')
     floor.baseColor = float4(*ground['rgb'], 1.0)
-    floor.roughness = 1.0
+    floor.roughness = ground.get('roughness', 1.0)  # (low: a wet ground reflecting it)
     floor.metallic = 0.0
     sceneBuilder.addMeshInstance(sceneBuilder.addNode('Ground'), sceneBuilder.addTriangleMesh(mesh, floor))
 slats = lantern.SHOTS[SHOT].get('slats')  # (a scene variant) boards across the key's light: it falls through the gaps

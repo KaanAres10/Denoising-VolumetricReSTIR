@@ -460,6 +460,50 @@ class TestLoaders(StudyEnv):
         self.assertTrue(env[0].endswith("\skylight-dusk.exr"), env)
         self.assertEqual((m.scene.envMap.rotation, m.scene.envMap.intensity), ((0.0, 120.0, 0.0), 2.0))
 
+    def test_the_glowing_construct_with_its_energy_source_inside(self):
+        # a scene variant (user, 2026-10-19: "energy source inside it"): one point light at its core (lantern.py
+        # LANTERN_CORE), the analytic lights on
+        import lantern
+        saved = lantern.SHOTS["lanternglow"]
+        lantern.SHOTS["lanternglow"] = dict(saved, core={"p": (1.0, 2.0, 3.0), "intensity": (10.0, 50.0, 15.0)})
+        try:
+            vr, m = fresh_vr()
+            info = vr.SCENES["lanternglow"]()
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            builder = Recorder()
+            scope = {"sceneBuilder": builder, "PointLight": lambda n: types.SimpleNamespace(name=n),
+                     "float3": lambda *a: tuple(a), "float2": lambda *a: tuple(a), "float4": lambda *a: tuple(a),
+                     "Material": lambda n: types.SimpleNamespace(name=n, loadTexture=lambda *a: None),
+                     "TriangleMesh": lambda: Recorder(), "MaterialTextureSlot": types.SimpleNamespace(Emissive=0)}
+            with open(path) as fh:
+                exec(fh.read(), scope)
+        finally:
+            lantern.SHOTS["lanternglow"] = saved
+        lights = [c[1][0] for c in builder.calls if c[0] == "addLight"]
+        self.assertEqual([(l.name, l.position, l.intensity) for l in lights], [("Core", (1.0, 2.0, 3.0), (10.0, 50.0, 15.0))])
+        self.assertTrue(info["params"]["mUseAnalyticLights"])
+
+    def test_a_wet_ground(self):
+        # the ground's roughness (LANTERN_GROUND's sixth value): low for a wet, reflecting ground (user: "wet ground")
+        import lantern
+        saved = lantern.SHOTS["lanternglow"]
+        lantern.SHOTS["lanternglow"] = dict(saved, ground={"y": -10.5, "extent": 2000.0, "rgb": (0.05, 0.05, 0.05), "roughness": 0.1})
+        mats = []
+        try:
+            vr, m = fresh_vr()
+            vr.SCENES["lanternglow"]()
+            path = [c[1][0] for c in m.calls if c[0] == "loadScene"][0]
+            scope = {"sceneBuilder": Recorder(), "PointLight": lambda n: types.SimpleNamespace(name=n),
+                     "float3": lambda *a: tuple(a), "float2": lambda *a: tuple(a), "float4": lambda *a: tuple(a),
+                     "Material": lambda n: mats.append(types.SimpleNamespace(name=n, loadTexture=lambda *a: None)) or mats[-1],
+                     "TriangleMesh": lambda: Recorder(), "MaterialTextureSlot": types.SimpleNamespace(Emissive=0)}
+            with open(path) as fh:
+                exec(fh.read(), scope)
+        finally:
+            lantern.SHOTS["lanternglow"] = saved
+        ground = [x for x in mats if x.name == "Ground"][0]
+        self.assertEqual((ground.roughness, ground.baseColor), (0.1, (0.05, 0.05, 0.05, 1.0)))
+
     def test_the_looping_tornado_stands_as_its_preview_shows_it(self):
         # the user (2026-10-17): the original looping tornado, as JangaFX's preview shows it -- upright (z up -> y up,
         # turned only about its own axis), its own structure with the Lanterns construct's detail added

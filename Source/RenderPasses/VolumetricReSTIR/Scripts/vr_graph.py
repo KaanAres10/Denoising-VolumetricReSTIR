@@ -694,7 +694,7 @@ def load_lantern(shot="lantern"):
     _pin_camera(c["position"], c["target"], (0.0, 1.0, 0.0))
     m.scene.camera.focalLength = c["focal"]
     a = [s_ / (s_ + t) for s_, t in zip(g["sigma_s"], g["sigma_a"])]
-    params = {"mUseAnalyticLights": "glow" in g, "mUseEnvironmentLights": True, "mUseEmissiveLights": False}
+    params = {"mUseAnalyticLights": "glow" in g or "core" in g, "mUseEnvironmentLights": True, "mUseEmissiveLights": False}
     if g.get("panels"):  # emissive soft boxes: triangles, which need the surface scene
         params.update(mUseEmissiveLights=True, mUseSurfaceScene=True)
     elif "ground" in g or "slats" in g:  # (a variant's surfaces with no emitters: a night ground)
