@@ -60,6 +60,26 @@ class TestRelativeBias(unittest.TestCase):
         np.testing.assert_allclose(means, saved["mcap200"])
         self.assertEqual(n, "saved")
 
+    def test_a_mask_restricts_each_frame_mean_to_its_pixels(self):
+        # --mask: the bias of one region (the wet ground, the smoke) -- each frame's mean over the mask's pixels only.
+        import json
+        import os
+        import tempfile
+        import cv2
+        with tempfile.TemporaryDirectory() as d:
+            json.dump({"channel": "X.color", "chains": [{"frames": [1]}, {"frames": [2]}]}, open(os.path.join(d, "c.schedule.json"), "w"))
+            for f, v in ((1, 1.0), (2, 3.0)):
+                img = np.full((4, 6, 3), v, np.float32)
+                img[2:, :, :] = 10.0 * v  # the masked-out rows, much brighter
+                cv2.imwrite(os.path.join(d, "c.X.color.%d.exr" % f), img)
+            mask = np.zeros((4, 6), bool)
+            mask[:2] = True
+            means, n = bias_check.load(d, mask)
+            np.testing.assert_allclose(means, [[1, 1, 1], [3, 3, 3]])
+            self.assertEqual(n, 2)
+            with self.assertRaises(ValueError):
+                bias_check.load(d, np.ones((3, 6), bool))
+
     def test_missing_frames_are_skipped(self):
         chains = [[1, 2, 3], [4, 5]]
         frames = {1: np.ones(3), 3: 3 * np.ones(3), 4: 2 * np.ones(3)}

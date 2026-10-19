@@ -82,7 +82,8 @@ namespace
                                         "rebounce proposed", "rebounce accepted", "rebounce escaped or hit a surface",
                                         "rebounce q = 0", "bounce move not applicable", "distance <= 0",
                                         "rebounce: q evaluator != sampler pdf", "rebounce: q checked",
-                                        "rebounce: mismatch, evaluator 0", "rebounce: mismatch, evaluator above"};
+                                        "rebounce: mismatch, evaluator 0", "rebounce: mismatch, evaluator above",
+                                        "bounce moves at a surface x1 proposed", "bounce moves at a surface x1 accepted"};
     constexpr uint32_t kMutationStatCount = sizeof(kMutationStatNames) / sizeof(kMutationStatNames[0]);
     constexpr int kMutationStatInterval = 256; ///< frames between acceptance log lines
 
@@ -685,6 +686,9 @@ void VolumetricReSTIR::runMutations(RenderContext* pRenderContext, int bufferId,
                     "rebounce {}/{} ({:.3f}); {} {}, {} {}, {} {}, {} {}", s[50], s[49], rate(s[50], s[49]), s[52], s[51],
                     rate(s[52], s[51]), s[54], s[53], rate(s[54], s[53]), s[55], kMutationStatNames[55], s[56],
                     kMutationStatNames[56], s[57], kMutationStatNames[57], s[58], kMutationStatNames[58]);
+        if (s[63] > 0)
+            logInfo("VolumetricReSTIR bounce moves at a surface x1 (direction, distance): {}/{} accepted ({:.3f})", s[64], s[63],
+                    rate(s[64], s[63]));
         if (s[60] > 0)
             logInfo("VolumetricReSTIR rebounce diagnostics: {} of {} proposals with the evaluator off the sampler's density by "
                     "> 1e-3 ({} with the evaluator 0, {} with it above)", s[59], s[60], s[61], s[62]);

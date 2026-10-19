@@ -2,7 +2,7 @@
 chain means: frames of one chain are correlated, chains are not. How a biased move shows (the env re-selection's
 -0.44% on the plume, spec V-B9).
 
-    python bias_check.py <root> <baseline> <config> [<config> ...]
+    python bias_check.py <root> <baseline> <config> [<config> ...] [--mask region.npy]
 
 Each <root>/<name> holds a correlation_pose.py capture (c.schedule.json and its accumulated_color EXRs).
 """
@@ -43,7 +43,8 @@ def reference_bias(conf, ref_mean):
     return conf.mean(0) / ref_mean - 1, conf.std(0, ddof=1) / np.sqrt(len(conf)) / ref_mean
 
 
-def load(run_dir):
+def load(run_dir, mask=None):
+    """A config's chain means and its frame count; with a mask (H x W bool), each frame's mean over its pixels only."""
     import cv2
     sched = json.load(open(os.path.join(run_dir, "c.schedule.json")))
     chains = [c["frames"] for c in sched["chains"]]
@@ -53,16 +54,18 @@ def load(run_dir):
         img = cv2.imread(p, cv2.IMREAD_UNCHANGED)
         if img is not None:
             img = np.nan_to_num(img[..., :3][..., ::-1].astype(np.float64), posinf=0.0)
-            frames[f] = img.reshape(-1, 3).mean(0)
+            if mask is not None and mask.shape != img.shape[:2]:
+                raise ValueError("the mask is %s, the frames %s" % (mask.shape, img.shape[:2]))
+            frames[f] = (img[mask] if mask is not None else img.reshape(-1, 3)).mean(0)
     return chain_means(frames, chains), len(frames)
 
 
-def chains_for(root, name, saved=None):
+def chains_for(root, name, saved=None, mask=None):
     """A config's chain means and frame count: from saved (a --save JSON) when it has the config -- its EXRs may be
     gone -- else from root/name."""
     if saved and name in saved:
         return np.array(saved[name], dtype=np.float64), "saved"
-    return load(os.path.join(root, name))
+    return load(os.path.join(root, name), mask)
 
 
 def pct(v):
@@ -78,21 +81,24 @@ def main(argv):
     ap.add_argument("--ref", help="a converged reference EXR: also each config's mean against it")
     ap.add_argument("--save", help="write every config's chain means here (JSON), for re-analysis after pruning")
     ap.add_argument("--saved", help="a --save JSON: the configs it has are read from it (their EXRs may be gone)")
+    ap.add_argument("--mask", help="an H x W bool .npy: each frame's mean over its pixels only (one region's bias)")
     a = ap.parse_args(argv[1:])
     saved = json.load(open(a.saved)) if a.saved else None
+    mask = np.load(a.mask).astype(bool) if a.mask else None
     means = {}
-    base, n = chains_for(a.root, a.names[0], saved)
+    base, n = chains_for(a.root, a.names[0], saved, mask)
     means[a.names[0]] = base
     print("%-22s n=%s  (baseline)" % (a.names[0], n))
     for name in a.names[1:]:
-        conf, n = chains_for(a.root, name, saved)
+        conf, n = chains_for(a.root, name, saved, mask)
         means[name] = conf
         bias, se = (paired_relative_bias if a.paired else relative_bias)(conf, base)
         print("%-22s n=%s  RGB vs %s %s   (+- %s, 1 s.e. over chains%s)" % (
             name, n, a.names[0], pct(bias), " ".join("%.2f%%" % (100 * v) for v in se), ", paired" if a.paired else ""))
     if a.ref:
         import cv2
-        ref = cv2.imread(a.ref, cv2.IMREAD_UNCHANGED)[..., :3][..., ::-1].astype(np.float64).reshape(-1, 3).mean(0)
+        ref = cv2.imread(a.ref, cv2.IMREAD_UNCHANGED)[..., :3][..., ::-1].astype(np.float64)
+        ref = (ref[mask] if mask is not None else ref.reshape(-1, 3)).mean(0)
         for name, conf in means.items():
             bias, se = reference_bias(conf, ref)
             print("%-22s vs reference %s   (+- %s)" % (name, pct(bias), " ".join("%.2f%%" % (100 * v) for v in se)))

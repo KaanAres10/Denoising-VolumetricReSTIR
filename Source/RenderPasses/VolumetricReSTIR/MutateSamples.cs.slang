@@ -445,6 +445,12 @@ uint applicable(Reservoir r, ExtraBounceReservoir b)
         if (decodePathTag(r.sampledPixel) == 1) mask &= ~((1u << kLight) | (1u << kSelect));
         else if (decodeWiDist(b.wi_dist, false).w == kRayTMax) mask &= ~(1u << kSelect);
         if (inMedium) mask |= bounceMoves(r, b);
+    #ifdef SURFACE_SCENE
+        // x1 on a surface (the camera ray's VBuffer hit; p_hat > 0 rules out the background): the steps of x2 are
+        // symmetric in the measure p_hat is a density in there too -- BSDF cos at x1 and dV(x2) for an emitting x2,
+        // domega dd otherwise -- but not the rebounce, which draws omega from the phase function.
+        else mask |= bounceMoves(r, b) & ~(1u << kRebounce);
+    #endif
     }
 #endif
     return mask & STRATEGY_MASK;
@@ -556,10 +562,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
         ExtraBounceReservoir zb = xb;
         if (s >= kDirection)
         {
+        #ifdef SURFACE_SCENE
+            const bool surfaceX1 = x.depth == kRayTMax; // x1 the VBuffer hit; only readBounce's x1-relative dir/dist use it
+            const float3 x1 = ray.origin + (surfaceX1 ? vItem.rayT : x.depth) * ray.dir;
+        #else
+            const bool surfaceX1 = false;
             const float3 x1 = ray.origin + x.depth * ray.dir;
+        #endif
             const Bounce bx = readBounce(x, xb, x1);
             const uint k = s - kDirection; // 0 direction, 1 distance, 2 rebounce
             stat(49 + 2 * k);
+            if (surfaceX1) stat(63);
             float3 zDir = bx.dir;
             float zDist = bx.dist;
             float3 zX2 = bx.x2;
@@ -751,7 +764,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
             else if (s == kFlight) stat(21);
             else if (s == kLight || s == kDepth) stat(s == kLight ? 1 : 3);
         #if MAX_BOUNCES > 1
-            else stat(50 + 2 * (s - kDirection));
+            else { stat(50 + 2 * (s - kDirection)); if (x.depth == kRayTMax) stat(64); } // (x1 is z's: kept by the bounce moves)
         #endif
         }
     }
