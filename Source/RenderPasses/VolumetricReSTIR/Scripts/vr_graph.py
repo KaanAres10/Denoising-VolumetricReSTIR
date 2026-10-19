@@ -683,7 +683,13 @@ def load_lantern(shot="lantern"):
             m.scene.setVolumeEmissionTint(tint)
     else:
         m.scene.addGVDBVolume(dataFile=stem, **glow, **place)
-    m.scene.setEnvMap(DATA_DIR + r"\authored\%s.exr" % g["sky"])
+    if "envfile" in g:  # (a scene variant) another sky: an HDR file, turned about the vertical and scaled
+        e = g["envfile"]
+        m.scene.setEnvMap(DATA_DIR + "\\" + e["file"])
+        m.scene.envMap.rotation = float3(0.0, e["rotation"], 0.0)
+        m.scene.envMap.intensity = e["intensity"]
+    else:
+        m.scene.setEnvMap(DATA_DIR + r"\authored\%s.exr" % g["sky"])
     c = g["camera"]
     _pin_camera(c["position"], c["target"], (0.0, 1.0, 0.0))
     m.scene.camera.focalLength = c["focal"]
@@ -691,6 +697,8 @@ def load_lantern(shot="lantern"):
     params = {"mUseAnalyticLights": "glow" in g, "mUseEnvironmentLights": True, "mUseEmissiveLights": False}
     if g.get("panels"):  # emissive soft boxes: triangles, which need the surface scene
         params.update(mUseEmissiveLights=True, mUseSurfaceScene=True)
+    elif "ground" in g or "slats" in g:  # (a variant's surfaces with no emitters: a night ground)
+        params.update(mUseSurfaceScene=True)
     return {"scatterAlbedo": float3(*a), "exposure": 0.0, "params": params}
 
 

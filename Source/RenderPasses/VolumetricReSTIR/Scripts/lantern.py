@@ -264,6 +264,11 @@ SLATS_KNOB = _env("LANTERN_SLATS")
 # ... LANTERN_ANIM "first,count" -- its Bifrost frames first .. first + count - 1 played as a looping sequence (each
 # prepared by write_lantern; placed by the last frame's fit)
 ANIM_KNOB = _env("LANTERN_ANIM")
+# ... LANTERN_NIGHT "le_scale" -- at night (user, 2026-10-19: "night shot, construct is the light"): no soft boxes, the
+# night sky (for this lens), its glow at le_scale its main light; LANTERN_SKYFILE "file,rotation,intensity" -- another
+# sky, an HDR file in VolumetricReSTIRData (user: "sunset sky"), turned about the vertical (degrees) and scaled
+NIGHT_KNOB = _env("LANTERN_NIGHT")
+SKYFILE_KNOB = os.environ.get("LANTERN_SKYFILE")
 SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45), sigma_s=(0.75, 0.85, 0.55),
                             **({"ground": {"y": GROUND_KNOB[0], "extent": GROUND_KNOB[1] if len(GROUND_KNOB) > 1 else 2000.0,
                                            "rgb": tuple(GROUND_KNOB[2:5]) if len(GROUND_KNOB) > 4 else (0.3, 0.3, 0.28)}}
@@ -276,6 +281,12 @@ SHOTS["lanternglow"] = dict(SHOTS["lanternbifrost"], sigma_a=(0.25, 0.15, 0.45),
                                      "rgb": (1.0, 0.72, 0.1), "radiance": 30.0 * EMISSION[3]}),
                             emission={"le_scale": EMISSION[0], "cutoff": EMISSION[1], "scale": EMISSION[2],
                                       "tint": tuple(EMISSION[4:7])})
+if NIGHT_KNOB:  # (the night variant: its glow the light)
+    SHOTS["lanternglow"].update(panels=(), sky="lantern_night_t%d" % round(CAM_DIST))
+    SHOTS["lanternglow"]["emission"] = dict(SHOTS["lanternglow"]["emission"], le_scale=NIGHT_KNOB[0])
+if SKYFILE_KNOB:  # (the other-sky variant)
+    _f, _r, _i = SKYFILE_KNOB.split(",")
+    SHOTS["lanternglow"]["envfile"] = {"file": _f, "rotation": float(_r), "intensity": float(_i)}
 if ANIM_KNOB:  # (the animated variant: shown at its last frame -- its fit, its table -- the sequence ending there)
     SHOTS["lanternglow"].update(anim=(int(ANIM_KNOB[0]), int(ANIM_KNOB[1])), frame=int(ANIM_KNOB[0] + ANIM_KNOB[1] - 1))
 if SLATS_KNOB:  # (the slats variant: its boards, and its key small at the same power)

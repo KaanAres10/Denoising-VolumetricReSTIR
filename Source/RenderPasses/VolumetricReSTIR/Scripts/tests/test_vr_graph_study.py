@@ -427,6 +427,39 @@ class TestLoaders(StudyEnv):
         self.assertIn(("setVolumeEmissionTint", (g["emission"]["tint"],)), [(c[0], c[1]) for c in m.scene.calls])
         self.assertNotIn("anim", saved)
 
+    def test_the_glowing_construct_at_night(self):
+        # a scene variant (user, 2026-10-19: "night shot, construct is the light"): no soft boxes, the night sky, over a
+        # ground -- the surfaces still on with no emitters, so the ground renders and catches its glow
+        import lantern
+        saved = lantern.SHOTS["lanternglow"]
+        g = dict(saved, panels=(), sky="lantern_night_t320", ground={"y": -10.5, "extent": 2000.0, "rgb": (0.3, 0.3, 0.28)})
+        lantern.SHOTS["lanternglow"] = g
+        try:
+            vr, m = fresh_vr()
+            info = vr.SCENES["lanternglow"]()
+        finally:
+            lantern.SHOTS["lanternglow"] = saved
+        self.assertTrue(info["params"]["mUseSurfaceScene"])
+        self.assertFalse(info["params"]["mUseEmissiveLights"])
+        env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
+        self.assertTrue(env[0].endswith("lantern_night_t320.exr"), env)
+
+    def test_the_glowing_construct_under_another_sky(self):
+        # a scene variant (user, 2026-10-19: "sunset sky"): the shot's sky replaced by an HDR sky file, turned about the
+        # vertical and scaled (lantern.py LANTERN_SKYFILE)
+        import lantern
+        saved = lantern.SHOTS["lanternglow"]
+        lantern.SHOTS["lanternglow"] = dict(saved, envfile={"file": "skylight-dusk.exr", "rotation": 120.0, "intensity": 2.0})
+        try:
+            vr, m = fresh_vr()
+            vr.SCENES["lanternglow"]()
+        finally:
+            lantern.SHOTS["lanternglow"] = saved
+        env = [c[1][0] for c in m.scene.calls if c[0] == "setEnvMap"]
+        self.assertEqual(len(env), 1)
+        self.assertTrue(env[0].endswith("\skylight-dusk.exr"), env)
+        self.assertEqual((m.scene.envMap.rotation, m.scene.envMap.intensity), ((0.0, 120.0, 0.0), 2.0))
+
     def test_the_looping_tornado_stands_as_its_preview_shows_it(self):
         # the user (2026-10-17): the original looping tornado, as JangaFX's preview shows it -- upright (z up -> y up,
         # turned only about its own axis), its own structure with the Lanterns construct's detail added
