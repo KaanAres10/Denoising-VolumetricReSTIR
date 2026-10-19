@@ -404,6 +404,29 @@ class TestLoaders(StudyEnv):
         np.testing.assert_allclose(verts @ key, 24.0, atol=1e-6)  # square to the key's direction, 24 cm out
         self.assertNotIn("slats", saved)
 
+    def test_the_glowing_construct_animated(self):
+        # a scene variant (user, 2026-10-18: "animated construct", "do it for 50 minutes"): the Bifrost frames played
+        # as a looping sequence (lantern.py LANTERN_ANIM "first,count"), placed by the last frame's fit, its glow
+        # tinted on every frame
+        import lantern
+        saved = lantern.SHOTS["lanternglow"]
+        lantern.SHOTS["lanternglow"] = dict(saved, anim=(148, 3))
+        try:
+            vr, m = fresh_vr()
+            vr.SCENES["lanternglow"]()
+        finally:
+            lantern.SHOTS["lanternglow"] = saved
+        seq = [c for c in m.scene.calls if c[0] == "addGVDBVolumeSequence"]
+        self.assertEqual(len(seq), 1)
+        kw = seq[0][2]
+        g = saved
+        self.assertTrue(kw["dataFilePrefix"].endswith("%s\%s" % (g["data"], g["data"])), kw["dataFilePrefix"])
+        self.assertEqual((kw["numberFixedLength"], kw["startFrame"], kw["numFrames"]), (3, 148, 3))
+        self.assertTrue(kw["hasEmission"])
+        self.assertNotIn("addGVDBVolume", [c[0] for c in m.scene.calls])
+        self.assertIn(("setVolumeEmissionTint", (g["emission"]["tint"],)), [(c[0], c[1]) for c in m.scene.calls])
+        self.assertNotIn("anim", saved)
+
     def test_the_looping_tornado_stands_as_its_preview_shows_it(self):
         # the user (2026-10-17): the original looping tornado, as JangaFX's preview shows it -- upright (z up -> y up,
         # turned only about its own axis), its own structure with the Lanterns construct's detail added

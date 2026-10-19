@@ -668,10 +668,21 @@ def load_lantern(shot="lantern"):
     em = g.get("emission")  # (lanternglow: its smoke's own glow, by Bifrost's temperature, tinted)
     glow = {"hasEmission": True, "LeScale": em["le_scale"], "temperatureCutoff": em["cutoff"],
             "temperatureScale": em["scale"], "emissionTint": float3(*em["tint"])} if em else {"hasEmission": False, "LeScale": 1.0}
-    m.scene.addGVDBVolume(sigma_a=float3(*g["sigma_a"]), sigma_s=float3(*g["sigma_s"]), g=env_float("VR_PHASE_G", g["g"]),
-                          dataFile=stem, numMips=4, densityScale=_density(density), hasVelocity=False, **glow,
-                          worldTranslation=float3(*swatch_fire_translation(pose)), worldRotation=float3(*g["rotation"]),
-                          worldScaling=pose["scale"])
+    place = dict(sigma_a=float3(*g["sigma_a"]), sigma_s=float3(*g["sigma_s"]), g=env_float("VR_PHASE_G", g["g"]),
+                 numMips=4, densityScale=_density(density), hasVelocity=False,
+                 worldTranslation=float3(*swatch_fire_translation(pose)), worldRotation=float3(*g["rotation"]),
+                 worldScaling=pose["scale"])
+    if "anim" in g:  # (lanternglow's animated variant) its frames played as a looping sequence, placed by the last
+        # frame's fit (its .vbx keep Bifrost's index placement), the sequence's loader taking no tint: set after
+        first, count = g["anim"]
+        tint = glow.pop("emissionTint", None)
+        m.scene.addGVDBVolumeSequence(dataFilePrefix=DATA_DIR + "\%s\%s" % (g["data"], g["data"]),
+                                      numberFixedLength=len(str(first + count - 1)), startFrame=first, numFrames=count,
+                                      **glow, **place)
+        if tint is not None:
+            m.scene.setVolumeEmissionTint(tint)
+    else:
+        m.scene.addGVDBVolume(dataFile=stem, **glow, **place)
     m.scene.setEnvMap(DATA_DIR + r"\authored\%s.exr" % g["sky"])
     c = g["camera"]
     _pin_camera(c["position"], c["target"], (0.0, 1.0, 0.0))
