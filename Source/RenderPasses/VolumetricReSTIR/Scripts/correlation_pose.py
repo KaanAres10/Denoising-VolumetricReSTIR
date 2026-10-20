@@ -16,6 +16,9 @@
 #   VR_DENOISER=none|optix|oidn|nrd|rr   capture this denoiser's HDR output instead (capture_orbit's
 #                              pipeline; VR_NRD_METHOD etc. as there). Its history is not reset between
 #                              chains: the warm-up (>= 256 frames) outlasts any denoiser's history.
+#   VR_DENOISERS=optix,oidn,relax,reblur   several denoisers on the same frames (denoiser_set.py), every channel
+#                              captured with the raw frame, the schedule's `channels` naming them. Not with
+#                              VR_DENOISER, and not rr (its G-buffer jitters the camera: VR_DENOISER=rr alone).
 #   VR_NO_TEMPORAL / VR_NO_SPATIAL   switch a reuse stage off; the vr_graph knobs (VR_MTHRESH,
 #                              VR_SR_RADIUS, VR_SR_COUNT, VR_SR_ROUNDS, VR_PHASE_G) apply as usual
 #   VR_FRAMES=8192 VR_SPP=16   reference mode: accumulated frames and samples per pixel per frame
@@ -64,11 +67,29 @@ else:
     params["mEnableSpatialReuse"] = not vr.env_bool("VR_NO_SPATIAL", False)
 
 DENOISER = vr.env("VR_DENOISER", "none").lower()
+DENOISER_SET = [d for d in vr.env("VR_DENOISERS", "").lower().split(",") if d]
+if DENOISER_SET and DENOISER != "none":
+    raise ValueError("VR_DENOISERS and VR_DENOISER are exclusive")
+CHANNELS = {}
 g = RenderGraph("correlation_pose")
 channel = "VolumetricReSTIR.accumulated_color"
 if REFERENCE:
     restir = vr.add_restir(g, scene, render=(W, H), reference=True, mParams=params)
     g.markOutput(vr.add_accumulator(g, restir + ".accumulated_color"))
+elif DENOISER_SET:
+    # Several denoisers on the same frames (paper spec E1), each wired as the branch below wires it alone. The raw
+    # frame is captured too and stays the schedule's `channel` (what m_corr.py and prune.py read).
+    import denoiser_set
+    restir = vr.add_restir(g, scene, render=(W, H), guides=True, mOutputDepth=True,
+                           mMotionVecMode="Deterministic", mParams=params)
+    CHANNELS = denoiser_set.add_denoisers(g, DENOISER_SET, restir + ".accumulated_color", scene, (W, H),
+                                          restir=restir, preset=vr.env("VR_PRESET", "E"),
+                                          sdk_variant=vr.env("VR_SDK", "Current"))
+    for ch in CHANNELS.values():
+        g.markOutput(ch)
+    g.markOutput(restir + ".accumulated_color")
+    CHANNELS["raw"] = restir + ".accumulated_color"
+    DENOISER = "set:" + ",".join(DENOISER_SET)
 elif DENOISER != "none":
     # capture_orbit.py's pipeline up to the denoiser (its Look config comes from the same VR_NRD_* /
     # VR_OPTIX_* variables), capturing the denoiser's HDR output: what correlated error survives it.
@@ -130,7 +151,8 @@ else:
     m.frameCapture.addFrames(g, captures)
     with open(os.path.join(OUT_DIR, TAG + ".schedule.json"), "w") as fh:
         json.dump(dict(s, scene=NAME, mode=MODE, display=[W, H], warm=warm, mcap=mcap,
-                       spacing=vr.env_int("VR_SPACING", 33), channel=channel, denoiser=DENOISER, env=env),
+                       spacing=vr.env_int("VR_SPACING", 33), channel=channel, denoiser=DENOISER, env=env,
+                       **({"channels": CHANNELS} if CHANNELS else {})),
                   fh, indent=1)
     print("[correlation_pose] %s: %d chains x %d captures, warm %d, spacing %d, burst %d, %d frames, seeds %s"
           % (NAME, len(s["chains"]), len(s["chains"][0]["frames"]), warm, vr.env_int("VR_SPACING", 33),
