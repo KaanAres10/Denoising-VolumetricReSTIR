@@ -1,7 +1,7 @@
 # The paper: Metropolis–Hastings mutations for Volumetric ReSTIR, seen through five denoisers
 
 **Date:** 2026-10-20
-**Status:** design approved in chat (framing, outline, scenes, experiments); awaiting spec review
+**Status:** approved by the user 2026-10-20; amended the same day after reading the harness (see "Amendments")
 **Branch:** decorrelation
 **Builds on:** `2026-09-27-restir-mcmc-decorrelation-design.md` (Phase A, V1–V9; Phase B, V-B1–V-B10) and
 `2026-10-03-two-bounce-mutations-design.md` (V-C0–V-C7). Every number below cites its section there.
@@ -163,31 +163,43 @@ paper.
 
 ## New experiments
 
-### E1 — a five-denoiser capture (harness)
+### E1 — a four-denoiser capture (harness), and RR in its own graph
 
-- `vr_graph.add_denoiser` takes a `name` that prefixes the passes it adds; the default keeps today's names, so every
-  existing script and test is unchanged. Guide passes (GBuffer, the RR/OptiX guides, motion vectors) are built
-  once per graph and shared.
-- `vr_graph.add_denoisers(g, modes, color, ...)` wires several into one graph and returns `{mode: channel}`. NRD
-  appears twice (RELAX-SH and REBLUR-SH), each its own split chain, with the volume settings the study used for NRD
-  (`VR_NRD_SPLIT`, `_SH`, `_TAA`, `_EMISSION`, `_VOLMASK`, gradient normals).
-- `correlation_pose.py`: `VR_DENOISERS=optix,oidn,relax,reblur,rr` captures every channel and the raw ReSTIR output
-  in the same frames; the schedule lists the channels. `run_study.sh` gets a config for it.
-- Tests (`test_vr_graph_study.py`): unique pass names; one channel per mode; the single-denoiser graphs unchanged.
+- A new module, `Scripts/denoiser_set.py`: a graph wrapper that prefixes the names of the passes a denoiser adds
+  (vr_graph names them `Denoiser`, `NRDSurface`, `ModulateIllumination`, ... and NRD reads its method from
+  `VR_NRD_METHOD`), and `add_denoisers(g, modes, color, ...)` -> `{mode: channel}`, wiring each denoiser exactly as
+  `vr_graph.add_denoiser` wires it alone. `vr_graph.py` is not changed. Each denoiser keeps its own G-buffer and
+  guides, as in its single runs (sharing them would be an optimisation gate 2 could no longer vouch for).
+- OptiX, OIDN, NRD RELAX-SH and NRD REBLUR-SH share one graph (`correlation_pose.py VR_DENOISERS=optix,oidn,relax,reblur`),
+  which also captures the raw ReSTIR output; the schedule lists the channels.
+- **DLSS RR runs in its own graph, with the same seeds** (`VR_DENOISER=rr`, as its approved runs did): its G-buffer
+  turns on the camera's Halton jitter, and the estimator's camera rays follow the camera jitter
+  (`VolumeBase.slang`, `computeNonNormalizedRayDirPinholeOffset`), so in a shared graph it would change the frames
+  the other four see. `add_denoisers` refuses `rr`.
+- Tests (`tests/test_denoiser_set.py`): unique, prefixed pass names; shared passes keep their names; one channel per
+  mode; each NRD instance runs its own method; an empty prefix wires exactly as `add_denoiser`; every G-buffer in the
+  shared graph is unjittered.
 
-### E2 — two new references
+### E2 — new references for the 17 gallery setups
 
-`bunnylanterns` and `bunnyinside` at 1080p, rendered by the fixed reference renderer (a2a3aa8) with the same frames
-and samples as their current ones, which are kept as `ref_residual`. Their change against the old references is
-recorded. The existing figures and numbers for those two scenes are re-scored against the new ones.
+All 17 gallery references predate the reference renderer's fix (a2a3aa8, 2026-10-10; they were rendered 28 September
+to 3 October), not only the two with lights inside the medium. Each is re-rendered at 1080p with its own frames and
+samples (2048 x 16 spp; the explosion 4096), the old one kept by renaming it to `ref_residual`. Each one's change
+against the old reference is recorded (in-medium mean ratio and relMSE between them, and its own noise). The swarm's
+and the storm's references were rendered after the fix and stay. The approved figures are re-scored against the new
+references.
 
 ### E3 — the runs
 
-- 19 setups × {M cap 200, shipped cap} × {plain, 5 mutations} = 76 runs.
+- 19 setups × {M cap 200, shipped cap} × {plain, 5 mutations} = 76 configurations, each captured twice (the
+  four-denoiser graph and RR's): 152 runs.
 - The pass as shipped: all moves (four at one bounce, seven at two), after spatial reuse, coherent move choice,
   early rejection.
-- 2 seeded chains per run, plain and mutated sharing the chains' seeds; warm-up max(256, 4 × M cap) frames;
-  scored on the first capture of each chain, as V-C2.
+- 2 seeded chains x 1 capture per run, seeds from 100000 (the approved runs' chains 0 and 1, the ones their
+  figures scored), plain and mutated sharing them; warm-up max(256, 4 x M cap) frames; scored on both captures, as
+  V-C2. No transient captures, so nothing is pruned.
+- Disk: the kept frames come to about 29 GB at 1080p. The queue starts only with at least 35 GB free; the user frees
+  space if needed.
 - The 17 gallery setups at 1080p (their references); the swarm and the storm at 960×540 (theirs).
 - A resumable queue that keeps finished runs (the bias suite's rule).
 
@@ -195,17 +207,19 @@ recorded. The existing figures and numbers for those two scenes are re-scored ag
 
 1. **Byte-identity:** mutations off, `mask_check.sh raw none` 300/300 after E1; a single-denoiser capture before vs
    after E1, bit-identical.
-2. **The shared graph changes nothing:** on one scene, each channel of the five-denoiser capture is bit-identical to
-   the single-denoiser capture with the same seeds.
-3. **Memory:** a smoke run at 1080p on the heaviest setup (`bunnycathedral_d0.3_b2`) fits in 8 GB. If not: two
-   graphs with the same seeds, each checked by gate 2.
+2. **The shared graph changes nothing:** on one scene with surfaces and a medium, each channel of the four-denoiser
+   capture (and its raw frame) matches the single-denoiser capture with the same seeds: bit for bit where a second
+   single capture reproduces the first bit for bit, otherwise within that run-to-run difference.
+3. **Memory:** a smoke run at 1080p on the heaviest setup (`bunnycathedral_d0.3_b2`) of the four-denoiser graph
+   peaks below 8 GB. If not: two two-denoiser graphs with the same seeds, each checked by gate 2.
 4. **New references (E2)** checked before any run is scored against them.
 
 ### E5 — scoring
 
 Per setup × history × config × denoiser: relMSE in the medium (`paper_figure.prepare`'s measure), the mean over the
 kept frames; the reference's own relMSE (its two accumulations); the denoised mean brightness over the reference's
-in the medium; the raw ReSTIR channel's ρ̄(8) in the medium (`m_corr`). One results file
+in the medium. (The raw ρ̄(8) needs tens of captures per run; the paper quotes the recorded runs for it.) One
+results file
 (`outputs/decorr/five_denoisers/results.json`) is the source for every new number in the paper.
 
 ### E6 — figures
@@ -215,11 +229,20 @@ exposure, so they match the approved figures).
 
 ### E7 — the motion sentence, made true of the pass as shipped
 
-The construct's motion tests ran with the four first-vertex moves only, though the scene renders two bounces. They
-are rerun with all seven moves: a moving camera and an animated medium at the shipped cap, through OptiX, RR and
-raw (12 runs: two tests × plain/mutated × three outputs, about an hour). Their scripts move from the scratchpad into `outputs/decorr/`.
+The construct's motion tests ran with the four first-vertex moves only, though the scene renders two bounces. The
+moving-camera test is rerun with all seven moves at the shipped cap, through OptiX, RR and raw (6 runs). The
+animated-medium test is left out (user's choice: its frames 146-149 were deleted), and so is it from the sentence.
+`cam_pose.py` moves from the scratchpad into `Scripts/`.
 
-**Time:** about 12 hours of GPU time for E2, E3 and E7, run overnight; one Mogwai at a time, no build while it runs.
+**Time:** about 13 hours of GPU time for E2, E3 and E7, run overnight; one Mogwai at a time, no build while it runs.
+
+### Amendments (2026-10-20, after reading the harness)
+
+- RR in its own graph (E1): the camera-jitter finding above. Twice the runs.
+- All 17 gallery references re-rendered (E2), not two: all predate the fix.
+- 2 chains x 1 capture, no pruning, a free-space check (E3); no raw ρ̄(8) in the new scoring (E5).
+- The motion rerun covers the moving camera only (E7, user's choice).
+- 1080p kept for the gallery setups (user's choice over 960x540).
 
 ## Writing and checking the paper
 
