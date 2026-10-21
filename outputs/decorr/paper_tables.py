@@ -22,6 +22,19 @@ SETUP_NAMES = {
     "bunnyback_g0.8_b2": "Backlit rim, 2b", "bunnysoftbox_b2": "Warm and cool panels, 2b",
     "wdassunset_g0.85_b2": "Cloud at sunset, 2b", "bunnyswarm_d3": "192 coloured lights", "wdasstorm_g0.5": "Thunderstorm"}
 COLUMNS = ("optix", "oidn", "relax", "reblur", "rr", "raw")
+# The recorded tables keep the spec's row labels verbatim (test_paper_tables checks them against the spec); the
+# paper shows these names instead, the same in every table.
+ROW_NAMES = {
+    "explosiondusk": "explosion", "bunnycathedral_d0.3": "cathedral", "bunnyback_g0.8": "backlit rim",
+    "bunnysoftbox": "panel lights", "wdassunset_g0.85": "sunset cloud", "sunset": "sunset cloud",
+    "plume g = −0.9 (shipped cap 4)": "plume g = −0.9", "bistro whole (cap 10)": "Bistro, frame",
+    "emerald fog (cap 10)": "Emerald Square, fog", "emerald (fog + surfaces)": "Emerald Square (fog + surfaces)",
+    "bistro (smoke + surfaces)": "Bistro (smoke + surfaces)", "wdas 1×": "Disney cloud"}
+
+
+def display_rows(rows):
+    """`rows` with each first cell (the row label) replaced by its ROW_NAMES name, if it has one."""
+    return [[ROW_NAMES.get(row[0], row[0])] + list(row[1:]) for row in rows]
 
 
 def spec_section(path, sid):
@@ -92,7 +105,7 @@ def write_all(record, results, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     for key, table in record.items():
         with open(os.path.join(out_dir, key + ".tex"), "w", encoding="utf-8") as fh:
-            fh.write(tabular(table["header"], table["rows"], SPECS[key]))
+            fh.write(tabular(table["header"], display_rows(table["rows"]), SPECS[key]))
     if results:
         for hist in ("c200", "ship"):
             with open(os.path.join(out_dir, "five_%s.tex" % hist), "w", encoding="utf-8") as fh:

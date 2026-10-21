@@ -47,6 +47,18 @@ class TestLatex(unittest.TestCase):
         self.assertEqual(pt.latex("bunnyback_g0.8"), "bunnyback\\_g0.8")
         self.assertEqual(pt.latex("-0.06% +- 0.44%"), "$-$0.06\\% $\\pm$ 0.44\\%")
 
+    def test_recorded_row_labels_get_display_names(self):
+        # the record keeps the spec's labels verbatim (checked above); the paper shows readable ones
+        rows = pt.display_rows([["bunnysoftbox", "-0.02% +- 0.02%"], ["emerald fog (cap 10)", "0.010"], ["other", "1"]])
+        self.assertEqual([r[0] for r in rows], ["panel lights", "Emerald Square, fog", "other"])
+        self.assertEqual(rows[0][1], "-0.02% +- 0.02%")
+        with open(os.path.join(HERE, "paper_record.json"), encoding="utf-8") as fh:
+            record = json.load(fh)
+        for key in ("bias", "mcap"):
+            for row in pt.display_rows(record[key]["rows"]):
+                self.assertNotIn("_", row[0])
+                self.assertNotIn("(cap", row[0])
+
     def test_five_rows(self):
         dens = ("optix", "oidn", "relax", "reblur", "rr", "raw")
         res = {"bunnyspot": {"ref_own_relmse": 0.0012, "histories": {"c200": {
