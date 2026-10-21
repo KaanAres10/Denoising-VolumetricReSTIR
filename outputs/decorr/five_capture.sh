@@ -18,6 +18,7 @@ script='C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReS
 (
     for v in $(env | grep -o "^\(VR_\|NRD4_\|LANTERN_\)[A-Z0-9_]*"); do unset "$v"; done
     export MSYS_NO_PATHCONV=1 "$@"
+    : > "$d/run.log"  # an earlier attempt's log, before Mogwai's own redirect empties it, would trip the watch below
     VR_OUT_DIR="$(cygpath -am "$d")" VR_TAG=c timeout "${FIVE_TIMEOUT:-3600}" "${FIVE_MOGWAI:-./build/windows-vs2022/bin/Release/Mogwai.exe}" \
         --script "$script" > "$d/run.log" 2>&1 < /dev/null &
     pid=$!

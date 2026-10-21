@@ -17,8 +17,12 @@ GIT_BASH = r"C:\Program Files\Git\usr\bin\bash.exe"
 BASH = GIT_BASH if os.path.exists(GIT_BASH) else shutil.which("bash")
 
 
-def capture(fake_body, timeout_s):
+def capture(fake_body, timeout_s, old_log=None):
     d = tempfile.mkdtemp().replace("\\", "/")
+    if old_log is not None:  # a failed earlier attempt in the same run directory
+        os.makedirs(d + "/run")
+        with open(d + "/run/run.log", "w") as fh:
+            fh.write(old_log)
     fake = d + "/fake_mogwai.sh"
     with open(fake, "w", newline="\n") as fh:
         fh.write("#!/bin/bash\n" + fake_body + "\n")
@@ -40,6 +44,13 @@ class TestFiveCapture(unittest.TestCase):
 
     def test_a_clean_run_is_left_alone(self):
         code, secs, log = capture('echo "scene $VR_SCENE"; sleep 6; echo finished', 120)
+        self.assertEqual(code, 0)
+        self.assertEqual(log, "scene x\nfinished\n")
+
+    def test_an_earlier_attempts_error_does_not_stop_a_rerun(self):
+        # run_five.sh re-runs a failed run in the same directory: its old run.log still holds the error
+        code, secs, log = capture('echo "scene $VR_SCENE"; sleep 6; echo finished', 120,
+                                  old_log="(Error) Error when loading configuration file: old\n")
         self.assertEqual(code, 0)
         self.assertEqual(log, "scene x\nfinished\n")
 
