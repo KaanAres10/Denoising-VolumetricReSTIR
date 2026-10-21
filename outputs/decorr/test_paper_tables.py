@@ -58,6 +58,8 @@ class TestLatex(unittest.TestCase):
             for row in pt.display_rows(record[key]["rows"]):
                 self.assertNotIn("_", row[0])
                 self.assertNotIn("(cap", row[0])
+        for row in pt.display_rows(record["counts"]["rows"]):  # the counts table fits a column only with short names
+            self.assertLessEqual(len(row[0]), 24, row[0])
 
     def test_five_rows(self):
         dens = ("optix", "oidn", "relax", "reblur", "rr", "raw")

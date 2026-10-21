@@ -29,7 +29,9 @@ ROW_NAMES = {
     "bunnysoftbox": "panel lights", "wdassunset_g0.85": "sunset cloud", "sunset": "sunset cloud",
     "plume g = −0.9 (shipped cap 4)": "plume g = −0.9", "bistro whole (cap 10)": "Bistro, frame",
     "emerald fog (cap 10)": "Emerald Square, fog", "emerald (fog + surfaces)": "Emerald Square (fog + surfaces)",
-    "bistro (smoke + surfaces)": "Bistro (smoke + surfaces)", "wdas 1×": "Disney cloud"}
+    "bistro (smoke + surfaces)": "Bistro (smoke + surfaces)", "wdas 1×": "Disney cloud",
+    "large close panels, 2 bounces": "close panels, 2b", "hidden backlight, 2 bounces": "hidden backlight, 2b",
+    "192 coloured lights, dense (fixed reference)": "192 coloured lights"}
 
 
 def display_rows(rows):
