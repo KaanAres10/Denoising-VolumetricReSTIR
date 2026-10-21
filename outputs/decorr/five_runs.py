@@ -6,6 +6,7 @@ captures in order (M cap 200 first), and whether one has finished.
 """
 import argparse
 import os
+import re
 import sys
 
 GALLERY_1 = ["bunnycathedral_d0.3", "bunnyspot", "bunnysoftbox", "bunnyinside", "bunnyback_g0.8", "bunnystripes",
@@ -65,6 +66,16 @@ def complete(run_dir, captures):
     return len([f for f in os.listdir(run_dir) if f.startswith("c.") and f.endswith(".exr")]) == captures
 
 
+def satisfied(run_dir, captures):
+    """Finished, or a split run (fd<k>_<hist>_m<m>, one of FIVE_SETS's lighter graphs) whose shared four-denoiser
+    run fd_<hist>_m<m> finished: the same seeds give the same frames (gate 2: each denoiser's output in the shared
+    graph is the one it gives alone), so the queue keeps it when it is split part-way."""
+    head, name = os.path.split(os.path.normpath(run_dir))
+    m = re.fullmatch(r"fd\d+_(.+)", name)
+    return complete(run_dir, captures) or bool(m and complete(os.path.join(head, "fd_" + m.group(1)),
+                                                              2 * (len(FOUR.split(",")) + 1)))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
@@ -72,7 +83,7 @@ def main(argv=None):
     ap.add_argument("--complete", nargs=2, metavar=("RUN_DIR", "CAPTURES"))
     a = ap.parse_args(argv)
     if a.complete:
-        return 0 if complete(a.complete[0], int(a.complete[1])) else 1
+        return 0 if satisfied(a.complete[0], int(a.complete[1])) else 1
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(newline="\n")  # bash's `read` would keep Windows' \r in the last VAR=value
     for r in runs(tuple(a.sets.split())):

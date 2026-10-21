@@ -9,6 +9,7 @@ setup, the reference's own relMSE.
 import argparse
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -42,10 +43,23 @@ def frames(run_dir, channel):
     return out
 
 
+def finished(run_dir):
+    """Every channel's capture of every chain is there."""
+    return all(os.path.exists(os.path.join(run_dir, "c.%s.%d.exr" % (ch, c["frames"][0])))
+               for ch in channels(run_dir).values() for c in schedule(run_dir)["chains"])
+
+
 def run_dirs(root, label, hist, m):
-    """One configuration's captures: the shared graph(s) fd*_<hist>_m<m> and RR's fr_<hist>_m<m>."""
+    """One configuration's captures: the shared graph fd_<hist>_m<m> if it finished, else the split graphs
+    fd<k>_<hist>_m<m> that re-ran it (FIVE_SETS), and RR's fr_<hist>_m<m>. A shared run that did not finish and was
+    not re-run raises, as a missing frame does."""
     d = os.path.join(root, label)
-    names = sorted(n for n in os.listdir(d) if n.startswith("fd") and n.endswith("_%s_m%d" % (hist, m)))
+    shared = os.path.join(d, "fd_%s_m%d" % (hist, m))
+    split = sorted(n for n in os.listdir(d) if re.fullmatch(r"fd\d+_%s_m%d" % (hist, m), n))
+    if os.path.isdir(shared) and (finished(shared) or not split):
+        names = ["fd_%s_m%d" % (hist, m)]
+    else:
+        names = split
     names.append("fr_%s_m%d" % (hist, m))
     return [os.path.join(d, n) for n in names if os.path.isdir(os.path.join(d, n))]
 

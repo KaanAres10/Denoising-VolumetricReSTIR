@@ -70,6 +70,27 @@ class TestScore(unittest.TestCase):
             self.assertEqual(c["m0"]["rr"]["run"], "bunnyspot/fr_c200_m0")
             self.assertEqual(len(c["m5"]["raw"]["brightness"]), 2)
 
+    def test_split_runs_stand_in_for_an_unfinished_shared_run(self):
+        # the shared graph hung after chain 0 (its chain 1 frames are missing); the two lighter graphs re-ran it
+        with tempfile.TemporaryDirectory() as root:
+            lab, ref, mask, imgs = tree(root)
+            os.remove(os.path.join(lab, "fd_c200_m5", "c.D_optix_Denoiser.output.20.exr"))
+            for name, chans in (("fd1_c200_m5", {"optix": "D_optix_Denoiser.output", "raw": SHARED["raw"]}),
+                                ("fd2_c200_m5", {"oidn": "D_oidn_Denoiser.dst", "raw": SHARED["raw"]})):
+                d = os.path.join(lab, name)
+                os.makedirs(d)
+                with open(os.path.join(d, "c.schedule.json"), "w") as fh:
+                    json.dump({"chains": [{"frames": [10]}, {"frames": [20]}], "channels": chans,
+                               "channel": SHARED["raw"]}, fh)
+                for ch in chans.values():
+                    for f in (10, 20):
+                        write_rgb(os.path.join(d, "c.%s.%d.exr" % (ch, f)), as32(ref) * 1.01)
+            c = fs.score(root, "bunnyspot")["histories"]["c200"]
+            self.assertEqual(set(c["m5"]), {"optix", "oidn", "raw", "rr"})
+            self.assertEqual(c["m5"]["optix"]["run"], "bunnyspot/fd1_c200_m5")
+            self.assertEqual(c["m5"]["oidn"]["run"], "bunnyspot/fd2_c200_m5")
+            self.assertEqual(c["m0"]["optix"]["run"], "bunnyspot/fd_c200_m0")  # the finished shared run is kept
+
     def test_a_missing_frame_raises(self):
         with tempfile.TemporaryDirectory() as root:
             lab, _, _, _ = tree(root)

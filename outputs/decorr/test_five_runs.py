@@ -103,6 +103,29 @@ class TestComplete(unittest.TestCase):
             self.assertFalse(fr.complete(root, 10))
             self.assertFalse(fr.complete(os.path.join(root, "missing"), 10))
 
+    def test_a_split_run_is_done_when_its_shared_run_finished(self):
+        # the queue was split part-way (two lighter graphs per setup); a setup the shared graph finished is kept
+        with tempfile.TemporaryDirectory() as root:
+            shared = os.path.join(root, "fd_c200_m5")
+            os.makedirs(shared)
+            self.make(shared, 10)
+            split = os.path.join(root, "fd1_c200_m5")
+            self.assertTrue(fr.satisfied(split, 6))
+            self.assertEqual(fr.main(["--complete", split, "6"]), 0)
+            self.assertFalse(fr.satisfied(os.path.join(root, "fd1_c200_m0"), 6))
+
+    def test_an_unfinished_shared_run_leaves_the_split_runs_to_do(self):
+        with tempfile.TemporaryDirectory() as root:
+            shared = os.path.join(root, "fd_c200_m5")
+            os.makedirs(shared)
+            self.make(shared, 5)  # one chain captured, then Mogwai hung
+            split = os.path.join(root, "fd2_c200_m5")
+            self.assertFalse(fr.satisfied(split, 6))
+            os.makedirs(split)
+            self.make(split, 6)
+            self.assertTrue(fr.satisfied(split, 6))
+            self.assertFalse(fr.satisfied(shared, 10))
+
 
 if __name__ == "__main__":
     unittest.main()
