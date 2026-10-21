@@ -3,6 +3,7 @@
     cd outputs/decorr && python -m unittest test_five_runs -v
 """
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,16 @@ import five_runs as fr
 
 def env_of(r):
     return dict(kv.split("=", 1) for kv in r["env"])
+
+
+class TestList(unittest.TestCase):
+    def test_lines_end_in_lf_only(self):
+        # run_five.sh reads the list with `read`, which keeps a \r in the last field (VR_DENOISERS=...reblur\r)
+        here = os.path.dirname(os.path.abspath(__file__))
+        out = subprocess.run([sys.executable, os.path.join(here, "five_runs.py"), "--list"],
+                             capture_output=True, check=True).stdout
+        self.assertNotIn(b"\r", out)
+        self.assertEqual(out.count(b"\n"), 152)
 
 
 class TestPlan(unittest.TestCase):

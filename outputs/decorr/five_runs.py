@@ -73,6 +73,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.complete:
         return 0 if complete(a.complete[0], int(a.complete[1])) else 1
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(newline="\n")  # bash's `read` would keep Windows' \r in the last VAR=value
     for r in runs(tuple(a.sets.split())):
         print(r["label"], r["config"], r["captures"], " ".join(r["env"]))
     return 0
