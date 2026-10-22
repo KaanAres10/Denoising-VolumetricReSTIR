@@ -10,7 +10,9 @@ import sys
 
 def check(tex_path, bib_path, checked_path):
     tex = open(tex_path, encoding="utf-8").read()
-    cited = {k.strip() for group in re.findall(r"\\cite[a-z]*\*?(?:\[[^\]]*\])?\{([^}]*)\}", tex) for k in group.split(",")}
+    # \citestyle{...} names the style, not a work
+    cited = {k.strip() for group in re.findall(r"\\cite(?!style)[a-z]*\*?(?:\[[^\]]*\])?\{([^}]*)\}", tex)
+             for k in group.split(",")}
     bib = set(re.findall(r"@\w+\{([^,\s]+),", open(bib_path, encoding="utf-8").read()))
     checked = set(re.findall(r"^\|\s*([^|\s]+)\s*\|", open(checked_path, encoding="utf-8").read(), flags=re.M))
     problems = ["cited but not in the bibliography: " + k for k in sorted(cited - bib)]

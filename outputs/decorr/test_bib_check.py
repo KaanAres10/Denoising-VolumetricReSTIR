@@ -26,6 +26,11 @@ class TestBibCheck(unittest.TestCase):
                        "@article{Sawhney24,\n}\n", "| Lin21 | Papers/x.pdf |\n| Bitterli20 | doi |\n| Sawhney24 | Papers/y.pdf |\n")
         self.assertEqual(bib_check.check(*p), [])
 
+    def test_the_citation_style_is_not_a_citation(self):
+        p = self.files("\\citestyle{acmauthoryear}\n\\citet[\\S5.5.5]{Zhou25}", "@phdthesis{Zhou25,\n}\n",
+                       "| Zhou25 | Papers/Zhou_Weijie.pdf |\n")
+        self.assertEqual(bib_check.check(*p), [])
+
     def test_undefined_unused_and_unchecked(self):
         p = self.files("\\cite{Lin21,Missing}", "@article{Lin21,\n}\n@misc{Unused,\n}\n", "| Unused | doi |\n")
         problems = bib_check.check(*p)
