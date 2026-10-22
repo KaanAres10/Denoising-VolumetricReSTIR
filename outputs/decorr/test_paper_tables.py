@@ -68,7 +68,9 @@ class TestLatex(unittest.TestCase):
         rows = pt.five_rows(res, "c200")
         self.assertEqual(rows[0][0], "Spotlight beam")
         self.assertEqual(rows[0][1:7], ["$-$82\\%"] * 6)
-        self.assertEqual(rows[0][7], "0.0012")
+        self.assertEqual(rows[0][7], "1.2")  # the reference's own relMSE in units of 1e-3, two significant digits
+        self.assertEqual(pt.ref_cell(4.09e-6), "0.0041")
+        self.assertEqual(pt.ref_cell(0.0562), "56")
 
 
 if __name__ == "__main__":

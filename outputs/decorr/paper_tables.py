@@ -68,18 +68,23 @@ def change(cfgs, d):
     return "%+.0f%%" % (100 * (cfgs["m5"][d]["mean"] / cfgs["m0"][d]["mean"] - 1)) if d in cfgs["m0"] and d in cfgs["m5"] else "—"
 
 
+def ref_cell(own):
+    """A reference's own relMSE in units of 1e-3, two significant digits (they span 4e-6 to 0.06)."""
+    return "%.2g" % (1000 * own)
+
+
 def five_rows(results, hist):
     rows = []
     for label, name in SETUP_NAMES.items():
         if label not in results or hist not in results[label]["histories"]:
             continue
         cfgs = results[label]["histories"][hist]
-        rows.append([name] + [latex(change(cfgs, d)) for d in COLUMNS] + ["%.4f" % results[label]["ref_own_relmse"]])
+        rows.append([name] + [latex(change(cfgs, d)) for d in COLUMNS] + [ref_cell(results[label]["ref_own_relmse"])])
     return rows
 
 
 def five_table(results, hist):
-    head = ["Setup", "OptiX", "OIDN", "RELAX", "REBLUR", "DLSS RR", "raw", "ref."]
+    head = ["Setup", "OptiX", "OIDN", "RELAX", "REBLUR", "DLSS RR", "raw", "ref. ($10^{-3}$)"]
     body = ["\\begin{tabular}{lrrrrrrr}", "\\toprule", " & ".join(head) + " \\\\", "\\midrule"]
     body += [" & ".join(r) + " \\\\" for r in five_rows(results, hist)]
     return "\n".join(body + ["\\bottomrule", "\\end{tabular}", ""])
