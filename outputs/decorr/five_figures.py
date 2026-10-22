@@ -132,7 +132,7 @@ def history_chart(results, out):
         ax.set_yscale("log")
         ax.axhline(1.0, color=MUTED, lw=0.8, zorder=1)
         ax.set_xticks(range(len(DENOISERS)))
-        ax.set_xticklabels([NAMES[d] for d in DENOISERS], fontsize=7, color=INK)
+        ax.set_xticklabels([NAMES[d].replace("NRD ", "") for d in DENOISERS], fontsize=7, color=INK)  # fits the width
         ax.set_ylabel(ylabel, fontsize=7, color=INK)
         ax.tick_params(axis="y", labelsize=7, colors=MUTED)
         ax.grid(axis="y", color=GRID, lw=0.5, zorder=0)
