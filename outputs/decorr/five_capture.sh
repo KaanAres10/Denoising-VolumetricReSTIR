@@ -5,7 +5,7 @@
 # it) with the VR_/NRD4_/LANTERN_ environment cleared and the given assignments set, and Mogwai's stdin closed (a
 # caller's `while read` loop keeps its input). Waits up to a minute for an earlier Mogwai to exit (one at a time):
 # exit 3 if one is still running, else Mogwai's status (124 = FIVE_TIMEOUT seconds, default 3600; 143 = stopped
-# because the log showed a Falcor "(Error)"). FIVE_MOGWAI replaces Mogwai.exe (the tests' stand-in).
+# because the log showed a Falcor "(Error)" or "(Fatal)"). FIVE_MOGWAI replaces Mogwai.exe (the tests' stand-in).
 set -u
 R=/c/research/Denoising-VolumetricReSTIR
 cd "$R" || exit 1
@@ -23,9 +23,10 @@ script='C:\research\Denoising-VolumetricReSTIR\Source\RenderPasses\VolumetricReS
         --script "$script" > "$d/run.log" 2>&1 < /dev/null &
     pid=$!
     # A script that fails leaves Mogwai open until the timeout, and any "(Error)" already fails the run
-    # (five_runs.py --complete), so stop it as soon as one is logged.
+    # (five_runs.py --complete), so stop it as soon as one is logged; likewise a "(Fatal)" (a GPU fault: Mogwai
+    # reports the failed present and sits).
     while kill -0 "$pid" 2>/dev/null; do
-        if grep -q "(Error)" "$d/run.log" 2>/dev/null; then kill "$pid"; break; fi
+        if grep -q -E "\(Error\)|\(Fatal\)" "$d/run.log" 2>/dev/null; then kill "$pid"; break; fi
         sleep 2
     done
     wait "$pid"

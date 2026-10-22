@@ -42,6 +42,13 @@ class TestFiveCapture(unittest.TestCase):
         self.assertIn("(Error) Error when loading configuration file", log)
         self.assertNotEqual(code, 0)
 
+    def test_a_falcor_fatal_error_stops_the_run(self):
+        # a GPU fault ends in "(Fatal) GFX call ... failed" with Mogwai left open; it must not wait out FIVE_TIMEOUT
+        code, secs, log = capture("echo \"(Fatal) GFX call 'mGfxSwapchain->present()' failed\"; sleep 120", 120)
+        self.assertLess(secs, 30)
+        self.assertIn("(Fatal)", log)
+        self.assertNotEqual(code, 0)
+
     def test_a_clean_run_is_left_alone(self):
         code, secs, log = capture('echo "scene $VR_SCENE"; sleep 6; echo finished', 120)
         self.assertEqual(code, 0)
