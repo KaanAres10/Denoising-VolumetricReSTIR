@@ -91,6 +91,25 @@ class TestScore(unittest.TestCase):
             self.assertEqual(c["m5"]["oidn"]["run"], "bunnyspot/fd2_c200_m5")
             self.assertEqual(c["m0"]["optix"]["run"], "bunnyspot/fd_c200_m0")  # the finished shared run is kept
 
+    def test_a_shared_run_stopped_before_its_schedule_is_passed_over(self):
+        # the queue was stopped seconds into a shared run (run.log only) and re-ran it split
+        with tempfile.TemporaryDirectory() as root:
+            lab, ref, mask, imgs = tree(root)
+            shared = os.path.join(lab, "fd_c200_m5")
+            for f in os.listdir(shared):
+                os.remove(os.path.join(shared, f))
+            with open(os.path.join(shared, "run.log"), "w") as fh:
+                fh.write("starting")
+            d = os.path.join(lab, "fd1_c200_m5")
+            os.makedirs(d)
+            with open(os.path.join(d, "c.schedule.json"), "w") as fh:
+                json.dump({"chains": [{"frames": [10]}, {"frames": [20]}], "channels": SHARED, "channel": SHARED["raw"]}, fh)
+            for ch in SHARED.values():
+                for f in (10, 20):
+                    write_rgb(os.path.join(d, "c.%s.%d.exr" % (ch, f)), as32(ref))
+            c = fs.score(root, "bunnyspot")["histories"]["c200"]
+            self.assertEqual(c["m5"]["optix"]["run"], "bunnyspot/fd1_c200_m5")
+
     def test_a_missing_frame_raises(self):
         with tempfile.TemporaryDirectory() as root:
             lab, _, _, _ = tree(root)

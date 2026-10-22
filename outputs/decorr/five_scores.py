@@ -44,7 +44,9 @@ def frames(run_dir, channel):
 
 
 def finished(run_dir):
-    """Every channel's capture of every chain is there."""
+    """Every channel's capture of every chain is there (a run stopped before it wrote its schedule has none)."""
+    if not os.path.isfile(os.path.join(run_dir, "c.schedule.json")):
+        return False
     return all(os.path.exists(os.path.join(run_dir, "c.%s.%d.exr" % (ch, c["frames"][0])))
                for ch in channels(run_dir).values() for c in schedule(run_dir)["chains"])
 
