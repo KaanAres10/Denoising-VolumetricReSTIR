@@ -154,10 +154,11 @@ def block_titles(results, label, hist="c200"):
 
 # The page and the teaser, laid out in inches from the top left of a figure exactly the paper's text width (7 in) wide:
 # it is placed at scale 1, so its fonts print at their sizes.
-WIDTH, LABEL, CROP, GAP = 7.0, 0.36, 1.28, 0.05  # the figure, the row labels' column, a crop, between crops
-ROWS = ("plain", "+ 5 mutations", "error, plain", "error, + 5 mutations")
+WIDTH, LABEL, CROP, GAP = 7.0, 0.36, 1.28, 0.05  # the figure, the row labels' column, the teaser's crop, between crops
+ROWS = ("plain", "+ 5 mutations", "error\nplain", "error\n+ 5 mutations")  # two lines: a 1.06 in crop's height
 PAGE_ROWS = [(0, True), (1, True), (2, False), (3, False)]  # (row, relMSE above its crops)
 TEASER_ROWS = [(2, True), (3, True)]
+PAGE_BAND = 2.65  # the page's whole frame is this tall: 4.7 in wide at 16:9
 
 
 def _axes(fig, x, y, w, h):
@@ -187,31 +188,35 @@ def _error_cmap():
     return cmap
 
 
-def _band(fig, p, lim, top, height):
-    """The reference across the top, centred over the grid: the whole frame with the box, the box enlarged beside it,
-    and the error maps' colour scale."""
-    import matplotlib
+def _whole_frame(fig, p, x, top, height):
+    """The reference's whole frame, `height` tall at (x, top), with the box the crops show; returns its width."""
     from matplotlib.patches import Rectangle
-    y, x, s = p.box
+    by, bx, s = p.box
     wide = height * p.ref.shape[1] / p.ref.shape[0]
-    x_frame = LABEL + max(0.0, (WIDTH - LABEL - (wide + 0.14 + height + 0.35 + 1.15)) / 2)
-    ax = _axes(fig, x_frame, top, wide, height)
+    ax = _axes(fig, x, top, wide, height)
     ax.imshow(p.show(p.ref))
-    ax.add_patch(Rectangle((x - 0.5, y - 0.5), s, s, fill=False, ec=ORANGE, lw=1.6))
+    ax.add_patch(Rectangle((bx - 0.5, by - 0.5), s, s, fill=False, ec=ORANGE, lw=1.8))
     _cell(ax, "", 8)
-    _text(fig, x_frame + wide / 2, top - 0.05, "reference, whole frame", fontsize=8.5, fontweight="bold",
-          ha="center", va="bottom")
-    x_box = x_frame + wide + 0.14
-    ax = _axes(fig, x_box, top, height, height)
+    _text(fig, x + wide / 2, top - 0.05, "reference, whole frame", fontsize=9, fontweight="bold", ha="center",
+          va="bottom")
+    return wide
+
+
+def _ref_crop(ax, p):
+    """The reference in the box, framed in the box's colour."""
+    y, x, s = p.box
     ax.imshow(p.show(p.ref[y:y + s, x:x + s]), interpolation="nearest")
-    _cell(ax, "", 8)
+    _cell(ax, "", 7.5)
     for sp in ax.spines.values():
         sp.set_edgecolor(ORANGE)
         sp.set_linewidth(1.6)
-    _text(fig, x_box + height / 2, top - 0.05, "reference, the box", fontsize=8.5, fontweight="bold",
-          ha="center", va="bottom")
-    x0 = x_box + height + 0.35  # the scale's block: the bar, its ticks and label, the grey swatch's words (1.15 in)
-    bar = _axes(fig, x0, top + 0.2, 0.13, height - 0.62)
+
+
+def _scale(fig, lim, x0, top, height):
+    """The error maps' colour scale from (x0, top), `height` tall, under 1 in wide: the bar, its ticks and label, the
+    grey swatch."""
+    import matplotlib
+    bar = _axes(fig, x0, top + 0.2, 0.13, height - 0.85)
     scale = matplotlib.cm.ScalarMappable(norm=matplotlib.colors.Normalize(-lim, lim), cmap=_error_cmap())
     cb = fig.colorbar(scale, cax=bar, ticks=[-lim, 0.0, lim])
     cb.ax.set_yticklabels(["−%.2g" % lim, "0", "+%.2g" % lim])
@@ -220,69 +225,110 @@ def _band(fig, p, lim, top, height):
     cb.set_label("luminance error", fontsize=7.5, color=MUTED)
     bar.set_title("too bright", fontsize=7.5, color=INK, pad=4)
     bar.set_xlabel("too dark", fontsize=7.5, color=INK, labelpad=4)
-    swatch = _axes(fig, x0, top + height - 0.13, 0.13, 0.13)
+    swatch = _axes(fig, x0, top + height - 0.22, 0.13, 0.13)  # its two lines of words end inside the block
     swatch.set_facecolor(OUTSIDE)
     _cell(swatch, "", 7)
-    _text(fig, x0 + 0.19, top + height - 0.065, "outside\nthe medium", fontsize=7, color=MUTED, va="center",
+    _text(fig, x0 + 0.19, top + height - 0.155, "outside\nthe medium", fontsize=7, color=MUTED, va="center",
           linespacing=1.0)
 
 
-def _grid_height(rows):
-    h, prev = 0.24, None  # the denoisers' names
+def _band(fig, p, lim, top, height):
+    """The teaser's top, centred over its grid: the whole frame, the box enlarged beside it, and the colour scale."""
+    wide = height * p.ref.shape[1] / p.ref.shape[0]
+    x = LABEL + max(0.0, (WIDTH - LABEL - (wide + 0.14 + height + 0.35 + 1.15)) / 2)
+    _whole_frame(fig, p, x, top, height)
+    x_box = x + wide + 0.14
+    _ref_crop(_axes(fig, x_box, top, height, height), p)
+    _text(fig, x_box + height / 2, top - 0.05, "reference, the box", fontsize=8.5, fontweight="bold", ha="center",
+          va="bottom")
+    _scale(fig, lim, x_box + height + 0.35, top, height)
+
+
+def _grid_height(rows, crop):
+    h, prev = 0.24, None  # the column names
     for r, titled in rows:
-        h += (0.17 if titled else 0.06) + (0.08 if prev is not None and prev < 2 <= r else 0.0) + CROP
+        h += (0.17 if titled else 0.06) + (0.08 if prev is not None and prev < 2 <= r else 0.0) + crop
         prev = r
     return h
 
 
-def _grid(fig, p, titles, maps, lim, rows, top):
-    """The denoisers across and `rows` down from `top`: the crops plain and + 5 mutations and each one's error map
-    on the setup's one colour scale; titled rows carry the relMSE (and its change) over their crops."""
+def _grid(fig, p, titles, maps, lim, rows, top, crop, ref_column):
+    """The denoisers across and `rows` down from `top`: the crops plain and + 5 mutations and each one's error map on
+    the setup's one colour scale; titled rows carry the relMSE (and its change) over their crops. With ref_column, a
+    sixth column holds the reference beside the plain and mutated crops, and the colour scale beside the errors."""
     y, x, s = p.box
-    for j, d in enumerate(DENOISERS):
-        _text(fig, LABEL + j * (CROP + GAP) + CROP / 2, top + 0.2, NAMES[d], fontsize=8.5, fontweight="bold",
+    names = [NAMES[d] for d in DENOISERS] + (["reference"] if ref_column else [])
+    for j, name in enumerate(names):
+        _text(fig, LABEL + j * (crop + GAP) + crop / 2, top + 0.2, name, fontsize=8.5, fontweight="bold",
               ha="center", va="bottom")
-    yy, prev = top + 0.24, None
+    x_ref = LABEL + len(DENOISERS) * (crop + GAP)
+    yy, prev, errors_top = top + 0.24, None, None
     for r, titled in rows:
         yy += (0.17 if titled else 0.06) + (0.08 if prev is not None and prev < 2 <= r else 0.0)
         for j, d in enumerate(DENOISERS):
-            ax = _axes(fig, LABEL + j * (CROP + GAP), yy, CROP, CROP)
+            ax = _axes(fig, LABEL + j * (crop + GAP), yy, crop, crop)
             if r < 2:
                 ax.imshow(p.show(p.imgs[d][r][y:y + s, x:x + s]), interpolation="nearest")
             else:
                 ax.imshow(np.ma.masked_invalid(maps[d][r - 2]), cmap=_error_cmap(), vmin=-lim, vmax=lim,
                           interpolation="nearest")
             _cell(ax, titles[r % 2][j] if titled else "", 7.5)
-        _text(fig, LABEL / 2, yy + CROP / 2, ROWS[r], fontsize=8, rotation=90, ha="center", va="center")
-        yy += CROP
+        if ref_column and r < 2:
+            _ref_crop(_axes(fig, x_ref, yy, crop, crop), p)
+        if r >= 2 and errors_top is None:
+            errors_top = yy
+        _text(fig, LABEL / 2, yy + crop / 2, ROWS[r], fontsize=8, rotation=90, ha="center", va="center")
+        yy += crop
         prev = r
+    if ref_column and errors_top is not None:
+        _scale(fig, lim, x_ref + 0.06, errors_top, yy - errors_top)
 
 
-def _draw(p, titles, out, rows, band):
+def page_layout(ref_shape):
+    """Where a setup's page puts things, in inches from its top left: the whole frame (x, y, w, h) centred over the
+    grid, the crop, the grid's top and columns (the five denoisers, then the reference beside the plain and mutated
+    crops) and the page's height, under 1.165 widths so a two-line caption fits the 8.66 in text block."""
+    crop = (WIDTH - LABEL - len(DENOISERS) * GAP - 0.03) / (len(DENOISERS) + 1)  # the reference's border inside
+    band = PAGE_BAND
+    wide = band * ref_shape[1] / ref_shape[0]
+    if wide > WIDTH - LABEL:
+        wide, band = WIDTH - LABEL, (WIDTH - LABEL) * ref_shape[0] / ref_shape[1]
+    top = 0.24 + band + 0.16
+    return {"frame": (LABEL + (WIDTH - LABEL - wide) / 2, 0.24, wide, band), "crop": crop, "grid_top": top,
+            "columns": list(DENOISERS) + ["reference"], "height": top + _grid_height(PAGE_ROWS, crop) + 0.03}
+
+
+def page_figure(p, titles, out):
+    """One setup on a page (its caption names it): the reference's whole frame with the box across the top, then the
+    five denoisers and the reference across and four rows down -- the box plain and with + 5 mutations, each row ending
+    in the reference, then each one's signed error against the reference on one colour scale, the scale beside them."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    lay = page_layout(p.ref.shape)
     maps, lim = error_crops(p)
-    top = 0.24 + band + 0.16
-    fig = plt.figure(figsize=(WIDTH, top + _grid_height(rows) + 0.03))
-    _band(fig, p, lim, 0.24, band)
-    _grid(fig, p, titles, maps, lim, rows, top)
+    fig = plt.figure(figsize=(WIDTH, lay["height"]))
+    x, y, _, h = lay["frame"]
+    _whole_frame(fig, p, x, y, h)
+    _grid(fig, p, titles, maps, lim, PAGE_ROWS, lay["grid_top"], lay["crop"], ref_column=True)
     fig.savefig(out, dpi=300, facecolor="white")
     plt.close(fig)
 
 
-def page_figure(p, titles, out):
-    """One setup on a page (its caption names it): the reference across the top (the whole frame with the box, the box
-    enlarged, the error scale), then the five denoisers across and four rows down -- plain, + 5 mutations, and each
-    one's signed error against the reference on one colour scale. 8.13 in tall: the text block's 8.66 less a two-line
-    caption."""
-    _draw(p, titles, out, PAGE_ROWS, 1.8)
-
-
 def teaser_figure(p, titles, out):
-    """The teaser: the reference across the top as on the pages, then each denoiser's error map without and with five
-    mutations, the relMSE over each."""
-    _draw(p, titles, out, TEASER_ROWS, 1.5)
+    """The teaser: the whole frame, the box enlarged and the colour scale across the top, then each denoiser's error
+    map without and with five mutations, the relMSE over each."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    maps, lim = error_crops(p)
+    band = 1.5
+    top = 0.24 + band + 0.16
+    fig = plt.figure(figsize=(WIDTH, top + _grid_height(TEASER_ROWS, CROP) + 0.03))
+    _band(fig, p, lim, 0.24, band)
+    _grid(fig, p, titles, maps, lim, TEASER_ROWS, top, CROP, ref_column=False)
+    fig.savefig(out, dpi=300, facecolor="white")
+    plt.close(fig)
 
 
 def setup_page(root, results, label, out, hist="c200"):

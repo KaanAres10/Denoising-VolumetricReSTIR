@@ -103,6 +103,13 @@ class TestLayouts(unittest.TestCase):
         self.assertEqual(w, 2100)  # 7 in at 300 dpi: placed at scale 1, so its fonts keep their sizes
         self.assertTrue(w < h < 1.165 * w)  # fits the 8.66 in text block with a two-line caption
 
+    def test_the_page_puts_a_large_whole_frame_over_six_columns(self):
+        lay = ff.page_layout((1080, 1920))
+        self.assertGreaterEqual(lay["frame"][2], 4.5)  # the whole frame's width in inches (was 3.2)
+        self.assertEqual(lay["columns"], list(ff.DENOISERS) + ["reference"])  # beside the plain and mutated crops
+        self.assertGreaterEqual(lay["crop"], 1.0)
+        self.assertLess(lay["height"], 1.165 * ff.WIDTH)  # still one page with its caption
+
     def test_the_teaser_is_a_wide_band_at_the_same_width(self):
         r = results({"a": [0.5] * 5})
         with tempfile.TemporaryDirectory() as root:
