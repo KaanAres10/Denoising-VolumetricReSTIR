@@ -66,16 +66,12 @@ def panel(root, results, label, hist="c200"):
     imgs = {d: (_frame(root, results, label, hist, 0, d), _frame(root, results, label, hist, 5, d)) for d in DENOISERS}
     size = max(64, min(ref.shape[:2]) // 5)
     (y, x), = paper_figure.pick_boxes(imgs["optix"][0], ref, size, n=1, mask=mask)
-    # The pages' two boxes: 2:1 strips (162 x 324 px at 1080p) where plain ReSTIR with OptiX errs most.
-    sh = max(16, min(ref.shape[:2]) * 3 // 20)
-    strips = [(sy, sx, sh, 2 * sh) for sy, sx in
-              paper_figure.pick_boxes(imgs["optix"][0], ref, sh, n=2, mask=mask, width=2 * sh)]
     if label in PAPER_DISPLAY:
         show = art.srgb_display
     else:
         k = np.percentile((ref @ mc.Y_RGB)[mask], EXPOSURE.get(label, 99.0)) + 1e-9
         show = lambda img: art.tonemap(img, k)  # noqa: E731
-    return types.SimpleNamespace(imgs=imgs, ref=ref, mask=mask, show=show, box=(y, x, size), strips=strips)
+    return types.SimpleNamespace(imgs=imgs, ref=ref, mask=mask, show=show, box=(y, x, size))
 
 
 def signed_error(img, ref, mask, sigma=2.0):
@@ -91,14 +87,6 @@ def error_limit(plain_maps):
     """One symmetric colour limit for a setup's maps: the median over the denoisers of the plain maps' 99th percentile
     of |error|, so one denoiser's brightness offset (Ray Reconstruction's) does not set everyone's scale."""
     return max(float(np.median([np.nanpercentile(np.abs(e), 99) for e in plain_maps])), 1e-12)
-
-
-def strip_maps(p):
-    """Per box (strip) and denoiser, the (plain, + 5 mutations) error maps in the strip, and the page's one colour
-    limit: the median over the denoisers of the 99th percentile of both strips' plain maps."""
-    full = {d: tuple(signed_error(img, p.ref, p.mask) for img in p.imgs[d]) for d in DENOISERS}
-    maps = [{d: tuple(e[y:y + h, x:x + w] for e in full[d]) for d in DENOISERS} for y, x, h, w in p.strips]
-    return maps, error_limit([np.concatenate([m[d][0].ravel() for m in maps]) for d in DENOISERS])
 
 
 def error_crops(p):
@@ -166,17 +154,11 @@ def block_titles(results, label, hist="c200"):
 
 # The page and the teaser, laid out in inches from the top left of a figure exactly the paper's text width (7 in) wide:
 # it is placed at scale 1, so its fonts print at their sizes.
-WIDTH, LABEL, CROP, GAP = 7.0, 0.36, 1.28, 0.05  # the figure, the teaser's row labels, its crop, between crops
-ROWS = ("plain", "+ 5 mutations", "error\nplain", "error\n+ 5 mutations")  # two lines: a crop's height
-TEASER_ROWS = [(2, True), (3, True)]  # (row, relMSE above its crops)
-# The page: two boxes, each a 2:1 strip, in four rows each -- (box, row, relMSE above). The relMSE is the medium's, the
-# same for both boxes, so it stands over box A's rows only.
-STRIP_ROWS = [(0, 0, True), (0, 1, True), (0, 2, False), (0, 3, False),
-              (1, 0, False), (1, 1, False), (1, 2, False), (1, 3, False)]
-STRIP_ROW_NAMES = ("plain", "+ 5\nmutations", "error\nplain", "error\n+ 5")
-STRIP_LABEL = 0.5  # the page's left column: each box's name, then the rows' names
-BOX_COLOURS, BOX_NAMES = (ORANGE, BLUE), ("A", "B")
-PAGE_BAND, SCALE_BLOCK = 2.4, 1.15  # the whole frame's height on a page; the colour scale's block beside it
+WIDTH, LABEL, CROP, GAP = 7.0, 0.36, 1.28, 0.05  # the figure, the row labels' column, the teaser's crop, between crops
+ROWS = ("plain", "+ 5 mutations", "error\nplain", "error\n+ 5 mutations")  # two lines: a 1.06 in crop's height
+PAGE_ROWS = [(0, True), (1, True), (2, False), (3, False)]  # (row, relMSE above its crops)
+TEASER_ROWS = [(2, True), (3, True)]
+PAGE_BAND = 2.65  # the page's whole frame is this tall: 4.7 in wide at 16:9
 
 
 def _axes(fig, x, y, w, h):
@@ -206,30 +188,27 @@ def _error_cmap():
     return cmap
 
 
-def _whole_frame(fig, p, x, top, height, boxes):
-    """The reference's whole frame, `height` tall at (x, top), with `boxes` (y, x, h, w, colour, name) marked."""
+def _whole_frame(fig, p, x, top, height):
+    """The reference's whole frame, `height` tall at (x, top), with the box the crops show; returns its width."""
     from matplotlib.patches import Rectangle
+    by, bx, s = p.box
     wide = height * p.ref.shape[1] / p.ref.shape[0]
     ax = _axes(fig, x, top, wide, height)
     ax.imshow(p.show(p.ref))
-    for by, bx, bh, bw, colour, name in boxes:
-        ax.add_patch(Rectangle((bx - 0.5, by - 0.5), bw, bh, fill=False, ec=colour, lw=1.8))
-        if name:
-            ax.annotate(name, xy=(bx - 0.5, by - 0.5), xytext=(-2, 1), textcoords="offset points", ha="right",
-                        va="bottom", fontsize=9, fontweight="bold", color=colour, annotation_clip=False)
+    ax.add_patch(Rectangle((bx - 0.5, by - 0.5), s, s, fill=False, ec=ORANGE, lw=1.8))
     _cell(ax, "", 8)
     _text(fig, x + wide / 2, top - 0.05, "reference, whole frame", fontsize=9, fontweight="bold", ha="center",
           va="bottom")
     return wide
 
 
-def _ref_crop(ax, p, window, colour):
-    """The reference in a box's window (y, x, h, w), framed in the box's colour."""
-    y, x, h, w = window
-    ax.imshow(p.show(p.ref[y:y + h, x:x + w]), interpolation="nearest")
+def _ref_crop(ax, p):
+    """The reference in the box, framed in the box's colour."""
+    y, x, s = p.box
+    ax.imshow(p.show(p.ref[y:y + s, x:x + s]), interpolation="nearest")
     _cell(ax, "", 7.5)
     for sp in ax.spines.values():
-        sp.set_edgecolor(colour)
+        sp.set_edgecolor(ORANGE)
         sp.set_linewidth(1.6)
 
 
@@ -256,12 +235,11 @@ def _scale(fig, lim, x0, top, height):
 
 def _band(fig, p, lim, top, height):
     """The teaser's top, centred over its grid: the whole frame, the box enlarged beside it, and the colour scale."""
-    y, x, s = p.box
     wide = height * p.ref.shape[1] / p.ref.shape[0]
-    x_frame = LABEL + max(0.0, (WIDTH - LABEL - (wide + 0.14 + height + 0.35 + SCALE_BLOCK)) / 2)
-    _whole_frame(fig, p, x_frame, top, height, [(y, x, s, s, ORANGE, "")])
-    x_box = x_frame + wide + 0.14
-    _ref_crop(_axes(fig, x_box, top, height, height), p, (y, x, s, s), ORANGE)
+    x = LABEL + max(0.0, (WIDTH - LABEL - (wide + 0.14 + height + 0.35 + 1.15)) / 2)
+    _whole_frame(fig, p, x, top, height)
+    x_box = x + wide + 0.14
+    _ref_crop(_axes(fig, x_box, top, height, height), p)
     _text(fig, x_box + height / 2, top - 0.05, "reference, the box", fontsize=8.5, fontweight="bold", ha="center",
           va="bottom")
     _scale(fig, lim, x_box + height + 0.35, top, height)
@@ -275,14 +253,17 @@ def _grid_height(rows, crop):
     return h
 
 
-def _grid(fig, p, titles, maps, lim, rows, top, crop):
-    """The teaser's grid: the denoisers across and `rows` down from `top`, each denoiser's error map in the box on
-    the setup's one colour scale; titled rows carry the relMSE (and its change) over their maps."""
-    for j, d in enumerate(DENOISERS):
-        _text(fig, LABEL + j * (crop + GAP) + crop / 2, top + 0.2, NAMES[d], fontsize=8.5, fontweight="bold",
-              ha="center", va="bottom")
+def _grid(fig, p, titles, maps, lim, rows, top, crop, ref_column):
+    """The denoisers across and `rows` down from `top`: the crops plain and + 5 mutations and each one's error map on
+    the setup's one colour scale; titled rows carry the relMSE (and its change) over their crops. With ref_column, a
+    sixth column holds the reference beside the plain and mutated crops, and the colour scale beside the errors."""
     y, x, s = p.box
-    yy, prev = top + 0.24, None
+    names = [NAMES[d] for d in DENOISERS] + (["reference"] if ref_column else [])
+    for j, name in enumerate(names):
+        _text(fig, LABEL + j * (crop + GAP) + crop / 2, top + 0.2, name, fontsize=8.5, fontweight="bold",
+              ha="center", va="bottom")
+    x_ref = LABEL + len(DENOISERS) * (crop + GAP)
+    yy, prev, errors_top = top + 0.24, None, None
     for r, titled in rows:
         yy += (0.17 if titled else 0.06) + (0.08 if prev is not None and prev < 2 <= r else 0.0)
         for j, d in enumerate(DENOISERS):
@@ -293,90 +274,44 @@ def _grid(fig, p, titles, maps, lim, rows, top, crop):
                 ax.imshow(np.ma.masked_invalid(maps[d][r - 2]), cmap=_error_cmap(), vmin=-lim, vmax=lim,
                           interpolation="nearest")
             _cell(ax, titles[r % 2][j] if titled else "", 7.5)
+        if ref_column and r < 2:
+            _ref_crop(_axes(fig, x_ref, yy, crop, crop), p)
+        if r >= 2 and errors_top is None:
+            errors_top = yy
         _text(fig, LABEL / 2, yy + crop / 2, ROWS[r], fontsize=8, rotation=90, ha="center", va="center")
         yy += crop
         prev = r
-
-
-def _strip_gap(prev, cur):
-    """Extra space above a strip row: between the two boxes, and between a box's images and its errors."""
-    if prev is None:
-        return 0.0
-    if prev[0] != cur[0]:
-        return 0.16
-    return 0.06 if prev[1] < 2 <= cur[1] else 0.0
-
-
-def _strip_rows(top, sh):
-    """Each strip row's (box, row, relMSE above, y) from the grid's top."""
-    out, yy, prev = [], top + 0.24, None  # the column names
-    for k, r, titled in STRIP_ROWS:
-        yy += (0.16 if titled else 0.04) + _strip_gap(prev, (k, r))
-        out.append((k, r, titled, yy))
-        yy += sh
-        prev = (k, r)
-    return out
+    if ref_column and errors_top is not None:
+        _scale(fig, lim, x_ref + 0.06, errors_top, yy - errors_top)
 
 
 def page_layout(ref_shape):
-    """Where a setup's page puts things, in inches from its top left: the whole frame (x, y, w, h) and the colour
-    scale (x, y, h) beside it, centred over the grid; the strip (w, h); the grid's top and columns (the five
-    denoisers, then the reference beside the plain and mutated strips); the page's height, under 1.165 widths so a
-    two-line caption fits the 8.66 in text block."""
-    sw = (WIDTH - STRIP_LABEL - len(DENOISERS) * GAP - 0.03) / (len(DENOISERS) + 1)
-    sh = sw / 2
+    """Where a setup's page puts things, in inches from its top left: the whole frame (x, y, w, h) centred over the
+    grid, the crop, the grid's top and columns (the five denoisers, then the reference beside the plain and mutated
+    crops) and the page's height, under 1.165 widths so a two-line caption fits the 8.66 in text block."""
+    crop = (WIDTH - LABEL - len(DENOISERS) * GAP - 0.03) / (len(DENOISERS) + 1)  # the reference's border inside
     band = PAGE_BAND
     wide = band * ref_shape[1] / ref_shape[0]
-    if wide > WIDTH - STRIP_LABEL - 0.35 - SCALE_BLOCK:
-        wide = WIDTH - STRIP_LABEL - 0.35 - SCALE_BLOCK
-        band = wide * ref_shape[0] / ref_shape[1]
-    x = STRIP_LABEL + (WIDTH - STRIP_LABEL - (wide + 0.35 + SCALE_BLOCK)) / 2
+    if wide > WIDTH - LABEL:
+        wide, band = WIDTH - LABEL, (WIDTH - LABEL) * ref_shape[0] / ref_shape[1]
     top = 0.24 + band + 0.16
-    rows = _strip_rows(top, sh)
-    return {"frame": (x, 0.24, wide, band), "scale": (x + wide + 0.35, 0.24, band), "strip": (sw, sh),
-            "boxes": len(BOX_NAMES), "columns": list(DENOISERS) + ["reference"], "grid_top": top, "rows": rows,
-            "height": rows[-1][3] + sh + 0.03}
+    return {"frame": (LABEL + (WIDTH - LABEL - wide) / 2, 0.24, wide, band), "crop": crop, "grid_top": top,
+            "columns": list(DENOISERS) + ["reference"], "height": top + _grid_height(PAGE_ROWS, crop) + 0.03}
 
 
 def page_canvas(p, titles):
-    """One setup on a page (its caption names it): the reference's whole frame with its two boxes and the colour scale
-    across the top; then for each box, the five denoisers and the reference across and four strip rows down -- the box
-    plain and with + 5 mutations, each row ending in the reference, then each one's signed error against the
-    reference on the page's one colour scale."""
+    """One setup on a page (its caption names it): the reference's whole frame with the box across the top, then the
+    five denoisers and the reference across and four rows down -- the box plain and with + 5 mutations, each row ending
+    in the reference, then each one's signed error against the reference on one colour scale, the scale beside them."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     lay = page_layout(p.ref.shape)
-    maps, lim = strip_maps(p)
-    sw, sh = lay["strip"]
+    maps, lim = error_crops(p)
     fig = plt.figure(figsize=(WIDTH, lay["height"]))
     x, y, _, h = lay["frame"]
-    _whole_frame(fig, p, x, y, h, [(by, bx, bh, bw, BOX_COLOURS[k], BOX_NAMES[k])
-                                   for k, (by, bx, bh, bw) in enumerate(p.strips)])
-    _scale(fig, lim, *lay["scale"])
-    for j, name in enumerate([NAMES[d] for d in DENOISERS] + ["reference"]):
-        _text(fig, STRIP_LABEL + j * (sw + GAP) + sw / 2, lay["grid_top"] + 0.2, name, fontsize=8.5,
-              fontweight="bold", ha="center", va="bottom")
-    spans = {}
-    for k, r, titled, yy in lay["rows"]:
-        wy, wx, wh, ww = p.strips[k]
-        for j, d in enumerate(DENOISERS):
-            ax = _axes(fig, STRIP_LABEL + j * (sw + GAP), yy, sw, sh)
-            if r < 2:
-                ax.imshow(p.show(p.imgs[d][r][wy:wy + wh, wx:wx + ww]), interpolation="nearest")
-            else:
-                ax.imshow(np.ma.masked_invalid(maps[k][d][r - 2]), cmap=_error_cmap(), vmin=-lim, vmax=lim,
-                          interpolation="nearest")
-            _cell(ax, titles[r % 2][j] if titled else "", 7.5)
-        if r < 2:
-            _ref_crop(_axes(fig, STRIP_LABEL + len(DENOISERS) * (sw + GAP), yy, sw, sh), p, p.strips[k],
-                      BOX_COLOURS[k])
-        _text(fig, STRIP_LABEL - 0.17, yy + sh / 2, STRIP_ROW_NAMES[r], fontsize=7.5, rotation=90, ha="center",
-              va="center", linespacing=1.0)
-        spans.setdefault(k, [yy, 0.0])[1] = yy + sh
-    for k, (y0, y1) in spans.items():
-        _text(fig, 0.1, (y0 + y1) / 2, "box " + BOX_NAMES[k], fontsize=9, fontweight="bold", color=BOX_COLOURS[k],
-              rotation=90, ha="center", va="center")
+    _whole_frame(fig, p, x, y, h)
+    _grid(fig, p, titles, maps, lim, PAGE_ROWS, lay["grid_top"], lay["crop"], ref_column=True)
     return fig
 
 
@@ -398,7 +333,7 @@ def teaser_figure(p, titles, out):
     top = 0.24 + band + 0.16
     fig = plt.figure(figsize=(WIDTH, top + _grid_height(TEASER_ROWS, CROP) + 0.03))
     _band(fig, p, lim, 0.24, band)
-    _grid(fig, p, titles, maps, lim, TEASER_ROWS, top, CROP)
+    _grid(fig, p, titles, maps, lim, TEASER_ROWS, top, CROP, ref_column=False)
     fig.savefig(out, dpi=300, facecolor="white")
     plt.close(fig)
 
