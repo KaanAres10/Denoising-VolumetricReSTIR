@@ -61,16 +61,28 @@ class TestLatex(unittest.TestCase):
         for row in pt.display_rows(record["counts"]["rows"]):  # the counts table fits a column only with short names
             self.assertLessEqual(len(row[0]), 24, row[0])
 
-    def test_five_rows(self):
+    def test_both_histories_side_by_side(self):
         dens = ("optix", "oidn", "relax", "reblur", "rr", "raw")
-        res = {"bunnyspot": {"ref_own_relmse": 0.0012, "histories": {"c200": {
-            "m0": {d: {"mean": 0.0336} for d in dens}, "m5": {d: {"mean": 0.0060} for d in dens}}}}}
-        rows = pt.five_rows(res, "c200")
+        res = {"bunnyspot": {"ref_own_relmse": 0.0012, "histories": {
+            "c200": {"m0": {d: {"mean": 0.0336} for d in dens}, "m5": {d: {"mean": 0.0060} for d in dens}},
+            "ship": {"m0": {d: {"mean": 0.0336} for d in dens}, "m5": {d: {"mean": 0.0286} for d in dens}}}}}
+        rows = pt.both_rows(res)
         self.assertEqual(rows[0][0], "Spotlight beam")
-        self.assertEqual(rows[0][1:7], ["$-$82\\%"] * 6)
+        self.assertEqual(rows[0][1:7], ["$-$82 / $-$15"] * 6)  # percent at M cap 200 / at the shipped cap
         self.assertEqual(rows[0][7], "1.2")  # the reference's own relMSE in units of 1e-3, two significant digits
         self.assertEqual(pt.ref_cell(4.09e-6), "0.0041")
         self.assertEqual(pt.ref_cell(0.0562), "56")
+
+    def test_a_change_that_rounds_to_zero_has_no_sign(self):
+        cfgs = {"m0": {"optix": {"mean": 0.1}, "rr": {"mean": 0.1}}, "m5": {"optix": {"mean": 0.0996}, "rr": {"mean": 0.1004}}}
+        self.assertEqual(pt.change(cfgs, "optix"), "0%")  # not "-0%"
+        self.assertEqual(pt.change(cfgs, "rr"), "0%")  # not "+0%"
+
+    def test_a_setup_without_both_histories_is_left_out(self):
+        dens = ("optix", "oidn", "relax", "reblur", "rr", "raw")
+        res = {"bunnyspot": {"ref_own_relmse": 0.0012, "histories": {
+            "c200": {"m0": {d: {"mean": 0.0336} for d in dens}, "m5": {d: {"mean": 0.0060} for d in dens}}}}}
+        self.assertEqual(pt.both_rows(res), [])
 
 
 if __name__ == "__main__":

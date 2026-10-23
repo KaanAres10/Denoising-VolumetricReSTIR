@@ -65,7 +65,10 @@ def tabular(header, rows, spec):
 
 
 def change(cfgs, d):
-    return "%+.0f%%" % (100 * (cfgs["m5"][d]["mean"] / cfgs["m0"][d]["mean"] - 1)) if d in cfgs["m0"] and d in cfgs["m5"] else "—"
+    if d not in cfgs["m0"] or d not in cfgs["m5"]:
+        return "—"
+    v = round(100 * (cfgs["m5"][d]["mean"] / cfgs["m0"][d]["mean"] - 1))
+    return "%+d%%" % v if v else "0%"  # a change that rounds to zero carries no sign
 
 
 def ref_cell(own):
@@ -73,20 +76,25 @@ def ref_cell(own):
     return "%.2g" % (1000 * own)
 
 
-def five_rows(results, hist):
+def both_rows(results):
+    """Per setup with both histories: the change with five mutations per denoiser at M cap 200 / at the shipped cap
+    ("$-$82 / $-$15", percent), and the reference's own relMSE."""
     rows = []
     for label, name in SETUP_NAMES.items():
-        if label not in results or hist not in results[label]["histories"]:
+        h = results.get(label, {}).get("histories", {})
+        if "c200" not in h or "ship" not in h:
             continue
-        cfgs = results[label]["histories"][hist]
-        rows.append([name] + [latex(change(cfgs, d)) for d in COLUMNS] + [ref_cell(results[label]["ref_own_relmse"])])
+        cells = [latex("%s / %s" % (change(h["c200"], d).rstrip("%"), change(h["ship"], d).rstrip("%")))
+                 for d in COLUMNS]
+        rows.append([name] + cells + [ref_cell(results[label]["ref_own_relmse"])])
     return rows
 
 
-def five_table(results, hist):
+def five_both(results):
+    """The main text's five-denoiser table: both histories side by side, so the page carries one table, not two."""
     head = ["Setup", "OptiX", "OIDN", "RELAX", "REBLUR", "DLSS RR", "raw", "ref. ($10^{-3}$)"]
-    body = ["\\begin{tabular}{lrrrrrrr}", "\\toprule", " & ".join(head) + " \\\\", "\\midrule"]
-    body += [" & ".join(r) + " \\\\" for r in five_rows(results, hist)]
+    body = ["\\begin{tabular}{lccccccr}", "\\toprule", " & ".join(head) + " \\\\", "\\midrule"]
+    body += [" & ".join(r) + " \\\\" for r in both_rows(results)]
     return "\n".join(body + ["\\bottomrule", "\\end{tabular}", ""])
 
 
@@ -114,9 +122,8 @@ def write_all(record, results, out_dir):
         with open(os.path.join(out_dir, key + ".tex"), "w", encoding="utf-8") as fh:
             fh.write(tabular(table["header"], display_rows(table["rows"]), SPECS[key]))
     if results:
-        for hist in ("c200", "ship"):
-            with open(os.path.join(out_dir, "five_%s.tex" % hist), "w", encoding="utf-8") as fh:
-                fh.write(five_table(results, hist))
+        with open(os.path.join(out_dir, "five_both.tex"), "w", encoding="utf-8") as fh:
+            fh.write(five_both(results))
         with open(os.path.join(out_dir, "five_values.tex"), "w", encoding="utf-8") as fh:
             fh.write(five_values(results))
 
