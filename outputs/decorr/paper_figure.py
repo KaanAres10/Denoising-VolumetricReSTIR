@@ -36,36 +36,38 @@ def lit_region(ref, margin=0.06):
     return max(0, ys.min() - my), min(ref.shape[0], ys.max() + my), max(0, xs.min() - mx), min(ref.shape[1], xs.max() + mx)
 
 
-def pick_boxes(a, ref, size, n=2, mask=None):
-    """Top-left corners of n non-overlapping size x size windows with the largest blurred error of a, among windows
-    at least half as bright as the lit area on average (dim wisps are noisy in the reference too) and, with a medium
-    mask, mostly inside the medium (an emitter's edge in view is the denoiser's, not reuse's)."""
+def pick_boxes(a, ref, size, n=2, mask=None, width=None):
+    """Top-left corners of n non-overlapping windows, size tall and `width` (default: size) wide, with the largest
+    blurred error of a, among windows at least half as bright as the lit area on average (dim wisps are noisy in the
+    reference too) and, with a medium mask, mostly inside the medium (an emitter's edge in view is the denoiser's, not
+    reuse's)."""
+    w = width or size
     inside = mask if mask is not None else np.ones(ref.shape[:2], bool)
     clip = np.percentile(ref[inside], 99.5)
     err = np.abs(np.minimum(a, clip) - np.minimum(ref, clip)).sum(axis=-1) * inside
     level = np.minimum(ref, clip).sum(axis=-1)
-    e = cv2.blur(cv2.GaussianBlur(err.astype(np.float32), (0, 0), 6), (size, size))
-    l = cv2.blur((level * inside).astype(np.float32), (size, size))
+    e = cv2.blur(cv2.GaussianBlur(err.astype(np.float32), (0, 0), 6), (w, size))  # cv2's ksize is (width, height)
+    l = cv2.blur((level * inside).astype(np.float32), (w, size))
     lit = (level > 0.03 * np.percentile(level[inside], 99)) & inside
-    frac = cv2.blur(inside.astype(np.float32), (size, size))
+    frac = cv2.blur(inside.astype(np.float32), (w, size))
     bright = l >= 0.5 * (level[lit].mean() if lit.any() else level.mean())
+    hh, hw = size // 2, w // 2
     # Strictest first; relaxed (a dark backlit medium, a thin one) until some window qualifies.
     for need_bright, need_frac in ((True, 0.6), (False, 0.6), (False, 0.3), (False, 0.0)):
         score = e * ((frac >= need_frac) & (bright if need_bright else True))
-        if score[size // 2:-(size // 2), size // 2:-(size // 2)].max() > 0:
+        if score[hh:-hh, hw:-hw].max() > 0:
             break
-    h = size // 2
     fallback = e * (frac > 0)
     for s in (score, fallback):
-        s[:h, :] = s[-h:, :] = 0
-        s[:, :h] = s[:, -h:] = 0
+        s[:hh, :] = s[-hh:, :] = 0
+        s[:, :hw] = s[:, -hw:] = 0
     boxes = []
     for _ in range(n):
         s = score if score.max() > 0 else fallback  # the qualifying windows can all lie next to the first box
         y, x = np.unravel_index(np.argmax(s), s.shape)
-        boxes.append((y - h, x - h))
+        boxes.append((y - hh, x - hw))
         for s in (score, fallback):
-            s[max(0, y - size):y + size, max(0, x - size):x + size] = 0
+            s[max(0, y - size):y + size, max(0, x - w):x + w] = 0
     return boxes
 
 
