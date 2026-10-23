@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 
 import numpy as np
@@ -36,6 +38,37 @@ class TestChatMaps(unittest.TestCase):
         log_r = self.blotch * 4
         s = chat_maps.split(np.exp(log_c + log_r), np.exp(log_c), np.ones(log_c.shape, bool))
         self.assertLess(s["share_c"], 0.1)
+
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def png_width(path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.image
+    return matplotlib.image.imread(path).shape[1]
+
+
+class TestFigureWidths(unittest.TestCase):
+    """Drawn at the width the paper prints them (300 dpi), so their fonts print at their sizes."""
+
+    def test_the_c_hat_maps_fill_a_column(self):
+        rng = np.random.default_rng(0)
+        med = np.zeros((540, 960), bool)
+        med[100:350, 280:700] = True
+        maps = [(name, rng.uniform(0.2, 0.8, (540, 960, 3)), rng.uniform(0.2, 0.8, (540, 960)))
+                for name in ("plain ReSTIR", "10 mutations", "decoupled history")]
+        with tempfile.TemporaryDirectory() as root:
+            chat_maps.figure(root, maps, np.full((540, 960), 0.5), med)
+            self.assertEqual(png_width(os.path.join(root, "figs", "swarm_chat_maps.png")), 1000)  # 3.33 in
+
+    @unittest.skipUnless(os.path.isdir(os.path.join(ROOT, chat_maps.LABEL, "den_optix_c200_m0")),
+                         "needs the swarm's count runs")
+    def test_the_counts_fill_the_text_width(self):
+        with tempfile.TemporaryDirectory() as out:
+            chat_maps.counts_denoiser_figure(ROOT, out_dir=out)
+            self.assertEqual(png_width(os.path.join(out, "swarm_counts_denoisers.png")), 2100)  # 7 in
 
 
 if __name__ == "__main__":

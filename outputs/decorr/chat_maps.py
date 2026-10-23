@@ -17,6 +17,7 @@ import numpy as np  # noqa: E402
 LABEL = "bunnyswarm_d3"
 CONFIGS = (("chatz_c200_m0", "plain ReSTIR"), ("chatz_c200_m10", "10 mutations"), ("chatz_dec200_m0", "decoupled history"))
 LUM = np.array([0.0722, 0.7152, 0.2126])  # BGR
+COLUMN, TEXT = 240 / 72, 7.0  # the paper's column (240 pt) and text widths in inches: drawn at the width they print
 
 
 def band(x, lo, hi):
@@ -93,8 +94,8 @@ def figure(root, maps, ref_y, med):
     import matplotlib.pyplot as plt
     y0, y1, x0, x1 = 120, 330, 300, 680  # the cloud's lit core at 960x540
     k = np.percentile(maps[0][1][y0:y1, x0:x1], 99.5)
-    fig, axes = plt.subplots(3, len(maps), figsize=(4.6 * len(maps), 7.6), facecolor="#fcfcfb", squeeze=False)
-    rows = ("the frame (raw)", "its brightness error, log(Y / reference)", "the part in c_hat, log(c_hat / reference)")
+    fig, axes = plt.subplots(3, len(maps), figsize=(COLUMN, 1.95), facecolor="#fcfcfb", squeeze=False)
+    rows = ("raw frame", "error", r"part in $\hat{c}$")  # the caption spells them out
     for c_, (name, img, chat) in enumerate(maps):
         y = img @ LUM
         # blur first, then the log ratio: the log of a sparse noisy pixel is far below the log of its mean, which would
@@ -110,14 +111,14 @@ def figure(root, maps, ref_y, med):
             ax.set_xticks([]); ax.set_yticks([])
             if r_ == 0:
                 ax.imshow(t, interpolation="nearest")
-                ax.set_title(name, fontsize=12)
+                ax.set_title(name, fontsize=7, pad=2)
             else:
                 ax.imshow(t, cmap="RdBu_r", vmin=-0.8, vmax=0.8, interpolation="nearest")
             if c_ == 0:
-                ax.set_ylabel(rows[r_], fontsize=9, color="#52514e")
-    fig.tight_layout()
+                ax.set_ylabel(rows[r_], fontsize=6.5, color="#52514e", labelpad=2)
+    fig.subplots_adjust(left=0.06, right=0.997, top=0.93, bottom=0.005, wspace=0.04, hspace=0.06)
     os.makedirs(os.path.join(root, "figs"), exist_ok=True)
-    fig.savefig(os.path.join(root, "figs", "swarm_chat_maps.png"), dpi=110, facecolor="#fcfcfb")
+    fig.savefig(os.path.join(root, "figs", "swarm_chat_maps.png"), dpi=300, facecolor="#fcfcfb")
     plt.close(fig)
 
 DENOISED_COLS = (("plain ReSTIR", "chatz_c200_m0", "c200_m0"), ("10 mutations", "chatz_c200_m10", "c200_m10"),
@@ -192,7 +193,7 @@ def denoised_figure(root):
 COUNTS = (0, 1, 3, 10, 20, 64)
 
 
-def counts_denoiser_figure(root):
+def counts_denoiser_figure(root, out_dir=None):
     """The swarm's mutation counts through OptiX and Ray Reconstruction (run_counts_rr.sh): each count's denoised crop and
     its brightness error against the reference (and RR's with its overall darkening divided out), plus relMSE in the
     medium against the count for both denoisers (figs/swarm_counts_denoisers{,_curve}.png)."""
@@ -212,19 +213,20 @@ def counts_denoiser_figure(root):
     err = lambda img: np.where(ok, np.log(np.maximum(g(img @ LUM[::-1]), 1e-9) / np.where(ok, gr, 1)), np.nan)  # noqa: E731
     k = np.percentile(ref[y0:y1, x0:x1], 99.5)
     tone_ = lambda img: np.clip(img[y0:y1, x0:x1] / k, 0, 1) ** (1 / 2.2)  # noqa: E731
-    rows = (("OptiX", "den_optix", "img"), ("OptiX error", "den_optix", "err"), ("Ray Reconstruction", "den_rr", "img"),
-            ("RR error", "den_rr", "err"), ("RR error, mean matched", "den_rr", "matched"))
+    out_dir = out_dir or os.path.join(root, "figs")
+    rows = (("OptiX", "den_optix", "img"), ("OptiX\nerror", "den_optix", "err"), ("DLSS RR", "den_rr", "img"),
+            ("RR\nerror", "den_rr", "err"), ("RR error,\nmean\nmatched", "den_rr", "matched"))
     cols = [("plain ReSTIR" if n == 0 else "%d mutation%s" % (n, "" if n == 1 else "s"), n) for n in COUNTS] + [("reference", None)]
     curve = {"den_optix": {}, "den_rr": {}}
-    fig, axes = plt.subplots(len(rows), len(cols), figsize=(3.5 * len(cols), 2.3 * len(rows)), facecolor="#fcfcfb", squeeze=False)
+    fig, axes = plt.subplots(len(rows), len(cols), figsize=(TEXT, 3.75), facecolor="#fcfcfb", squeeze=False)
     for c_, (cname, n) in enumerate(cols):
         for r_, (rname, den, kind) in enumerate(rows):
             ax = axes[r_][c_]
             ax.set_xticks([]); ax.set_yticks([])
             if r_ == 0:
-                ax.set_title(cname, fontsize=12)
+                ax.set_title(cname, fontsize=7.5, pad=2)
             if c_ == 0:
-                ax.set_ylabel(rname, fontsize=10, color="#52514e")
+                ax.set_ylabel(rname, fontsize=7, color="#52514e", rotation=0, ha="right", va="center", labelpad=4)
             if n is None:
                 if kind == "img":
                     ax.imshow(tone_(ref), interpolation="nearest")
@@ -245,12 +247,14 @@ def counts_denoiser_figure(root):
                 rel = (et.scores(root, LABEL, ("%s_c200_noreuse" % den, "%s_c200_m0" % den, cfg)) or {}).get(cfg)
                 if rel is not None:
                     curve[den][n] = (rel[0], ratio)
-                    ax.set_xlabel("relMSE %.3f · mean %.2fx" % (rel[0], ratio), fontsize=9, color="#52514e")
+                    ax.set_xlabel("relMSE %.3f\nmean %.2f×" % (rel[0], ratio), fontsize=6.5, color="#52514e",
+                                  labelpad=1, linespacing=1.0)
             else:
                 e = err(img / ratio) if kind == "matched" else err(img)
                 ax.imshow(e[y0:y1, x0:x1], cmap="RdBu_r", vmin=-0.8, vmax=0.8, interpolation="nearest")
-    fig.tight_layout()
-    fig.savefig(os.path.join(root, "figs", "swarm_counts_denoisers.png"), dpi=95, facecolor="#fcfcfb")
+    fig.tight_layout(pad=0.15, h_pad=0.15, w_pad=0.15)
+    os.makedirs(out_dir, exist_ok=True)
+    fig.savefig(os.path.join(out_dir, "swarm_counts_denoisers.png"), dpi=300, facecolor="#fcfcfb")
     plt.close(fig)
     # relMSE against the count, both denoisers (categorical slots 1 and 2)
     fig, ax = plt.subplots(figsize=(7.5, 4.4), facecolor="#fcfcfb")
@@ -269,7 +273,7 @@ def counts_denoiser_figure(root):
     ax.set_title("192 coloured lights, dense cloud: denoised error against the reference", loc="left", fontsize=11)
     ax.legend(frameon=False)
     fig.tight_layout()
-    fig.savefig(os.path.join(root, "figs", "swarm_counts_denoisers_curve.png"), dpi=120, facecolor="#fcfcfb")
+    fig.savefig(os.path.join(out_dir, "swarm_counts_denoisers_curve.png"), dpi=120, facecolor="#fcfcfb")
     plt.close(fig)
     for den in curve:
         print(den, "  ".join("m%d %.4f (%.2fx)" % (n, v[0], v[1]) for n, v in sorted(curve[den].items())))
