@@ -35,6 +35,24 @@ class TestTeaser(unittest.TestCase):
         self.assertEqual(ff.teaser_setup(r), "b")
 
 
+class TestGroups(unittest.TestCase):
+    def test_every_setup_is_in_exactly_one_page(self):
+        import five_runs
+        labels = [l for group in ff.GROUPS.values() for l in group]
+        self.assertEqual(sorted(labels), sorted(five_runs.SETUPS))
+        self.assertTrue(all(len(group) <= 3 for group in ff.GROUPS.values()))  # a page holds three large blocks
+
+
+class TestBlock(unittest.TestCase):
+    def test_plain_above_mutated_below_with_the_reference_last(self):
+        r = results({"a": [0.5, 0.5, 0.5, 0.5, 0.5]})
+        t = ff.block_titles(r, "a", "c200")
+        self.assertEqual([len(row) for row in t], [6, 6])
+        self.assertEqual(t[0][0], "0.1000")
+        self.assertEqual(t[1][0], "0.0500 (−50%)")
+        self.assertEqual(t[0][5], "")  # the reference column is named in the header only
+
+
 class TestChart(unittest.TestCase):
     def test_writes_the_chart(self):
         r = results({"a": [0.8] * 5, "b": [0.4] * 5})

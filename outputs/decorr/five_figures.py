@@ -18,6 +18,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import artifacts as art  # noqa: E402
+import five_runs  # noqa: E402
 import five_scores  # noqa: E402
 import m_corr as mc  # noqa: E402
 import paper_figure  # noqa: E402
@@ -27,6 +28,11 @@ from variety_figures import EXPOSURE, PAPER_DISPLAY  # noqa: E402
 DENOISERS = ("optix", "oidn", "relax", "reblur", "rr")
 NAMES = {"optix": "OptiX", "oidn": "OIDN", "relax": "NRD RELAX", "reblur": "NRD REBLUR", "rr": "DLSS RR"}
 STRIP = ["bunnycathedral_d0.3", "bunnylanterns", "explosiondusk_b2", "bunnyswarm_d3"]
+# Every setup through the five denoisers in large blocks (blocks()), three to a page.
+GROUPS = {"five_big_1b_1": five_runs.GALLERY_1[0:3], "five_big_1b_2": five_runs.GALLERY_1[3:6],
+          "five_big_1b_3": five_runs.GALLERY_1[6:9], "five_big_1b_4": five_runs.GALLERY_1[9:12],
+          "five_big_2b_1": five_runs.GALLERY_2[0:3], "five_big_2b_2": five_runs.GALLERY_2[3:5],
+          "five_big_small": five_runs.SMALL}
 # dataviz reference palette, light mode: categorical slots 1 and 2 (validated all-pairs), text and recessive ink.
 BLUE, ORANGE, INK, MUTED, GRID = "#2a78d6", "#eb6834", "#0b0b0b", "#52514e", "#d9d8d4"
 
@@ -111,6 +117,55 @@ def strip(root, results, labels, out, hist="c200"):
     plt.close(fig)
 
 
+def block_titles(results, label, hist="c200"):
+    """A setup's block, titles only: row 0 plain, row 1 + 5 mutations; columns DENOISERS, then the reference (named
+    in the header)."""
+    c = results[label]["histories"][hist]
+    plain = ["%.4f" % c["m0"][d]["mean"] for d in DENOISERS]
+    mutated = ["%.4f (%s)" % (c["m5"][d]["mean"], ("%+.0f%%" % (-100 * cut(results, label, hist, d))).replace("-", "−"))
+               for d in DENOISERS]
+    return [plain + [""], mutated + [""]]
+
+
+def blocks(root, results, labels, out, hist="c200"):
+    """Each setup as two rows of six crops -- plain above, + 5 mutations below; OptiX, OIDN, RELAX, REBLUR, DLSS RR,
+    then the reference -- about twice the width of the strip's crops, for the detail."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    n = len(labels)
+    fig = plt.figure(figsize=(7.1, 2.7 * n + 0.25))
+    outer = fig.add_gridspec(n, 1, hspace=0.22)
+    for i, label in enumerate(labels):
+        imgs, ref, show, (y, x, s) = panel(root, results, label, hist)
+        titles = block_titles(results, label, hist)
+        inner = outer[i].subgridspec(2, 6, wspace=0.03, hspace=0.16)
+        for r in range(2):
+            for j in range(6):
+                ax = fig.add_subplot(inner[r, j])
+                img = ref if j == 5 else imgs[DENOISERS[j]][r]
+                ax.imshow(show(img[y:y + s, x:x + s]), interpolation="nearest")
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for sp in ax.spines.values():
+                    sp.set_edgecolor(GRID)
+                ax.set_title(titles[r][j], fontsize=7, color=INK, pad=2)
+                if j == 0:
+                    ax.set_ylabel("plain" if r == 0 else "+ 5 mutations", fontsize=7, color=MUTED)
+                    if r == 0:
+                        ax.annotate(textwrap.fill(paper_tables.SETUP_NAMES.get(label, label), 40), xy=(0.0, 1.0),
+                                    xycoords="axes fraction", xytext=(0, 14), textcoords="offset points",
+                                    ha="left", va="bottom", fontsize=7.5, fontweight="bold", color=INK,
+                                    annotation_clip=False)
+                if i == 0 and r == 0:
+                    name = NAMES[DENOISERS[j]] if j < 5 else "reference"
+                    ax.annotate(name, xy=(0.5, 1.0), xycoords="axes fraction", xytext=(0, 30),
+                                textcoords="offset points", ha="center", va="bottom", fontsize=8, fontweight="bold",
+                                color=INK, annotation_clip=False)
+    fig.savefig(out, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
 def history_chart(results, out):
     import matplotlib
     matplotlib.use("Agg")
@@ -153,8 +208,12 @@ def main(argv=None):
     figs = os.path.join(a.root, "figs")
     t = teaser_setup(results)
     print("teaser:", t)
-    strip(a.root, results, [t], os.path.join(figs, "teaser_five.png"))
-    strip(a.root, results, STRIP, os.path.join(figs, "five_strip.png"))
+    blocks(a.root, results, [t], os.path.join(figs, "teaser_five.png"))
+    strip(a.root, results, STRIP, os.path.join(figs, "five_strip.png"))  # the compact overview
+    blocks(a.root, results, STRIP[:2], os.path.join(figs, "five_big_main_a.png"))
+    blocks(a.root, results, STRIP[2:], os.path.join(figs, "five_big_main_b.png"))
+    for name, labels in GROUPS.items():
+        blocks(a.root, results, labels, os.path.join(figs, name + ".png"))
     history_chart(results, os.path.join(figs, "history_chart.pdf"))
 
 
