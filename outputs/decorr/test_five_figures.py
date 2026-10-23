@@ -48,7 +48,8 @@ def frames(size=60, seed=0):
     imgs = {d: (ref + rng.normal(0, 0.05, ref.shape), ref + rng.normal(0, 0.01, ref.shape)) for d in ff.DENOISERS}
     mask = np.zeros((size, size), bool)
     mask[5:-5, 5:-5] = True
-    return types.SimpleNamespace(imgs=imgs, ref=ref, mask=mask, box=(10, 10, 30), show=lambda a: np.clip(a, 0, 1))
+    return types.SimpleNamespace(imgs=imgs, ref=ref, mask=mask, box=(10, 10, 30), show=lambda a: np.clip(a, 0, 1),
+                                 strips=[(6, 6, 12, 24), (36, 30, 12, 24)])  # (y, x, h, w): two 2:1 boxes
 
 
 def height_width(path):
@@ -103,12 +104,45 @@ class TestLayouts(unittest.TestCase):
         self.assertEqual(w, 2100)  # 7 in at 300 dpi: placed at scale 1, so its fonts keep their sizes
         self.assertTrue(w < h < 1.165 * w)  # fits the 8.66 in text block with a two-line caption
 
-    def test_the_page_puts_a_large_whole_frame_over_six_columns(self):
+    def test_the_page_holds_two_boxes_as_strips_under_the_whole_frame(self):
         lay = ff.page_layout((1080, 1920))
-        self.assertGreaterEqual(lay["frame"][2], 4.5)  # the whole frame's width in inches (was 3.2)
-        self.assertEqual(lay["columns"], list(ff.DENOISERS) + ["reference"])  # beside the plain and mutated crops
-        self.assertGreaterEqual(lay["crop"], 1.0)
+        self.assertEqual(lay["boxes"], 2)
+        w, h = lay["strip"]
+        self.assertAlmostEqual(w, 2 * h)  # each box a 2:1 strip, half a square crop's height
+        self.assertGreaterEqual(w, 1.0)
+        self.assertGreaterEqual(lay["frame"][2], 3.6)  # the whole frame's width in inches
+        self.assertEqual(lay["columns"], list(ff.DENOISERS) + ["reference"])  # beside the plain and mutated strips
         self.assertLess(lay["height"], 1.165 * ff.WIDTH)  # still one page with its caption
+
+    def test_two_strips_share_one_colour_scale(self):
+        p = frames()
+        maps, lim = ff.strip_maps(p)
+        self.assertEqual(len(maps), 2)
+        for k, (y, x, h, w) in enumerate(p.strips):
+            self.assertEqual(maps[k]["optix"][0].shape, (h, w))
+        self.assertGreater(lim, 0)
+
+    def test_no_words_overlap_the_pictures(self):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        r = results({"a": [0.5] * 5})
+        fig = ff.page_canvas(frames(), ff.block_titles(r, "a"))
+        fig.canvas.draw()
+        rend = fig.canvas.get_renderer()
+        pictures = [ax.get_window_extent(rend) for ax in fig.axes if ax.images]  # crops, error maps, the frame
+        words = [t for t in fig.texts if t.get_text()]
+        for ax in fig.axes:
+            words += [t for t in (ax.title, ax.xaxis.label, ax.yaxis.label) if t.get_text()]
+            words += [t for t in ax.get_yticklabels() if t.get_text()]
+        boxes = [(t.get_text(), t.get_window_extent(rend)) for t in words]
+        plt.close(fig)
+        for text, box in boxes:
+            for pic in pictures:
+                self.assertFalse(box.overlaps(pic), "%r overlaps a picture" % text)
+        for i, (a, box_a) in enumerate(boxes):  # nor each other (the scale's words and its tick labels)
+            for b, box_b in boxes[i + 1:]:
+                self.assertFalse(box_a.overlaps(box_b), "%r overlaps %r" % (a, b))
 
     def test_the_teaser_is_a_wide_band_at_the_same_width(self):
         r = results({"a": [0.5] * 5})
