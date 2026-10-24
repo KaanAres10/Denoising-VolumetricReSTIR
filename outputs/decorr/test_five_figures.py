@@ -192,6 +192,17 @@ class TestCover(unittest.TestCase):
         self.assertAlmostEqual(fig.get_size_inches()[0], 3.4)
         self.assertEqual(overlaps(fig), [])  # the two-line heads fit their columns
 
+    def test_the_heads_are_set_in_the_project_pages_font(self):
+        if not all(os.path.exists(f) for f in ff.COVER_FONTS):
+            self.skipTest("Segoe UI is not installed")
+        import matplotlib.pyplot as plt
+        r = results({"a": [0.5] * 5})
+        fig = ff.cover_canvas(frames(), ff.cover_titles(r, "a", "rr"), "rr", (12, 14, 20))
+        files = [t.get_fontproperties().get_file() for t in fig.texts]
+        plt.close(fig)
+        self.assertEqual(files[:2], list(ff.COVER_FONTS))  # a column's name semibold, its second line regular
+        self.assertEqual(set(files), set(ff.COVER_FONTS))
+
     def test_a_zoom_outside_the_whole_view_is_refused(self):
         p = frames()
         p.mask[:] = False

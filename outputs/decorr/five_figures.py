@@ -346,6 +346,15 @@ def teaser_figure(p, titles, out):
 # are equally bright (within 4%), so it shows reuse's blotches, not Ray Reconstruction's brightness swing.
 COVER = ("bunnyswarm_d3", "rr", (80, 336, 200))  # the setup, the denoiser, the zoom (y, x, size)
 COVER_GAP = 0.06
+COVER_FONTS = ("C:/Windows/Fonts/seguisb.ttf", "C:/Windows/Fonts/segoeui.ttf")  # Segoe UI, the page's (user-chosen)
+
+
+def _cover_fonts():
+    """The heads' fonts (semibold names, regular second lines): Segoe UI, or matplotlib's own where it is missing."""
+    from matplotlib.font_manager import FontProperties
+    if all(os.path.exists(f) for f in COVER_FONTS):
+        return [FontProperties(fname=f) for f in COVER_FONTS]
+    return [FontProperties(weight="bold"), FontProperties()]
 
 
 def cover_view(mask, pad=12):
@@ -385,12 +394,13 @@ def cover_canvas(p, titles, den, zoom, columns=3, width=WIDTH):
     top = 0.44 + 0.14 * (max(sub.count("\n") for _, sub in titles[:columns]))  # the heads: a name, then its lines
     fig = plt.figure(figsize=(width, top + 2 * col + COVER_GAP + 0.02))
     imgs = (p.imgs[den][0], p.imgs[den][1], p.ref)
+    bold, regular = _cover_fonts()
     for j in range(columns):
         x = j * (col + COVER_GAP)
         name, sub = titles[j]
-        _text(fig, x + col / 2, 0.21, name, fontsize=10, fontweight="bold", ha="center", va="bottom")
-        _text(fig, x + col / 2, top - 0.04, sub, fontsize=8.5, color=MUTED, ha="center", va="bottom",
-              linespacing=1.15)
+        _text(fig, x + col / 2, 0.21, name, fontproperties=bold, fontsize=11, ha="center", va="bottom")
+        _text(fig, x + col / 2, top - 0.04, sub, fontproperties=regular, fontsize=9, color=MUTED, ha="center",
+              va="bottom", linespacing=1.15)
         ax = _axes(fig, x, top, col, col)
         ax.imshow(np.clip(p.show(imgs[j][vy:vy + vs, vx:vx + vs]), 0, 1), interpolation="lanczos")
         ax.add_patch(Rectangle((zx - vx - 0.5, zy - vy - 0.5), zs, zs, fill=False, ec=ORANGE, lw=1.6))
