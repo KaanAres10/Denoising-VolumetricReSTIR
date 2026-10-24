@@ -5,6 +5,8 @@ and five_scores.py's results:
   signed error against the reference;
 - the teaser: the setup whose median cut over the five denoisers at M cap 200 is largest, as its page without the
   crops' two rows;
+- the cover (the paper's first figure and the project page's): COVER's setup through one denoiser, plain, + 5
+  mutations and the reference, the whole medium on top and a zoom below; and a two-column version for phones;
 - the strip: STRIP's setups, the teaser's first two rows one row each;
 - the history chart: per denoiser, each setup's denoised relMSE with mutations over without, at the shipped cap and
   at M cap 200; and M cap 200 with mutations over plain ReSTIR at the shipped cap.
@@ -338,6 +340,77 @@ def teaser_figure(p, titles, out):
     plt.close(fig)
 
 
+# The cover (the paper's first figure and the project page's, user-chosen 2026-10-24): one setup through one denoiser
+# at M cap 200, in columns plain ReSTIR, + 5 mutations and the reference; the whole medium on top with the zoom's box,
+# the zoom below. The zoom is the window of RR's frames with the largest drop in shown error where plain and mutated
+# are equally bright (within 4%), so it shows reuse's blotches, not Ray Reconstruction's brightness swing.
+COVER = ("bunnyswarm_d3", "rr", (80, 336, 200))  # the setup, the denoiser, the zoom (y, x, size)
+COVER_GAP = 0.06
+
+
+def cover_view(mask, pad=12):
+    """The square (y, x, side) holding the whole medium and `pad` pixels round it, inside the frame: the cover's
+    wide view."""
+    ys, xs = np.nonzero(mask)
+    h, w = mask.shape
+    side = int(min(h, w, max(ys.max() - ys.min(), xs.max() - xs.min()) + 1 + 2 * pad))
+    y = int(np.clip((ys.min() + ys.max()) // 2 - side // 2, 0, h - side))
+    x = int(np.clip((xs.min() + xs.max()) // 2 - side // 2, 0, w - side))
+    return y, x, side
+
+
+def cover_titles(results, label, den, hist="c200", sep=" · "):
+    """The cover's column heads (name, second line): plain ReSTIR and + 5 mutations with the denoiser and the relMSE
+    over the whole medium (and its change), then the reference."""
+    c = results[label]["histories"][hist]
+    change = ("%+.0f%%" % (-100 * cut(results, label, hist, den))).replace("-", "−")
+    return [("Plain ReSTIR", "%s%srelMSE %.4f" % (NAMES[den], sep, c["m0"][den]["mean"])),
+            ("+ 5 mutations", "%s%srelMSE %.4f (%s)" % (NAMES[den], sep, c["m5"][den]["mean"], change)),
+            ("Reference", "path traced")]
+
+
+def cover_canvas(p, titles, den, zoom, columns=3, width=WIDTH):
+    """The cover, `width` inches wide: per column (plain ReSTIR, + 5 mutations, the reference; the first `columns`)
+    its head, the whole medium (cover_view) with the box of the zoom (y, x, size), and the zoom framed in the box's
+    colour."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+    vy, vx, vs = cover_view(p.mask)
+    zy, zx, zs = zoom
+    if not (vy <= zy and zy + zs <= vy + vs and vx <= zx and zx + zs <= vx + vs):
+        raise ValueError("the zoom %s is not inside the whole view %s" % (zoom, (vy, vx, vs)))
+    col = (width - (columns - 1) * COVER_GAP) / columns
+    top = 0.44 + 0.14 * (max(sub.count("\n") for _, sub in titles[:columns]))  # the heads: a name, then its lines
+    fig = plt.figure(figsize=(width, top + 2 * col + COVER_GAP + 0.02))
+    imgs = (p.imgs[den][0], p.imgs[den][1], p.ref)
+    for j in range(columns):
+        x = j * (col + COVER_GAP)
+        name, sub = titles[j]
+        _text(fig, x + col / 2, 0.21, name, fontsize=10, fontweight="bold", ha="center", va="bottom")
+        _text(fig, x + col / 2, top - 0.04, sub, fontsize=8.5, color=MUTED, ha="center", va="bottom",
+              linespacing=1.15)
+        ax = _axes(fig, x, top, col, col)
+        ax.imshow(np.clip(p.show(imgs[j][vy:vy + vs, vx:vx + vs]), 0, 1), interpolation="lanczos")
+        ax.add_patch(Rectangle((zx - vx - 0.5, zy - vy - 0.5), zs, zs, fill=False, ec=ORANGE, lw=1.6))
+        _cell(ax, "", 8)
+        ax = _axes(fig, x, top + col + COVER_GAP, col, col)
+        ax.imshow(np.clip(p.show(imgs[j][zy:zy + zs, zx:zx + zs]), 0, 1), interpolation="lanczos")
+        _cell(ax, "", 8)
+        for sp in ax.spines.values():
+            sp.set_edgecolor(ORANGE)
+            sp.set_linewidth(1.6)
+    return fig
+
+
+def cover_figure(p, titles, den, zoom, out, **kw):
+    import matplotlib.pyplot as plt
+    fig = cover_canvas(p, titles, den, zoom, **kw)
+    fig.savefig(out, dpi=300, facecolor="white")
+    plt.close(fig)
+
+
 def setup_page(root, results, label, out, hist="c200"):
     page_figure(panel(root, results, label, hist), block_titles(results, label, hist), out)
 
@@ -385,6 +458,11 @@ def main(argv=None):
     t = teaser_setup(results)
     print("teaser:", t)
     teaser_figure(panel(a.root, results, t), block_titles(results, t), os.path.join(figs, "teaser_five.png"))
+    label, den, zoom = COVER
+    p = panel(a.root, results, label)
+    cover_figure(p, cover_titles(results, label, den), den, zoom, os.path.join(figs, "cover.png"))
+    cover_figure(p, cover_titles(results, label, den, sep="\n"), den, zoom, os.path.join(figs, "cover_phone.png"),
+                 columns=2, width=3.4)
     strip(a.root, results, STRIP, os.path.join(figs, "five_strip.png"))  # the compact overview
     for label in five_runs.SETUPS:
         setup_page(a.root, results, label, os.path.join(figs, "five_page_%s.png" % label))

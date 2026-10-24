@@ -1,5 +1,5 @@
-"""five_figures.py: the teaser's setup, the error maps, the page and block layouts and the chart, on synthetic results
-and frames.
+"""five_figures.py: the teaser's setup, the error maps, the page, cover and block layouts and the chart, on synthetic
+results and frames.
 
     cd outputs/decorr && python -m unittest test_five_figures -v
 """
@@ -58,6 +58,24 @@ def height_width(path):
     return matplotlib.image.imread(path).shape[:2]
 
 
+def overlaps(fig):
+    """Every word on `fig` that overlaps a picture (a crop, an error map, a frame) or another word, as messages."""
+    import matplotlib.pyplot as plt
+    fig.canvas.draw()
+    rend = fig.canvas.get_renderer()
+    pictures = [ax.get_window_extent(rend) for ax in fig.axes if ax.images]
+    words = [t for t in fig.texts if t.get_text()]
+    for ax in fig.axes:
+        words += [t for t in (ax.title, ax.xaxis.label, ax.yaxis.label) if t.get_text()]
+        words += [t for t in ax.get_yticklabels() if t.get_text()]
+    boxes = [(t.get_text(), t.get_window_extent(rend)) for t in words]
+    plt.close(fig)
+    found = ["%r overlaps a picture" % text for text, box in boxes if any(box.overlaps(pic) for pic in pictures)]
+    for i, (a, box_a) in enumerate(boxes):  # nor each other (the scale's words and its tick labels)
+        found += ["%r overlaps %r" % (a, b) for b, box_b in boxes[i + 1:] if box_a.overlaps(box_b)]
+    return found
+
+
 class TestErrorMap(unittest.TestCase):
     def test_signed_luminance_error_inside_the_medium(self):
         ref = np.full((40, 40, 3), 0.5)
@@ -111,26 +129,8 @@ class TestLayouts(unittest.TestCase):
         self.assertLess(lay["height"], 1.165 * ff.WIDTH)  # still one page with its caption
 
     def test_no_words_overlap_the_pictures(self):
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
         r = results({"a": [0.5] * 5})
-        fig = ff.page_canvas(frames(), ff.block_titles(r, "a"))
-        fig.canvas.draw()
-        rend = fig.canvas.get_renderer()
-        pictures = [ax.get_window_extent(rend) for ax in fig.axes if ax.images]  # crops, error maps, the frame
-        words = [t for t in fig.texts if t.get_text()]
-        for ax in fig.axes:
-            words += [t for t in (ax.title, ax.xaxis.label, ax.yaxis.label) if t.get_text()]
-            words += [t for t in ax.get_yticklabels() if t.get_text()]
-        boxes = [(t.get_text(), t.get_window_extent(rend)) for t in words]
-        plt.close(fig)
-        for text, box in boxes:
-            for pic in pictures:
-                self.assertFalse(box.overlaps(pic), "%r overlaps a picture" % text)
-        for i, (a, box_a) in enumerate(boxes):  # nor each other (the scale's words and its tick labels)
-            for b, box_b in boxes[i + 1:]:
-                self.assertFalse(box_a.overlaps(box_b), "%r overlaps %r" % (a, b))
+        self.assertEqual(overlaps(ff.page_canvas(frames(), ff.block_titles(r, "a"))), [])
 
     def test_the_teaser_is_a_wide_band_at_the_same_width(self):
         r = results({"a": [0.5] * 5})
@@ -140,6 +140,65 @@ class TestLayouts(unittest.TestCase):
             h, w = height_width(out)
         self.assertEqual(w, 2100)
         self.assertLess(h, 0.75 * w)  # leaves the first page room for the abstract
+
+
+class TestCover(unittest.TestCase):
+    """The cover (the paper's first figure and the project page's): plain ReSTIR, + 5 mutations and the reference
+    through one denoiser, the whole medium on top and a zoom below."""
+
+    def test_the_view_is_a_square_around_the_whole_medium_inside_the_frame(self):
+        mask = np.zeros((54, 96), bool)
+        mask[3:50, 30:70] = True  # taller than wide, in a wide frame
+        y, x, side = ff.cover_view(mask, pad=2)
+        self.assertEqual(side, 51)  # the medium's height, 47, and the pad on both sides
+        self.assertTrue(0 <= y and y + side <= 54 and 0 <= x and x + side <= 96)
+        self.assertTrue(y <= 3 and y + side >= 50 and x <= 30 and x + side >= 70)
+
+    def test_a_medium_as_tall_as_the_frame_gets_the_frame_height(self):
+        mask = np.zeros((54, 96), bool)
+        mask[:, 40:60] = True
+        y, x, side = ff.cover_view(mask, pad=12)
+        self.assertEqual((y, side), (0, 54))
+        self.assertTrue(x <= 40 and x + side >= 60)
+
+    def test_the_heads_name_the_denoiser_and_carry_the_relmse(self):
+        r = results({"a": [0.5] * 5})
+        self.assertEqual(ff.cover_titles(r, "a", "rr"),
+                         [("Plain ReSTIR", "DLSS RR · relMSE 0.1000"),
+                          ("+ 5 mutations", "DLSS RR · relMSE 0.0500 (−50%)"), ("Reference", "path traced")])
+        self.assertEqual(ff.cover_titles(r, "a", "optix", sep="\n")[1][1], "OptiX\nrelMSE 0.0500 (−50%)")
+
+    def test_the_cover_is_the_text_width_and_leaves_room_for_the_abstract(self):
+        r = results({"a": [0.5] * 5})
+        with tempfile.TemporaryDirectory() as root:
+            out = os.path.join(root, "cover.png")
+            ff.cover_figure(frames(), ff.cover_titles(r, "a", "rr"), "rr", (12, 14, 20), out)
+            h, w = height_width(out)
+        self.assertEqual(w, 2100)  # 7 in at 300 dpi, like the other figures
+        self.assertLess(h, 0.75 * w)  # the teaser's bound: the first page keeps room for the abstract
+        self.assertGreater(h, 0.7 * w)  # two rows of three squares: the whole medium and the zoom
+
+    def test_no_words_overlap_the_cover_pictures(self):
+        r = results({"a": [0.5] * 5})
+        fig = ff.cover_canvas(frames(), ff.cover_titles(r, "a", "rr"), "rr", (12, 14, 20))
+        self.assertEqual(len([ax for ax in fig.axes if ax.images]), 6)
+        self.assertEqual(overlaps(fig), [])
+
+    def test_the_phone_cover_keeps_plain_and_mutated_in_two_narrow_columns(self):
+        r = results({"a": [0.5] * 5})
+        fig = ff.cover_canvas(frames(), ff.cover_titles(r, "a", "rr", sep="\n"), "rr", (12, 14, 20), columns=2,
+                              width=3.4)
+        self.assertEqual(len([ax for ax in fig.axes if ax.images]), 4)  # the reference's column dropped
+        self.assertAlmostEqual(fig.get_size_inches()[0], 3.4)
+        self.assertEqual(overlaps(fig), [])  # the two-line heads fit their columns
+
+    def test_a_zoom_outside_the_whole_view_is_refused(self):
+        p = frames()
+        p.mask[:] = False
+        p.mask[30:50, 30:50] = True  # the view: a 44 px square from (16, 16)
+        r = results({"a": [0.5] * 5})
+        with self.assertRaises(ValueError):
+            ff.cover_canvas(p, ff.cover_titles(r, "a", "rr"), "rr", (0, 0, 10))
 
 
 class TestBlock(unittest.TestCase):
