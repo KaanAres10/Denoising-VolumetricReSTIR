@@ -62,6 +62,14 @@ def parse_rows(spec, height):
     return y0, y1
 
 
+def band_rows(frame, y0, y1):
+    """Rows y0:y1 of a frame's RGB (a texture's to_numpy(), RGBA) as a float32 copy of their own: a slice is a view,
+    which would keep the whole frame alive for every frame a strip keeps (21 GB for five channels of 128 frames at
+    1920x1080)."""
+    import numpy as np
+    return np.array(frame[y0:y1, :, :3], dtype=np.float32, copy=True)
+
+
 def strip_frames(schedule, frames):
     """The frames a space-time strip keeps: the last chain's capture frame, then the frames-1 that follow it in the
     same chain (no reset), so the strip's first row is that chain's captured frame. Not with a burst, which would

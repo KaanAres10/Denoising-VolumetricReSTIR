@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from correlation_schedule import build_schedule, parse_rows, strip_frames
+from correlation_schedule import band_rows, build_schedule, parse_rows, strip_frames
 
 
 def seed_ranges(s):
@@ -85,6 +85,15 @@ class TestStrip(unittest.TestCase):
             strip_frames(s, 0)
         with self.assertRaises(ValueError):  # the burst would run after the chain the strip continues
             strip_frames(build_schedule(f0=0, chains=1, per_chain=1, warm=10, spacing=1, burst=8), 4)
+
+    def test_kept_rows_do_not_hold_on_to_the_frame(self):
+        import numpy as np
+        frame = np.arange(1080 * 1920 * 4, dtype=np.float32).reshape(1080, 1920, 4)  # a texture's to_numpy(), RGBA
+        rows = band_rows(frame, 208, 240)
+        self.assertEqual(rows.shape, (32, 1920, 3))
+        self.assertEqual(rows.dtype, np.float32)
+        self.assertIsNone(rows.base)  # its own 0.7 MB: a view would keep the 33 MB frame for every frame kept
+        np.testing.assert_array_equal(rows, frame[208:240, :, :3])
 
 
 if __name__ == "__main__":

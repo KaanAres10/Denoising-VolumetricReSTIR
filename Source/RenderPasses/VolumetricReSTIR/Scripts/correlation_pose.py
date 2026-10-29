@@ -47,7 +47,7 @@ if _HERE not in sys.path:
 
 from falcor import *
 import vr_graph as vr
-from correlation_schedule import build_schedule, parse_rows, strip_frames
+from correlation_schedule import band_rows, build_schedule, parse_rows, strip_frames
 
 vr.bind(m)
 
@@ -184,7 +184,7 @@ else:
 
         def keep_rows():
             for name, ch in strip["channels"].items():
-                kept[name].append(np.asarray(g.get_output(ch).to_numpy()[y0:y1, :, :3], dtype=np.float32))
+                kept[name].append(band_rows(g.get_output(ch).to_numpy(), y0, y1))
 
         keep_rows()  # the last chain's capture frame, still in the outputs
         for _ in strip["frames"][1:]:
