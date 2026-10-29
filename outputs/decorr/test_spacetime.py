@@ -115,6 +115,25 @@ class TestStats(unittest.TestCase):
                           ["rho_t3"])
 
 
+class TestSmape(unittest.TestCase):
+    """Junkins et al.'s error measure as their restir-eval computes it (compute_error_measures.smape): per pixel the
+    mean over the frames of |s - r| / (|s| + |r| + 1e-4), in percent, on Rec. 709 luminance; here averaged over the
+    band's medium."""
+
+    def test_right_is_zero_and_twice_as_bright_is_a_third(self):
+        _, ref, mask = band(r=4)
+        self.assertEqual(st.smape(np.broadcast_to(ref, (8,) + ref.shape), ref, mask), 0.0)
+        self.assertAlmostEqual(st.smape(np.broadcast_to(2 * ref, (8,) + ref.shape), ref, mask), 100 / 3, places=2)
+
+    def test_it_is_restir_evals_formula_over_the_medium_only(self):
+        rng, ref, mask = band(r=4)
+        strip = ref * (1 + 0.5 * rng.standard_normal((8,) + ref.shape))
+        strip[:, ~mask] = 1e3  # far off, outside the medium
+        s, r = strip @ np.array([0.2126, 0.7152, 0.0722]), ref @ np.array([0.2126, 0.7152, 0.0722])
+        want = float(((np.abs(s - r) / (np.abs(s) + np.abs(r) + 1e-4)).mean(axis=0) * 100.0)[mask].mean())
+        self.assertAlmostEqual(st.smape(strip, ref, mask), want, places=9)
+
+
 class TestWindow(unittest.TestCase):
     def test_the_window_holds_the_largest_error(self):
         err = np.zeros((8, 400))
@@ -238,7 +257,8 @@ class TestScene(unittest.TestCase):
             strip = strips["optix", "c200", 0].astype(np.float32)
             c0 = cv2_read(os.path.join(root, "s", "st_fd_c200_m0", "c.ch_optix.801.exr"))[10:14]
             rb, mb = ref[10:14].astype(np.float64), mask[10:14]
-            want = st.stats(st.error_field(strip, rb, mb), st.error_field(c0[None], rb, mb)[0])  # against chain 0
+            want = dict(st.stats(st.error_field(strip, rb, mb), st.error_field(c0[None], rb, mb)[0]),  # against chain 0
+                        smape=st.smape(strip, rb, mb))
             self.assertEqual(sorted(sc.numbers["optix", "c200", 0]), sorted(want))
             for key, value in want.items():
                 if value is None:
@@ -274,11 +294,20 @@ class TestOverview(unittest.TestCase):
 
     def test_three_setups_at_the_text_width_with_no_words_on_the_pictures_or_off_the_page(self):
         import test_five_figures as tf
-        fig = st.overview_canvas(self.scenes(), "optix", width=32)
+        scenes = self.scenes()
+        for sc in scenes:
+            for key in sc.numbers:
+                sc.numbers[key] = dict(sc.numbers[key], smape=21.33)
+        fig = st.xt_canvas(scenes, ("optix", "rr"))
         self.assertAlmostEqual(fig.get_size_inches()[0], 7.0)
-        self.assertLess(fig.get_size_inches()[1], 4.5)  # a main-text figure, with room for its caption
+        self.assertLess(fig.get_size_inches()[1], 7.9)  # a page of its own, with room for its caption
         self.assertEqual(off_the_page(fig), [])
         self.assertEqual(tf.overlaps(fig), [])
+
+    def test_the_frame_is_cut_full_height_around_the_strip(self):
+        self.assertEqual(st.crop_around((1080, 1920), (1162, 1482), 0.8), (890, 1754))  # 864 wide, centred
+        self.assertEqual(st.crop_around((540, 960), (0, 160), 0.8), (0, 432))  # held inside the frame
+        self.assertEqual(st.crop_around((540, 960), (800, 960), 0.8), (528, 960))
 
     def test_it_shows_the_middle_of_each_pages_window(self):
         sc = self.scenes(1)[0]
@@ -305,10 +334,11 @@ class TestMain(unittest.TestCase):
             self.assertEqual(sorted(out["s"]["histories"]["c200"]["m5"]), sorted(st.CHANNELS))
             self.assertIn("rho_s8", out["s"]["histories"]["ship"]["m0"]["rr"])
             self.assertIn("bias", out["s"]["histories"]["ship"]["m0"]["rr"])
+            self.assertGreater(out["s"]["histories"]["ship"]["m0"]["rr"]["smape"], 0.0)  # Junkins et al.'s error
             self.assertNotIn("rho_t10", out["s"]["histories"]["ship"]["m0"]["rr"])  # 6 frames: no lag of 10
             self.assertGreater(out["s"]["ref_noise"], 0.0)
             self.assertTrue(os.path.exists(os.path.join(root, "figs", "spacetime_s.png")))
-            self.assertTrue(os.path.exists(os.path.join(root, "figs", "spacetime.png")))  # the overview
+            self.assertTrue(os.path.exists(os.path.join(root, "figs", "spacetime.png")))  # the (x, t) figure
 
 
 class TestFind(unittest.TestCase):

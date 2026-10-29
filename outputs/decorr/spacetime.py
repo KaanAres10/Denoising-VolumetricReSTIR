@@ -11,7 +11,7 @@ rest is noise: the share of the error that is noise lasting the strip (still in 
 the noise's correlation with itself 1, 3, 10 and 30 frames later and with the pixels within 8, pooled over the band.
 
     python spacetime.py <root>   writes five_denoisers/spacetime.json, figs/spacetime_<setup>.png (a page each) and
-                                 figs/spacetime.png (the overview)
+                                 figs/spacetime.png (the (x, t) figure, after Junkins et al.'s Fig. 5)
 """
 import glob
 import os
@@ -48,6 +48,18 @@ def error_field(strip, ref, mask):
     scale = np.sqrt(max(np.mean(np.minimum(lref, cl)[mask] ** 2), 1e-20))
     e = (np.minimum(strip @ mc.Y_RGB, cl) - np.minimum(lref, cl)) / scale
     return np.where(mask, e, np.nan)
+
+
+SMAPE_EPS = 1e-4  # restir-eval's EPSILON
+
+
+def smape(strip, ref, mask):
+    """Junkins et al.'s error measure as their restir-eval computes it (compute_error_measures.smape): per pixel the
+    mean over the frames of |s - r| / (|s| + |r| + 1e-4), in percent, on luminance (Rec. 709, as theirs); averaged
+    over the band's medium. Unlike the relMSE it is not clipped."""
+    s, r = strip @ mc.Y_RGB, ref @ mc.Y_RGB
+    per_pixel = (np.abs(s - r) / (np.abs(s) + np.abs(r) + SMAPE_EPS)).mean(axis=0) * 100.0
+    return float(per_pixel[mask].mean())
 
 
 def pick_window(err, width):
@@ -87,7 +99,8 @@ def scene(root, results, label, rows, width=WINDOW):
                 raise FileNotFoundError("no %s strip for %s %s m%d" % (den, label, hist, m))
             strip, run = np.load(path), os.path.dirname(path)
             c0 = five_scores.frames(run, five_scores.channels(run)[den])[0][y0:y1]
-            numbers[den, hist, m] = stats(error_field(strip, rb, mb), error_field(c0[None], rb, mb)[0])
+            numbers[den, hist, m] = dict(stats(error_field(strip, rb, mb), error_field(c0[None], rb, mb)[0]),
+                                         smape=smape(strip, rb, mb))
             lines[den, hist, m] = strip[:, row, x0:x1].astype(np.float64)
     return types.SimpleNamespace(frame=ref, rows=(y0, y1), cols=(x0, x1), ref_line=rb[row, x0:x1],
                                  inside=mb[row, x0:x1], lines=lines, numbers=numbers, show=ff.display(label, ref, mask),
@@ -257,13 +270,15 @@ def page_canvas(frame, rows, cols, ref_line, inside, lines, numbers, show):
     return fig
 
 
-# The overview: one block per setup, the reference's whole frame with the strip at its left, then the raw frame's and
-# one denoiser's difference at the shipped cap and at M cap 200, plain and with five mutations, over the middle
-# OVERVIEW pixels of the page's window (square pixels in x and t, as on the pages).
-OVERVIEW = 160
-OVERVIEW_DENOISER = "optix"  # frame by frame: what persists in its output came in with its input
-STEPS = (("shipped cap\nplain", "ship", 0), ("M cap 200\nplain", "c200", 0), ("M cap 200\n+ 5 mutations", "c200", 5))
-THUMB, GROUP = 1.25, 0.14
+# The (x, t) figure, after Junkins et al.'s Fig. 5: a block per setup, its name turned and a full-height cut of the
+# reference's frame with the strip marked, then a row per denoiser, each panel framed in its colour: the reference,
+# plain ReSTIR at the shipped cap and at M cap 200, and M cap 200 with five mutations, the rendered row over the
+# frames (x across, t down, square pixels); below, the error and the temporal correlation, one value a denoiser.
+XT_DENOISERS = ("optix", "rr")
+XT_COLUMNS = ((("Reference", ""), None, None), (("ReSTIR", "shipped cap"), "ship", 0),
+              (("ReSTIR", "M cap 200"), "c200", 0), (("+ 5 mutations", "M cap 200"), "c200", 5))
+XT_PANEL_W, XT_PANEL_H = 1.2, 0.9  # 128 frames down are 0.9 in, so the window is 171 pixels across
+XT_NAME, XT_LABEL, XT_HEAD = 0.22, 0.2, 0.44
 
 
 def middle(cols, width):
@@ -272,54 +287,89 @@ def middle(cols, width):
     return x0, min(x0 + width, cols[1])
 
 
-def overview_canvas(scenes, den, width=OVERVIEW):
-    """The setups in `scenes` (scene()'s, each with a `name`) one block each: the whole frame with the strip, then the
-    raw frame's and `den`'s differences from the reference at STEPS over the middle `width` pixels of the page's
-    window, each channel amplified alike on every setup (the median of their pages' amplifications)."""
+def crop_around(shape, cols, aspect):
+    """The columns (x0, x1) of a full-height cut of a frame of `shape` (H, W), `aspect` (width over height) wide,
+    centred on the columns `cols` and kept inside the frame."""
+    H, W = shape[:2]
+    w = min(W, int(round(aspect * H)))
+    x0 = int(round((cols[0] + cols[1]) / 2 - w / 2))
+    x0 = max(0, min(x0, W - w))
+    return x0, x0 + w
+
+
+def _rho_cell(v):
+    return "—" if v is None else "%.2f" % min(1.0, v)
+
+
+def xt_canvas(scenes, dens):
+    """The setups in `scenes` (scene()'s, each with a `name`) as (x, t) plots of the rendered rows through each of
+    `dens`, a block each (XT_COLUMNS across, `dens` down), with each setup's SMAPE and temporal correlation (rho_t(3))
+    under its columns, one value per denoiser."""
     import matplotlib
     matplotlib.use("Agg")
+    import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
     import five_figures as ff
+    colours = {"optix": ff.BLUE, "rr": ff.ORANGE}
     T = next(iter(scenes[0].lines.values())).shape[0]
-    cw = (ff.WIDTH - THUMB - 0.12 - GROUP - 4 * GAP) / 6
-    ph = cw * T / width
-    views = []
-    for sc in scenes:
+    width = int(round(T * XT_PANEL_W / XT_PANEL_H))
+    rows_h = len(dens) * XT_PANEL_H + (len(dens) - 1) * GAP
+    crop_w = ff.WIDTH - (XT_NAME + GAP + XT_LABEL + len(XT_COLUMNS) * XT_PANEL_W + (len(XT_COLUMNS) - 1) * GAP) - 0.04
+    # (the 0.04 in keeps the last column's 2 pt frames inside the page)
+    px0 = XT_NAME + crop_w + GAP + XT_LABEL
+    xs = [px0 + j * (XT_PANEL_W + GAP) for j in range(len(XT_COLUMNS))]
+    block = rows_h + 0.56  # the panels, the two lines of numbers and the gap to the next setup
+    fig = plt.figure(figsize=(ff.WIDTH, XT_HEAD + len(scenes) * block - 0.15))
+    for x, ((name, sub), _, _) in zip(xs, XT_COLUMNS):
+        ff._text(fig, x + XT_PANEL_W / 2, 0.2, name, fontsize=9, fontweight="bold", ha="center", va="bottom")
+        if sub:
+            ff._text(fig, x + XT_PANEL_W / 2, 0.38, sub, fontsize=8, color=ff.MUTED, ha="center", va="bottom")
+    halo = [pe.withStroke(linewidth=1.6, foreground=ff.INK)]
+    for i, sc in enumerate(scenes):
+        top = XT_HEAD + i * block
         a, b = (c - sc.cols[0] for c in middle(sc.cols, width))
-        ref_img = np.clip(sc.show(np.broadcast_to(sc.ref_line[a:b], (T, b - a, 3))), 0, 1)
-        imgs = {(ch, hist, m): np.clip(sc.show(sc.lines[ch, hist, m][:, a:b]), 0, 1)
-                for ch in ("raw", den) for _, hist, m in STEPS}
-        views.append((sc, a, b, ref_img, imgs))
-    g = {ch: max(1, int(round(float(np.median([gain(v[4][ch, "c200", 0], v[3], v[0].inside[v[1]:v[2]])
-                                                for v in views]))))) for ch in ("raw", den)}
-    head = 0.5
-    fig = plt.figure(figsize=(ff.WIDTH, head + len(scenes) * (0.16 + ph + 0.1)))
-    xs = [THUMB + 0.12 + j * (cw + GAP) + (GROUP - GAP if j >= 3 else 0.0) for j in range(6)]
-    for k, ch in enumerate(("raw", den)):
-        x = xs[3 * k] + (3 * cw + 2 * GAP) / 2
-        ff._text(fig, x, 0.15, "%s: difference ×%d" % (NAMES[ch], g[ch]), fontsize=8.5, fontweight="bold",
-                 ha="center", va="bottom")
-        for j, (name, _, _) in enumerate(STEPS):
-            ff._text(fig, xs[3 * k + j] + cw / 2, 0.44, name, fontsize=7.5, ha="center", va="bottom",
-                     linespacing=1.05)
-    for i, (sc, a, b, ref_img, imgs) in enumerate(views):
-        top = head + i * (0.16 + ph + 0.1)
-        th = min(ph, THUMB * sc.frame.shape[0] / sc.frame.shape[1])
-        ax = ff._axes(fig, 0.0, top + 0.16, th * sc.frame.shape[1] / sc.frame.shape[0], th)
-        ax.imshow(np.clip(sc.show(sc.frame), 0, 1))
-        (y0, y1), (x0, _) = sc.rows, sc.cols
-        ax.add_patch(Rectangle((x0 + a - 0.5, y0 - 0.5), b - a, y1 - y0, fill=False, ec=ff.ORANGE, lw=1.0))
+        cx0, cx1 = crop_around(sc.frame.shape, (sc.cols[0] + a, sc.cols[0] + b), crop_w / rows_h)
+        ax = ff._axes(fig, XT_NAME, top, crop_w, rows_h)
+        ax.imshow(np.clip(sc.show(sc.frame[:, cx0:cx1]), 0, 1), aspect="auto")
+        (y0, y1) = sc.rows
+        for k, den in enumerate(dens):  # the strip: a line in each row's colour, along the band's edges
+            y = y0 - 0.5 + (k * (y1 - y0) / (len(dens) - 1) if len(dens) > 1 else (y1 - y0) / 2)
+            ax.plot([sc.cols[0] + a - cx0 - 0.5, sc.cols[0] + b - cx0 - 0.5], [y, y], color=colours.get(den, ff.INK),
+                    lw=1.6, solid_capstyle="butt")
+        ax.set_xlim(-0.5, cx1 - cx0 - 0.5)
+        ax.set_ylim(sc.frame.shape[0] - 0.5, -0.5)
         ff._cell(ax, "", 7)
-        ff._text(fig, 0.0, top + 0.12, sc.name, fontsize=7.5, fontweight="bold", ha="left", va="bottom")
-        for k, ch in enumerate(("raw", den)):
-            for j, (_, hist, m) in enumerate(STEPS):
-                x = xs[3 * k + j]
-                p = ff._axes(fig, x, top + 0.16, cw, ph)
-                p.imshow(difference(imgs[ch, hist, m], ref_img, g[ch]), aspect="auto", interpolation="nearest")
+        ff._text(fig, XT_NAME / 2, top + rows_h / 2, sc.name, fontsize=8.5, fontweight="bold", rotation=90,
+                 ha="center", va="center")
+        ref_img = np.clip(sc.show(np.broadcast_to(sc.ref_line[a:b], (T, b - a, 3))), 0, 1)
+        for k, den in enumerate(dens):
+            y = top + k * (XT_PANEL_H + GAP)
+            colour = colours.get(den, ff.INK)
+            ff._text(fig, px0 - XT_LABEL / 2, y + XT_PANEL_H / 2, NAMES[den], fontsize=7.5, fontweight="bold",
+                     color=colour, rotation=90, ha="center", va="center")
+            for j, (x, (_, hist, m)) in enumerate(zip(xs, XT_COLUMNS)):
+                p = ff._axes(fig, x, y, XT_PANEL_W, XT_PANEL_H)
+                img = ref_img if hist is None else np.clip(sc.show(sc.lines[den, hist, m][:, a:b]), 0, 1)
+                p.imshow(img, aspect="auto", interpolation="nearest")
                 ff._cell(p, "", 7)
-                ff._text(fig, x + cw / 2, top + 0.13, numbers_line(sc.numbers[ch, hist, m]), fontsize=6.3,
-                         ha="center", va="bottom")
+                for sp in p.spines.values():
+                    sp.set_edgecolor(colour)
+                    sp.set_linewidth(2.0)
+                if i == 0 and k == 0 and j == 0:  # the axes, inside the first reference panel as in Junkins et al.
+                    style = dict(arrowstyle="-|>", color="white", lw=1.2, path_effects=halo)
+                    p.annotate("", xy=(0.93, 0.9), xytext=(0.05, 0.9), xycoords="axes fraction", arrowprops=style)
+                    p.annotate("", xy=(0.05, 0.08), xytext=(0.05, 0.9), xycoords="axes fraction", arrowprops=style)
+                    for s, (tx, ty) in (("$x$", (0.88, 0.74)), ("$t$", (0.14, 0.14))):
+                        p.text(tx, ty, s, transform=p.transAxes, color="white", fontsize=9, ha="center",
+                               va="center", path_effects=halo)
+        yy = top + rows_h + 0.17
+        names = " / ".join(NAMES[d] for d in dens)
+        for line, (label, cell) in enumerate((("SMAPE (%s):" % names, lambda s: "%.1f" % s["smape"]),
+                                              ("Temporal correlation (%s):" % names, lambda s: _rho_cell(s["rho_t3"])))):
+            ff._text(fig, xs[0] + XT_PANEL_W, yy + 0.16 * line, label, fontsize=7.5, ha="right", va="bottom")
+            for x, (_, hist, m) in zip(xs[1:], XT_COLUMNS[1:]):
+                ff._text(fig, x + XT_PANEL_W / 2, yy + 0.16 * line, " / ".join(cell(sc.numbers[d, hist, m]) for d in dens),
+                         fontsize=7.5, ha="center", va="bottom")
     return fig
 
 
@@ -330,9 +380,9 @@ def page_figure(sc, out):
     plt.close(fig)
 
 
-def overview_figure(scenes, den, out):
+def xt_figure(scenes, dens, out):
     import matplotlib.pyplot as plt
-    fig = overview_canvas(scenes, den)
+    fig = xt_canvas(scenes, dens)
     fig.savefig(out, dpi=300, facecolor="white")
     plt.close(fig)
 
@@ -362,7 +412,7 @@ def main(argv=None, scenes=None):
         print(label, "window", sc.cols)
     with open(os.path.join(a.root, "five_denoisers", "spacetime.json"), "w") as fh:
         json.dump(out, fh, indent=1)
-    overview_figure(done, OVERVIEW_DENOISER, os.path.join(a.root, "figs", "spacetime.png"))
+    xt_figure(done, XT_DENOISERS, os.path.join(a.root, "figs", "spacetime.png"))
 
 
 if __name__ == "__main__":
