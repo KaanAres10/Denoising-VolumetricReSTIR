@@ -49,3 +49,26 @@ def build_schedule(f0, chains, per_chain, warm, spacing, burst=0, seed_base=100_
         first += burst_len
     out["total"] = first - (f0 + 1)
     return out
+
+
+def parse_rows(spec, height):
+    """VR_STRIP_ROWS "y0:y1" -> (y0, y1): the band of image rows a space-time strip keeps, inside the frame."""
+    try:
+        y0, y1 = (int(v) for v in spec.split(":"))
+    except ValueError:
+        raise ValueError("strip rows %r: want y0:y1" % spec) from None
+    if not 0 <= y0 < y1 <= height:
+        raise ValueError("strip rows %d:%d outside a frame %d rows high, or empty" % (y0, y1, height))
+    return y0, y1
+
+
+def strip_frames(schedule, frames):
+    """The frames a space-time strip keeps: the last chain's capture frame, then the frames-1 that follow it in the
+    same chain (no reset), so the strip's first row is that chain's captured frame. Not with a burst, which would
+    run after that chain."""
+    if frames < 1:
+        raise ValueError("a strip needs at least one frame")
+    if schedule["burst"]:
+        raise ValueError("a strip continues the last chain; a burst would run after it")
+    last = schedule["chains"][-1]["frames"][-1]
+    return list(range(last, last + frames))

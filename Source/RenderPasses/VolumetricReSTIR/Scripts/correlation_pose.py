@@ -22,6 +22,11 @@
 #   VR_NO_TEMPORAL / VR_NO_SPATIAL   switch a reuse stage off; the vr_graph knobs (VR_MTHRESH,
 #                              VR_SR_RADIUS, VR_SR_COUNT, VR_SR_ROUNDS, VR_PHASE_G) apply as usual
 #   VR_FRAMES=8192 VR_SPP=16   reference mode: accumulated frames and samples per pixel per frame
+#   VR_STRIP_FRAMES=0 VR_STRIP_ROWS=y0:y1   a space-time strip: after the last chain's capture, render on for
+#                              VR_STRIP_FRAMES-1 frames without a reset and keep rows y0..y1 of every channel from each
+#                              of those frames, the capture frame first (read back, not captured: kilobytes, not EXRs).
+#                              Writes <TAG>.strip.<channel>.npy, frames x rows x width x RGB float32. Needs numpy in
+#                              Mogwai's Python; not with VR_BURST.
 #   VR_OUT_DIR, VR_TAG         where, and the file prefix
 #
 # Writes <TAG>.VolumetricReSTIR.accumulated_color.<frame>.exr (+ .sampleIdentity), and
@@ -42,7 +47,7 @@ if _HERE not in sys.path:
 
 from falcor import *
 import vr_graph as vr
-from correlation_schedule import build_schedule
+from correlation_schedule import build_schedule, parse_rows, strip_frames
 
 vr.bind(m)
 
@@ -149,15 +154,20 @@ else:
     runs = s["chains"] + ([s["burst"]] if s["burst"] else [])
     captures = [f for run in runs for f in run["frames"]]
     m.frameCapture.addFrames(g, captures)
+    strip = None
+    if vr.env_int("VR_STRIP_FRAMES", 0):
+        y0, y1 = parse_rows(vr.env("VR_STRIP_ROWS", ""), H)
+        strip = {"rows": [y0, y1], "frames": strip_frames(s, vr.env_int("VR_STRIP_FRAMES", 0)),
+                 "channels": dict(CHANNELS) if CHANNELS else {"raw" if DENOISER == "none" else DENOISER: channel}}
     with open(os.path.join(OUT_DIR, TAG + ".schedule.json"), "w") as fh:
         json.dump(dict(s, scene=NAME, mode=MODE, display=[W, H], warm=warm, mcap=mcap,
                        spacing=vr.env_int("VR_SPACING", 33), channel=channel, denoiser=DENOISER, env=env,
-                       **({"channels": CHANNELS} if CHANNELS else {})),
+                       **({"channels": CHANNELS} if CHANNELS else {}), **({"strip": strip} if strip else {})),
                   fh, indent=1)
     print("[correlation_pose] %s: %d chains x %d captures, warm %d, spacing %d, burst %d, %d frames, seeds %s"
           % (NAME, len(s["chains"]), len(s["chains"][0]["frames"]), warm, vr.env_int("VR_SPACING", 33),
              vr.env_int("VR_BURST", 0), s["total"], [r["seed"] for r in runs]))
-    m.clock.exitFrame = captures[-1] + 60
+    m.clock.exitFrame = (strip["frames"][-1] if strip else captures[-1]) + 60
     # VR_PASS_TIMES=1: median GPU time per pass over the run -> <TAG>.passes.json (as time_raw.py). The timer
     # queries cost time themselves: use it in runs of its own, not in the correlation runs.
     pass_times = vr.env_bool("VR_PASS_TIMES", False)
@@ -168,6 +178,22 @@ else:
         g.get_pass("VolumetricReSTIR").set_properties({"frameSeed": run["seed"]})
         for _ in range(run["length"]):
             m.renderFrame()
+    if strip:
+        import numpy as np
+        (y0, y1), kept = strip["rows"], {name: [] for name in strip["channels"]}
+
+        def keep_rows():
+            for name, ch in strip["channels"].items():
+                kept[name].append(np.asarray(g.get_output(ch).to_numpy()[y0:y1, :, :3], dtype=np.float32))
+
+        keep_rows()  # the last chain's capture frame, still in the outputs
+        for _ in strip["frames"][1:]:
+            m.renderFrame()
+            keep_rows()
+        for name, rows in kept.items():
+            np.save(os.path.join(OUT_DIR, "%s.strip.%s.npy" % (TAG, name)), np.stack(rows))
+        print("[correlation_pose] strips: %d frames of rows %d:%d, channels %s" % (len(strip["frames"]), y0, y1,
+                                                                                  sorted(kept)))
     if pass_times:
         lanes = {}
         for lane_name, lane in (m.profiler.end_capture() or {}).get("events", {}).items():

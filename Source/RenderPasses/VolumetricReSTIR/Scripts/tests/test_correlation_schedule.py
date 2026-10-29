@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from correlation_schedule import build_schedule
+from correlation_schedule import build_schedule, parse_rows, strip_frames
 
 
 def seed_ranges(s):
@@ -63,6 +63,28 @@ class TestSchedule(unittest.TestCase):
 
     def test_no_burst_by_default(self):
         self.assertIsNone(build_schedule(f0=0, chains=1, per_chain=1, warm=1, spacing=1)["burst"])
+
+
+class TestStrip(unittest.TestCase):
+    """The space-time strips (VR_STRIP_ROWS, VR_STRIP_FRAMES): a band of rows kept from consecutive frames."""
+
+    def test_rows_are_a_band_inside_the_frame(self):
+        self.assertEqual(parse_rows("100:132", 540), (100, 132))
+        for bad in ("530:560", "200:200", "40:20", "-1:10", "x:y", "100"):
+            with self.assertRaises(ValueError, msg=bad):
+                parse_rows(bad, 540)
+
+    def test_strip_starts_at_the_last_chains_capture_and_runs_on(self):
+        s = build_schedule(f0=0, chains=2, per_chain=1, warm=800, spacing=5)  # the paper's five-denoiser runs
+        self.assertEqual(strip_frames(s, 4), [1602, 1603, 1604, 1605])  # its first row is the paper's frame 1602
+        self.assertEqual(strip_frames(s, 1), [1602])
+
+    def test_a_strip_needs_frames_and_no_burst(self):
+        s = build_schedule(f0=0, chains=1, per_chain=1, warm=10, spacing=1)
+        with self.assertRaises(ValueError):
+            strip_frames(s, 0)
+        with self.assertRaises(ValueError):  # the burst would run after the chain the strip continues
+            strip_frames(build_schedule(f0=0, chains=1, per_chain=1, warm=10, spacing=1, burst=8), 4)
 
 
 if __name__ == "__main__":
