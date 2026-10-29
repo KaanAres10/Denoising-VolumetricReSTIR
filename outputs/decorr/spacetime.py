@@ -176,11 +176,11 @@ def stats(e, c0, lags=LAGS_T, radius=RADIUS):
     return out
 
 
-# The page: the reference's whole frame with the strip marked, then five columns (the reference, and the shipped cap
+# The page: the reference's whole frame with the strip marked, then five columns (the reference, and M cap 4, shipped,
 # and M cap 200, each plain and with five mutations) and seven rows (the raw frame as rendered, then the difference of
 # the raw frame and of each denoiser from the reference), x across and t down, in inches from the top left of a 7 in
 # figure.
-COLUMNS = (("reference", None, None), ("shipped cap\nplain", "ship", 0), ("shipped cap\n+ 5 mutations", "ship", 5),
+COLUMNS = (("reference", None, None), ("M cap 4 (shipped)\nplain", "ship", 0), ("M cap 4\n+ 5 mutations", "ship", 5),
            ("M cap 200\nplain", "c200", 0), ("M cap 200\n+ 5 mutations", "c200", 5))
 ROWS = (("raw", "image"), ("raw", "error"), ("optix", "error"), ("oidn", "error"), ("relax", "error"),
         ("reblur", "error"), ("rr", "error"))
@@ -271,13 +271,16 @@ def page_canvas(frame, rows, cols, ref_line, inside, lines, numbers, show):
 
 
 # The (x, t) figure, after Junkins et al.'s Fig. 5: a block per setup, its name turned and a full-height cut of the
-# reference's frame with the strip marked, then a row per denoiser, each panel framed in its colour: the reference,
-# plain ReSTIR at the shipped cap and at M cap 200, and M cap 200 with five mutations, the rendered row over the
-# frames (x across, t down, square pixels); below, the error and the temporal correlation, one value a denoiser.
-XT_DENOISERS = ("optix", "rr")
-XT_COLUMNS = ((("Reference", ""), None, None), (("ReSTIR", "shipped cap"), "ship", 0),
-              (("ReSTIR", "M cap 200"), "c200", 0), (("+ 5 mutations", "M cap 200"), "c200", 5))
-XT_PANEL_W, XT_PANEL_H = 1.2, 0.9  # 128 frames down are 0.9 in, so the window is 171 pixels across
+# reference's frame with the strip marked, then a row per channel (no denoiser, then each denoiser), each panel framed
+# in its colour: the reference, then plain ReSTIR and five mutations at the shipped cap (4) and at M cap 200, the
+# rendered row over the frames (x across, t down, square pixels); below, the error and the temporal correlation, one
+# value a channel.
+XT_DENOISERS = ("raw", "optix", "rr")
+XT_COLUMNS = ((("Reference", ""), None, None), (("ReSTIR", "M cap 4 (shipped)"), "ship", 0),
+              (("+ 5 mutations", "M cap 4"), "ship", 5), (("ReSTIR", "M cap 200"), "c200", 0),
+              (("+ 5 mutations", "M cap 200"), "c200", 5))
+XT_ROW_NAMES = {"raw": "No denoiser", "optix": "OptiX", "rr": "DLSS RR"}
+XT_PANEL_W, XT_PANEL_H = 1.02, 0.6  # 128 frames down are 0.6 in, so the window is 218 pixels across
 XT_NAME, XT_LABEL, XT_HEAD = 0.22, 0.2, 0.44
 
 
@@ -310,7 +313,7 @@ def xt_canvas(scenes, dens):
     import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
     import five_figures as ff
-    colours = {"optix": ff.BLUE, "rr": ff.ORANGE}
+    colours = {"raw": ff.MUTED, "optix": ff.BLUE, "rr": ff.ORANGE}
     T = next(iter(scenes[0].lines.values())).shape[0]
     width = int(round(T * XT_PANEL_W / XT_PANEL_H))
     rows_h = len(dens) * XT_PANEL_H + (len(dens) - 1) * GAP
@@ -323,7 +326,7 @@ def xt_canvas(scenes, dens):
     for x, ((name, sub), _, _) in zip(xs, XT_COLUMNS):
         ff._text(fig, x + XT_PANEL_W / 2, 0.2, name, fontsize=9, fontweight="bold", ha="center", va="bottom")
         if sub:
-            ff._text(fig, x + XT_PANEL_W / 2, 0.38, sub, fontsize=8, color=ff.MUTED, ha="center", va="bottom")
+            ff._text(fig, x + XT_PANEL_W / 2, 0.38, sub, fontsize=7.5, color=ff.MUTED, ha="center", va="bottom")
     halo = [pe.withStroke(linewidth=1.6, foreground=ff.INK)]
     for i, sc in enumerate(scenes):
         top = XT_HEAD + i * block
@@ -331,11 +334,9 @@ def xt_canvas(scenes, dens):
         cx0, cx1 = crop_around(sc.frame.shape, (sc.cols[0] + a, sc.cols[0] + b), crop_w / rows_h)
         ax = ff._axes(fig, XT_NAME, top, crop_w, rows_h)
         ax.imshow(np.clip(sc.show(sc.frame[:, cx0:cx1]), 0, 1), aspect="auto")
-        (y0, y1) = sc.rows
-        for k, den in enumerate(dens):  # the strip: a line in each row's colour, along the band's edges
-            y = y0 - 0.5 + (k * (y1 - y0) / (len(dens) - 1) if len(dens) > 1 else (y1 - y0) / 2)
-            ax.plot([sc.cols[0] + a - cx0 - 0.5, sc.cols[0] + b - cx0 - 0.5], [y, y], color=colours.get(den, ff.INK),
-                    lw=1.6, solid_capstyle="butt")
+        y = sc.rows[0] + (sc.rows[1] - sc.rows[0]) // 2  # the strip: the one row every panel shows, white on any sky
+        ax.plot([sc.cols[0] + a - cx0 - 0.5, sc.cols[0] + b - cx0 - 0.5], [y, y], color="white", lw=1.6,
+                solid_capstyle="butt", path_effects=[pe.withStroke(linewidth=3.0, foreground=ff.INK)])
         ax.set_xlim(-0.5, cx1 - cx0 - 0.5)
         ax.set_ylim(sc.frame.shape[0] - 0.5, -0.5)
         ff._cell(ax, "", 7)
@@ -345,8 +346,8 @@ def xt_canvas(scenes, dens):
         for k, den in enumerate(dens):
             y = top + k * (XT_PANEL_H + GAP)
             colour = colours.get(den, ff.INK)
-            ff._text(fig, px0 - XT_LABEL / 2, y + XT_PANEL_H / 2, NAMES[den], fontsize=7.5, fontweight="bold",
-                     color=colour, rotation=90, ha="center", va="center")
+            ff._text(fig, px0 - XT_LABEL / 2, y + XT_PANEL_H / 2, XT_ROW_NAMES.get(den, NAMES[den]), fontsize=7,
+                     fontweight="bold", color=colour, rotation=90, ha="center", va="center")
             for j, (x, (_, hist, m)) in enumerate(zip(xs, XT_COLUMNS)):
                 p = ff._axes(fig, x, y, XT_PANEL_W, XT_PANEL_H)
                 img = ref_img if hist is None else np.clip(sc.show(sc.lines[den, hist, m][:, a:b]), 0, 1)
@@ -363,7 +364,7 @@ def xt_canvas(scenes, dens):
                         p.text(tx, ty, s, transform=p.transAxes, color="white", fontsize=9, ha="center",
                                va="center", path_effects=halo)
         yy = top + rows_h + 0.17
-        names = " / ".join(NAMES[d] for d in dens)
+        names = " / ".join("none" if d == "raw" else NAMES[d] for d in dens)
         for line, (label, cell) in enumerate((("SMAPE (%s):" % names, lambda s: "%.1f" % s["smape"]),
                                               ("Temporal correlation (%s):" % names, lambda s: _rho_cell(s["rho_t3"])))):
             ff._text(fig, xs[0] + XT_PANEL_W, yy + 0.16 * line, label, fontsize=7.5, ha="right", va="bottom")

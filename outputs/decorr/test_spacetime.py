@@ -298,9 +298,13 @@ class TestOverview(unittest.TestCase):
         for sc in scenes:
             for key in sc.numbers:
                 sc.numbers[key] = dict(sc.numbers[key], smape=21.33)
-        fig = st.xt_canvas(scenes, ("optix", "rr"))
+        fig = st.xt_canvas(scenes, ("raw", "optix", "rr"))  # no denoiser, OptiX and DLSS RR
         self.assertAlmostEqual(fig.get_size_inches()[0], 7.0)
         self.assertLess(fig.get_size_inches()[1], 7.9)  # a page of its own, with room for its caption
+        heads = [t.get_text() for t in fig.texts]
+        for head in ("M cap 4 (shipped)", "M cap 4", "M cap 200", "No denoiser"):  # every setting, its cap named
+            self.assertIn(head, heads)
+        self.assertEqual(sum(t == "+ 5 mutations" for t in heads), 2)  # with mutations at both caps
         self.assertEqual(off_the_page(fig), [])
         self.assertEqual(tf.overlaps(fig), [])
 
