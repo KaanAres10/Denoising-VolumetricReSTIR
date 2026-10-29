@@ -85,5 +85,55 @@ class TestLatex(unittest.TestCase):
         self.assertEqual(pt.both_rows(res), [])
 
 
+
+class TestSpacetime(unittest.TestCase):
+    def data(self):
+        def cell(e, st, b, t3, t30, s8):
+            return {"energy": e, "static": st, "bias": b, "rho_t1": 0.0, "rho_t3": t3, "rho_t10": 0.0,
+                    "rho_t30": t30, "rho_s8": s8}
+        dens = ("raw", "optix", "oidn", "relax", "reblur", "rr")
+        out = {"bunnyswarm_d3": {"ref_noise": 0.00407, "histories": {
+            "ship": {"m0": {d: cell(0.480, 0.15, 0.13, 0.19, 0.001, 0.009) for d in dens},
+                     "m5": {d: cell(0.469, 0.14, 0.12, 0.14, -0.01, 0.010) for d in dens}},
+            "c200": {"m0": {d: cell(0.357, 0.32, 0.002, 0.55, 0.30, 0.093) for d in dens},
+                     "m5": {d: cell(0.247, 0.09, 0.03, 0.25, 0.03, 0.030) for d in dens}}}}}
+        out["bunnyswarm_d3"]["histories"]["ship"]["m0"]["rr"].update(rho_t3=None, rho_t30=None, rho_s8=None)
+        return out
+
+    def test_each_cell_holds_the_shipped_cap_then_m_cap_200_plain_and_with_mutations(self):
+        tex = pt.spacetime_table(self.data())
+        self.assertIn("192 coloured lights", tex)
+        self.assertIn("4.1", tex)  # the reference's own relMSE in the band, in units of 1e-3
+        row = next(l for l in tex.split("\n") if l.startswith("raw"))
+        self.assertEqual(row, "raw & 0.480 / 0.357 / 0.247 & 13 / 0 / 3 & 2 / 32 / 6 & 0.19 / 0.55 / 0.25 "
+                              "& 0.00 / 0.30 / 0.03 & 0.009 / 0.093 / 0.030 \\\\")  # -0.01 is no sign; 0.002 is 0%
+        rr = next(l for l in tex.split("\n") if l.startswith("DLSS RR"))
+        self.assertIn("--- / 0.55 / 0.25", rr)  # too little noise at the shipped cap to correlate
+        for den in ("OptiX", "OIDN", "RELAX", "REBLUR", "DLSS RR"):
+            self.assertEqual(sum(l.startswith(den + " &") for l in tex.split("\n")), 1, den)
+
+    def test_correlations_are_shown_within_minus_1_and_1(self):
+        self.assertEqual(pt._rho(1.013), "1.00")  # over 1 only by the bias estimate's own error
+        self.assertEqual(pt._rho(-0.004), "0.00")  # and no sign on one that rounds to zero
+        self.assertEqual(pt._rho(0.0934, 3), "0.093")
+
+    def test_shares_are_shown_within_0_and_100_percent(self):
+        self.assertEqual(pt._share(1.06), "100")  # an estimate a few percent over all of the error: all of it
+        self.assertEqual(pt._share(-0.02), "0")
+        self.assertEqual(pt._share(0.315), "32")
+
+    def test_its_latex_commands_are_whole(self):
+        tex = pt.spacetime_table(self.data())
+        for command in ("\\begin{tabular}{lcccccc}", "\\toprule", "\\midrule", "\\bottomrule", "\\end{tabular}",
+                        "bias (\\%)", "$\\rho_t(3)$", "$\\rho_t(30)$", "$\\bar\\rho(8)$",
+                        "\\multicolumn{7}{l}{\\emph{192 coloured lights}", "$\\times 10^{-3}$"):
+            self.assertIn(command, tex)
+        self.assertFalse(any(c in tex for c in "\b\t\r"), "a backslash eaten as an escape")
+
+    def test_it_is_written_with_the_others_when_there_are_strips(self):
+        with tempfile.TemporaryDirectory() as d:
+            pt.write_all({}, None, d, spacetime=self.data())
+            self.assertTrue(os.path.exists(os.path.join(d, "spacetime.tex")))
+
 if __name__ == "__main__":
     unittest.main()

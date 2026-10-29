@@ -68,12 +68,16 @@ def panel(root, results, label, hist="c200"):
     imgs = {d: (_frame(root, results, label, hist, 0, d), _frame(root, results, label, hist, 5, d)) for d in DENOISERS}
     size = max(64, min(ref.shape[:2]) // 5)
     (y, x), = paper_figure.pick_boxes(imgs["optix"][0], ref, size, n=1, mask=mask)
+    return types.SimpleNamespace(imgs=imgs, ref=ref, mask=mask, show=display(label, ref, mask), box=(y, x, size))
+
+
+def display(label, ref, mask):
+    """A setup's display function: the Volumetric ReSTIR paper's for its explosion, else a tone map exposed on the
+    reference's medium."""
     if label in PAPER_DISPLAY:
-        show = art.srgb_display
-    else:
-        k = np.percentile((ref @ mc.Y_RGB)[mask], EXPOSURE.get(label, 99.0)) + 1e-9
-        show = lambda img: art.tonemap(img, k)  # noqa: E731
-    return types.SimpleNamespace(imgs=imgs, ref=ref, mask=mask, show=show, box=(y, x, size))
+        return art.srgb_display
+    k = np.percentile((ref @ mc.Y_RGB)[mask], EXPOSURE.get(label, 99.0)) + 1e-9
+    return lambda img: art.tonemap(img, k)
 
 
 def signed_error(img, ref, mask, sigma=2.0):

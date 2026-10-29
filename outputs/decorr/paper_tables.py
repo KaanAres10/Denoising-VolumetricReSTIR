@@ -3,6 +3,7 @@ paper_record.json (each cell copied from its spec section; test_paper_tables.py 
 five-denoiser ones from five_denoisers/results.json, as LaTeX tabulars (booktabs) for \\input.
 
     python paper_tables.py <paper dir>/tables [--results five_denoisers/results.json]
+        [--spacetime five_denoisers/spacetime.json]
 """
 import argparse
 import json
@@ -112,12 +113,57 @@ def five_values(results):
     return "\n".join(body + ["\\bottomrule", "\\end{tabular}", ""])
 
 
+ST_ROWS = (("raw", "raw"), ("optix", "OptiX"), ("oidn", "OIDN"), ("relax", "RELAX"), ("reblur", "REBLUR"),
+           ("rr", "DLSS RR"))
+ST_STEPS = (("ship", "m0"), ("c200", "m0"), ("c200", "m5"))  # each cell: shipped cap / M cap 200 / + 5 mutations
+
+
+def _share(v):
+    """An energy's share in percent, within 0 and 100: the estimates (the bias's from one other chain) err by a few
+    percent of the error either way."""
+    return "%d" % round(100 * min(1.0, max(0.0, v)))
+
+
+def _rho(v, digits=2):
+    """A correlation, "—" where there was too little noise to estimate it, within -1 and 1 (an estimate past them errs by
+    the bias estimate's own error), and no sign on one that rounds to zero."""
+    if v is None:
+        return "—"
+    s = "%.*f" % (digits, min(1.0, max(-1.0, v)))
+    return s.lstrip("-") if float(s) == 0 else s
+
+
+def spacetime_table(data):
+    """The space-time strips' statistics (spacetime.py's spacetime.json), a block per setup headed by the reference's
+    own relMSE in the band: per channel the band's relMSE, the shares of it that are bias and noise lasting the strip,
+    and the noise's correlation 3 and 30 frames later and with its neighbours within 8 pixels, each at ST_STEPS."""
+    def cells(h, den, fmt):
+        return latex(" / ".join(fmt(h[hist][m][den]) for hist, m in ST_STEPS))
+    head = ["", "relative MSE", "bias (\\%)", "lasting (\\%)", "$\\rho_t(3)$", "$\\rho_t(30)$", "$\\bar\\rho(8)$"]
+    body = ["\\begin{tabular}{lcccccc}", "\\toprule", " & ".join(head) + " \\\\"]
+    for label, setup in data.items():
+        h = setup["histories"]
+        body += ["\\midrule", "\\multicolumn{7}{l}{\\emph{%s}; the reference's own relative MSE in the band: %s "
+                              "$\\times 10^{-3}$} \\\\" % (SETUP_NAMES.get(label, label), ref_cell(setup["ref_noise"]))]
+        for den, name in ST_ROWS:
+            body.append(" & ".join([name, cells(h, den, lambda s: "%.3f" % s["energy"]),
+                                    cells(h, den, lambda s: _share(s["bias"])),
+                                    cells(h, den, lambda s: _share(s["static"] - s["bias"])),
+                                    cells(h, den, lambda s: _rho(s["rho_t3"])),
+                                    cells(h, den, lambda s: _rho(s["rho_t30"])),
+                                    cells(h, den, lambda s: _rho(s["rho_s8"], 3))]) + " \\\\")
+    return "\n".join(body + ["\\bottomrule", "\\end{tabular}", ""])
+
+
 SPECS = {"phase_a": "lrrr", "mcap": "lrrrrrr", "reuse_denoisers": "lrr", "bias": "lrrrr", "speed": "lrrr",
          "equal_time": "lrrr", "counts": "lrrrrrr", "acceptance": "lrrr"}
 
 
-def write_all(record, results, out_dir):
+def write_all(record, results, out_dir, spacetime=None):
     os.makedirs(out_dir, exist_ok=True)
+    if spacetime:
+        with open(os.path.join(out_dir, "spacetime.tex"), "w", encoding="utf-8") as fh:
+            fh.write(spacetime_table(spacetime))
     for key, table in record.items():
         with open(os.path.join(out_dir, key + ".tex"), "w", encoding="utf-8") as fh:
             fh.write(tabular(table["header"], display_rows(table["rows"]), SPECS[key]))
@@ -132,15 +178,20 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("out_dir")
     ap.add_argument("--results", default=os.path.join(HERE, "five_denoisers", "results.json"))
+    ap.add_argument("--spacetime", default=os.path.join(HERE, "five_denoisers", "spacetime.json"))
     a = ap.parse_args(argv)
     with open(os.path.join(HERE, "paper_record.json"), encoding="utf-8") as fh:
         record = json.load(fh)
-    results = None
+    results = spacetime = None
     if os.path.exists(a.results):
         with open(a.results) as fh:
             results = json.load(fh)
-    write_all(record, results, a.out_dir)
-    print("tables written to", a.out_dir, "(five-denoiser tables %s)" % ("included" if results else "not yet: no results"))
+    if os.path.exists(a.spacetime):
+        with open(a.spacetime) as fh:
+            spacetime = json.load(fh)
+    write_all(record, results, a.out_dir, spacetime)
+    print("tables written to", a.out_dir, "(five-denoiser tables %s, space-time table %s)"
+          % ("included" if results else "not yet: no results", "included" if spacetime else "not yet: no strips"))
 
 
 if __name__ == "__main__":
