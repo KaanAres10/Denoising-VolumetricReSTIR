@@ -312,6 +312,7 @@ def xt_canvas(scenes, dens):
     matplotlib.use("Agg")
     import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
     import five_figures as ff
     colours = {"raw": ff.MUTED, "optix": ff.BLUE, "rr": ff.ORANGE}
     T = next(iter(scenes[0].lines.values())).shape[0]
@@ -334,9 +335,10 @@ def xt_canvas(scenes, dens):
         cx0, cx1 = crop_around(sc.frame.shape, (sc.cols[0] + a, sc.cols[0] + b), crop_w / rows_h)
         ax = ff._axes(fig, XT_NAME, top, crop_w, rows_h)
         ax.imshow(np.clip(sc.show(sc.frame[:, cx0:cx1]), 0, 1), aspect="auto")
-        y = sc.rows[0] + (sc.rows[1] - sc.rows[0]) // 2  # the strip: the one row every panel shows, white on any sky
-        ax.plot([sc.cols[0] + a - cx0 - 0.5, sc.cols[0] + b - cx0 - 0.5], [y, y], color="white", lw=1.6,
-                solid_capstyle="butt", path_effects=[pe.withStroke(linewidth=3.0, foreground=ff.INK)])
+        # the strip: one box round the band every row shows, open inside, its white edge ringed dark for any sky
+        ax.add_patch(Rectangle((sc.cols[0] + a - cx0 - 0.5, sc.rows[0] - 0.5), b - a, sc.rows[1] - sc.rows[0],
+                               fill=False, edgecolor="white", lw=1.1,
+                               path_effects=[pe.withStroke(linewidth=2.4, foreground=ff.INK)]))
         ax.set_xlim(-0.5, cx1 - cx0 - 0.5)
         ax.set_ylim(sc.frame.shape[0] - 0.5, -0.5)
         ff._cell(ax, "", 7)
