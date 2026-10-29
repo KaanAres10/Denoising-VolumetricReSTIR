@@ -23,7 +23,7 @@ class TestList(unittest.TestCase):
         out = subprocess.run([sys.executable, os.path.join(here, "five_runs.py"), "--list"],
                              capture_output=True, check=True).stdout
         self.assertNotIn(b"\r", out)
-        self.assertEqual(out.count(b"\n"), 152)
+        self.assertEqual(out.count(b"\n"), 152 + (19 + 19 + 18) * 2 * 2)  # the paper's, then the cap sweep
 
 
 class TestPlan(unittest.TestCase):
@@ -33,12 +33,25 @@ class TestPlan(unittest.TestCase):
         self.assertEqual(fr.scene_env("wdasstorm_g0.5"), ["VR_SCENE=wdasstorm", "VR_PHASE_G=0.5"])
         self.assertEqual(fr.scene_env("explosion"), ["VR_SCENE=explosion"])
 
-    def test_152_captures_the_long_history_first(self):
+    def test_the_papers_152_captures_first_then_the_cap_sweep(self):
         runs = fr.runs()
-        self.assertEqual(len(runs), 19 * 2 * 2 * 2)
         self.assertEqual(len({(r["label"], r["config"]) for r in runs}), len(runs))
         hist = [r["config"].split("_")[1] for r in runs]
-        self.assertEqual(hist, ["c200"] * (len(runs) // 2) + ["ship"] * (len(runs) // 2))
+        per = 19 * 2 * 2  # setups x (plain, + 5 mutations) x (the four denoisers' graph, RR's)
+        self.assertEqual(hist, ["c200"] * per + ["ship"] * per + ["c20"] * per + ["c50"] * per + ["c10"] * (per - 4))
+
+    def test_the_cap_sweep_sets_each_cap(self):
+        for cap in (10, 20, 50):
+            r = next(r for r in fr.runs() if r["label"] == "bunnyspot" and r["config"] == "fd_c%d_m5" % cap)
+            env = env_of(r)
+            self.assertEqual(env["VR_MTHRESH"], str(cap))
+            self.assertEqual(env["VR_MUTATIONS"], "5")
+
+    def test_the_night_streets_cap_10_is_its_shipped_run(self):
+        configs = {r["config"] for r in fr.runs() if r["label"] == "emeraldnight_d3"}
+        self.assertIn("fd_ship_m0", configs)  # Emerald Square's loader ships M cap 10
+        self.assertFalse(any("_c10_" in c for c in configs))
+        self.assertIn("fd_c20_m0", configs)
 
     def test_a_two_bounce_mutated_long_history_capture(self):
         r = next(r for r in fr.runs() if r["label"] == "bunnysoftbox_b2" and r["config"] == "fd_c200_m5")
@@ -66,7 +79,7 @@ class TestPlan(unittest.TestCase):
         runs = fr.runs(("optix,oidn", "relax,reblur"))
         names = {r["config"] for r in runs if r["label"] == "explosion"}
         self.assertTrue({"fd1_c200_m0", "fd2_ship_m5", "fr_ship_m5"} <= names)
-        self.assertEqual(len(runs), 19 * 2 * 2 * 3)
+        self.assertEqual(len(runs), (19 * 4 + 18) * 2 * 3)  # 19 setups at four histories, 18 at cap 10
         self.assertEqual(next(r for r in runs if r["config"] == "fd1_c200_m0")["captures"], 6)
 
 

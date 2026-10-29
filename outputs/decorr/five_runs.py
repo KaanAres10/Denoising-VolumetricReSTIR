@@ -1,4 +1,5 @@
-"""The paper's five-denoiser runs (docs/superpowers/specs/2026-10-20-mutation-paper-design.md, E3): the planned
+"""The paper's five-denoiser runs (docs/superpowers/specs/2026-10-20-mutation-paper-design.md, E3), then the M cap sweep
+(10, 20, 50; user-asked 2026-10-29): the planned
 captures in order (M cap 200 first), and whether one has finished.
 
     python five_runs.py --list [--sets "optix,oidn,relax,reblur"]   one capture a line: label config captures VAR=value...
@@ -14,7 +15,9 @@ GALLERY_1 = ["bunnycathedral_d0.3", "bunnyspot", "bunnysoftbox", "bunnyinside", 
 GALLERY_2 = ["explosiondusk_b2", "bunnycathedral_d0.3_b2", "bunnyback_g0.8_b2", "bunnysoftbox_b2", "wdassunset_g0.85_b2"]
 SMALL = ["bunnyswarm_d3", "wdasstorm_g0.5"]  # their references are 960x540
 SETUPS = GALLERY_1 + GALLERY_2 + SMALL
-HISTORIES = ("c200", "ship")
+HISTORIES = ("c200", "ship", "c20", "c50", "c10")  # the paper's two, then the cap sweep (user-asked 2026-10-29)
+CAPS = {"c200": 200, "c20": 20, "c50": 50, "c10": 10}  # VR_MTHRESH; "ship" leaves the loader's own
+SHIPS_CAP_10 = {"emeraldnight_d3"}  # Emerald Square's loader ships M cap 10: its c10 would be its shipped run
 FOUR = "optix,oidn,relax,reblur"
 ONE_BOUNCE = "light,depth,select,flight"
 TWO_BOUNCE = ONE_BOUNCE + ",direction,distance,rebounce"
@@ -38,10 +41,12 @@ def runs(sets=(FOUR,)):
     out = []
     for hist in HISTORIES:
         for label in SETUPS:
+            if hist == "c10" and label in SHIPS_CAP_10:
+                continue
             base = (scene_env(label) + LOOK
                     + ["VR_DISPLAY=" + ("960x540" if label in SMALL else "1920x1080"), "VR_CHAINS=2", "VR_PER_CHAIN=1",
                        "VR_SPACING=5", "VR_IDS=0"]
-                    + (["VR_MTHRESH=200"] if hist == "c200" else []))
+                    + (["VR_MTHRESH=%d" % CAPS[hist]] if hist in CAPS else []))
             for m in (0, 5):
                 env = base + ([] if m == 0 else [
                     "VR_MUTATIONS=5", "VR_MUT_AFTER_SPATIAL=1",
