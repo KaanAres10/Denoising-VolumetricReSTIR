@@ -335,10 +335,11 @@ def xt_canvas(scenes, dens):
         cx0, cx1 = crop_around(sc.frame.shape, (sc.cols[0] + a, sc.cols[0] + b), crop_w / rows_h)
         ax = ff._axes(fig, XT_NAME, top, crop_w, rows_h)
         ax.imshow(np.clip(sc.show(sc.frame[:, cx0:cx1]), 0, 1), aspect="auto")
-        # the strip: one box round the band every row shows, open inside, its white edge ringed dark for any sky
-        ax.add_patch(Rectangle((sc.cols[0] + a - cx0 - 0.5, sc.rows[0] - 0.5), b - a, sc.rows[1] - sc.rows[0],
-                               fill=False, edgecolor="white", lw=1.1,
-                               path_effects=[pe.withStroke(linewidth=2.4, foreground=ff.INK)]))
+        # the strip: exactly the pixels the panels show, one row (the band's middle) across the window, in a box
+        # white edged dark for any sky; one row has no inside to see at this size, so the box reads as a line
+        row = sc.rows[0] + (sc.rows[1] - sc.rows[0]) // 2
+        ax.add_patch(Rectangle((sc.cols[0] + a - cx0 - 0.5, row - 0.5), b - a, 1, fill=False, edgecolor="white",
+                               lw=0.9, path_effects=[pe.withStroke(linewidth=2.0, foreground=ff.INK)]))
         ax.set_xlim(-0.5, cx1 - cx0 - 0.5)
         ax.set_ylim(sc.frame.shape[0] - 0.5, -0.5)
         ff._cell(ax, "", 7)
