@@ -27,6 +27,19 @@ def run_dir(root, label, cfg, env=None, strip=None, log="", npys=()):
     return d
 
 
+class TestList(unittest.TestCase):
+    def test_the_list_has_no_carriage_returns_for_bash_to_keep(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            for label in sr.SCENES:
+                run_dir(root, label, "fd_c200_m0", {"VR_SCENE": "x", "VR_VOL_NORMAL": "gradient"})
+            out = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                               "spacetime_runs.py"), "--list", root],
+                                 capture_output=True, check=True).stdout
+        self.assertNotIn(b"\r", out)  # bash's read keeps it on a line's last value: VR_VOL_NORMAL=gradient\r
+        self.assertEqual(out.count(b"\n"), len(sr.SCENES))
+
+
 class TestRuns(unittest.TestCase):
     def test_each_paper_run_is_replayed_with_its_own_environment(self):
         with tempfile.TemporaryDirectory() as root:

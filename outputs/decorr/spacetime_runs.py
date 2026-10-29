@@ -56,5 +56,6 @@ if __name__ == "__main__":
     a = ap.parse_args()
     if a.complete:
         sys.exit(0 if complete(a.complete) else 1)
+    sys.stdout.reconfigure(newline="\n")  # Windows writes \r\n, and bash's read keeps the \r on each line's last value
     for r in runs(a.list):
         print(r["label"], r["config"], " ".join("%s=%s" % kv for kv in sorted(r["env"].items())))
