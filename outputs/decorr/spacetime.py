@@ -12,6 +12,8 @@ the noise's correlation with itself 1, 3, 10 and 30 frames later and with the pi
 
     python spacetime.py <root>   writes five_denoisers/spacetime.json, figs/spacetime_<setup>.png (a page each) and
                                  figs/spacetime.png (the (x, t) figure, after Junkins et al.'s Fig. 5)
+    python spacetime.py <root> --night   the night street's at M cap 50 through every channel (spacetime_runs.py
+                                 --night): figs/spacetime_night.png and five_denoisers/spacetime_night.json
 """
 import glob
 import os
@@ -62,6 +64,23 @@ def smape(strip, ref, mask):
     return float(per_pixel[mask].mean())
 
 
+RELCOV_LAG = 3  # Junkins et al.'s lag T (their Eq. 17)
+
+
+def relcov(strip, ref, mask, c0, lag=RELCOV_LAG):
+    """Junkins et al.'s temporal covariance as their restir-eval computes it (compute_temporal_measures.relcov), at
+    their lag of 3 frames: per pixel the covariance of its value with itself `lag` frames later over the product of
+    its two means (each plus 1e-4), on unclipped Rec. 709 luminance, averaged over the band's medium. They take it
+    over hundreds of independently seeded runs centred on their mean, which leaves the bias out; here it is over the
+    frames of one run (strip, T x R x W x 3): centred on the reference, less the bias (the independent chain c0's error
+    times the run's mean error, as stats), over the run's own means over the two spans of frames. The reference's value
+    would not do as the mean: a denoiser smears the lamp into fog that is nearly black in it."""
+    s, r = strip @ mc.Y_RGB, ref @ mc.Y_RGB
+    e, e0 = s - r, c0 @ mc.Y_RGB - r
+    cov = (e[:-lag] * e[lag:]).mean(axis=0) - e0 * e.mean(axis=0)
+    return float((cov / ((s[:-lag].mean(axis=0) + SMAPE_EPS) * (s[lag:].mean(axis=0) + SMAPE_EPS)))[mask].mean())
+
+
 def pick_window(err, width):
     """x0 of the `width`-pixel window of a band's error (R, W) with the largest total |error|."""
     a = np.nan_to_num(np.abs(err)).sum(axis=0)
@@ -71,40 +90,52 @@ def pick_window(err, width):
     return int(np.argmax(c[width:] - c[:-width]))
 
 
-def scene(root, results, label, rows, width=WINDOW):
+def scene(root, results, label, rows, width=WINDOW, configs=CONFIGS, pick=("c200", 0), ref_dir=None, within=None):
     """One setup's strips over the band `rows`: the reference's whole frame and display function, the `width`-pixel
-    window where plain ReSTIR with OptiX errs most on chain 0 at M cap 200 (the paper crops' chain, as the band was
-    chosen), each config's statistics over the band (stats, against the same run's chain-0 capture: an independent
-    chain) and the band's centre row in the window, frame by frame, and the reference's own error in the band
-    (medium_metrics.own_relmse), part of every config's bias."""
+    window where `pick`'s config (plain ReSTIR at M cap 200) with OptiX errs most on chain 0 (the paper crops'
+    chain, as the band was chosen), inside the columns `within` if given, each of `configs`' statistics over the band
+    (stats, against the same run's chain-0 capture: an independent chain) and the band's centre row in the window,
+    frame by frame, and the reference's own error in the band (medium_metrics.own_relmse), part of every config's
+    bias; and chain 0's error over the band as shown (err0: its displayed frame less the reference's, in the medium),
+    by which the (x, t) figure picks its panels' pixels, so not where the display clips the error away. With
+    ref_dir, the reference is that longer run's, though the display stays the setup's own reference's (the viewer's
+    and the paper's exposure)."""
     import artifacts as art
     import five_figures as ff
     import five_scores
     import medium_metrics as mm
     y0, y1 = rows
-    ref = art.reference(root, label)
+    own = art.reference(root, label)
+    if ref_dir:
+        last = sorted(glob.glob(os.path.join(ref_dir, "c.Accum.output.*.exr")), key=lambda p: int(p.split(".")[-2]))[-1]
+        ref = art.reference(root, label, override=last)
+    else:
+        ref, ref_dir = own, os.path.join(root, label, "ref")
     mask = np.load(os.path.join(root, label, "noreuse", "c.medium.npy"))
     rb, mb = ref[y0:y1], mask[y0:y1]
     band = np.zeros_like(mask)
     band[y0:y1] = mb
-    run = os.path.join(root, results[label]["histories"]["c200"]["m0"]["optix"]["run"])
+    run = os.path.join(root, results[label]["histories"][pick[0]]["m%d" % pick[1]]["optix"]["run"])
     chain0 = five_scores.frames(run, five_scores.channels(run)["optix"])[0][y0:y1]
-    x0 = pick_window(error_field(chain0[None], rb, mb)[0], width)
+    lo, hi = within or (0, ref.shape[1])
+    x0 = lo + pick_window(error_field(chain0[None], rb, mb)[0][:, lo:hi], width)
+    show = ff.display(label, own, mask)
+    err0 = np.where(mb, np.abs(np.clip(show(chain0), 0, 1) - np.clip(show(rb), 0, 1)).mean(axis=-1), np.nan)
     x1, row = min(x0 + width, ref.shape[1]), (y1 - y0) // 2
     numbers, lines = {}, {}
     for den in CHANNELS:
-        for hist, m in CONFIGS:
+        for hist, m in configs:
             path = find_strip(root, label, hist, m, den)
             if path is None:
                 raise FileNotFoundError("no %s strip for %s %s m%d" % (den, label, hist, m))
             strip, run = np.load(path), os.path.dirname(path)
             c0 = five_scores.frames(run, five_scores.channels(run)[den])[0][y0:y1]
             numbers[den, hist, m] = dict(stats(error_field(strip, rb, mb), error_field(c0[None], rb, mb)[0]),
-                                         smape=smape(strip, rb, mb))
+                                         smape=smape(strip, rb, mb), relcov_t3=relcov(strip, rb, mb, c0))
             lines[den, hist, m] = strip[:, row, x0:x1].astype(np.float64)
     return types.SimpleNamespace(frame=ref, rows=(y0, y1), cols=(x0, x1), ref_line=rb[row, x0:x1],
-                                 inside=mb[row, x0:x1], lines=lines, numbers=numbers, show=ff.display(label, ref, mask),
-                                 ref_noise=mm.own_relmse(os.path.join(root, label, "ref"), band))
+                                 inside=mb[row, x0:x1], lines=lines, numbers=numbers, err0=err0, show=show,
+                                 ref_noise=mm.own_relmse(ref_dir, band))
 
 
 def lasting(s):
@@ -280,13 +311,35 @@ XT_COLUMNS = ((("Reference", ""), None, None), (("ReSTIR", "M cap 4 (shipped)"),
               (("+ 5 mutations", "M cap 4"), "ship", 5), (("ReSTIR", "M cap 200"), "c200", 0),
               (("+ 5 mutations", "M cap 200"), "c200", 5))
 XT_ROW_NAMES = {"raw": "No denoiser", "optix": "OptiX", "rr": "DLSS RR"}
-XT_PANEL_W, XT_PANEL_H = 1.02, 0.6  # 128 frames down are 0.6 in, so the window is 218 pixels across
+# Junkins et al.'s panels (measured in their Fig. 5, 2026-11-01): 60 pixels across and 60 frames down, each pixel a
+# square block. Ours: the 60 pixels of the window where chain 0 errs most, the strip's first 60 frames.
+XT_N = 60
+XT_PANEL = 0.56  # in, square: nine rows of them and their numbers fill a page
 XT_NAME, XT_LABEL, XT_HEAD = 0.22, 0.2, 0.44
+XT_ROW_GAP = 0.22  # under each row: the gap that holds its numbers
+XT_KEY = "Under each panel: SMAPE · temporal correlation"
+XT_HEAD_W = 0.99  # in: the widest column head, "+ 5 mutations" in 9 pt bold
+XT_PITCH = 0.95  # in: the columns' least spacing, so that neighbouring heads (that and "ReSTIR") stand apart
+# The dataviz palette's categorical slots 3-5 (after five_figures' BLUE and ORANGE, slots 1 and 2) for OIDN, NRD RELAX
+# and NRD REBLUR: rows in slot order (OptiX, DLSS RR, then these) pass its adjacent-pair checks; REBLUR's magenta
+# beside DLSS RR's orange would not.
+AQUA, YELLOW, MAGENTA = "#1baf7a", "#eda100", "#e87ba4"
+
+# The night street at M cap 50 (user-asked 2026-11-01, after the viewer's view of it through DLSS RR, plain against
+# + 5 mutations, current shader): the (x, t) plot through every channel, against the 524k-spp reference (long_refs;
+# its own reference is noisy there), each row's numbers under it. Its band and window lie in that view
+# (spacetime_runs.NIGHT).
+NIGHT_COLUMNS = ((("Reference", ""), None, None), (("ReSTIR", "M cap 50"), "c50", 0),
+                 (("+ 5 mutations", "M cap 50"), "c50", 5))
+NIGHT_CONFIGS = tuple((hist, m) for _, hist, m in NIGHT_COLUMNS if hist)
+NIGHT_DENOISERS = ("raw", "optix", "rr", "oidn", "relax", "reblur")  # Figure 5's rows, then the rest in slot order
+NIGHT_VIEW = (861, 1281)  # the view's columns in the frame
+NIGHT_PANEL = 1.0  # in: one setup leaves room for larger blocks
 
 
-def middle(cols, width):
-    """The middle `width` columns of the window `cols`."""
-    x0 = cols[0] + max(0, (cols[1] - cols[0] - width) // 2)
+def sub_window(cols, err, width):
+    """The `width` columns of the window `cols` where the band's error `err` (R, W: chain 0's) is largest."""
+    x0 = cols[0] + pick_window(err[:, cols[0]:cols[1]], width)
     return x0, min(x0 + width, cols[1])
 
 
@@ -304,42 +357,47 @@ def _rho_cell(v):
     return "—" if v is None else "%.2f" % min(1.0, v)
 
 
-def xt_canvas(scenes, dens):
+def xt_canvas(scenes, dens, columns=XT_COLUMNS, panel=XT_PANEL, ink_names=False):
     """The setups in `scenes` (scene()'s, each with a `name`) as (x, t) plots of the rendered rows through each of
-    `dens`, a block each (XT_COLUMNS across, `dens` down), with each setup's SMAPE and temporal correlation (rho_t(3))
-    under its columns, one value per denoiser."""
+    `dens`, a block each (`columns` across, `dens` down), drawn as Junkins et al. draw theirs: square panels `panel`
+    in wide, XT_N pixels across (sub_window: where chain 0 errs most in the window) by the strip's first XT_N frames
+    down, each pixel a block; under each panel its SMAPE and temporal correlation (rho_t(3)), XT_KEY saying so once.
+    ink_names: the rows named in ink, not in their colour (the hues past the second are under 3:1 on white, so there
+    the name, not the hue, tells the rows apart)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.patheffects as pe
     import matplotlib.pyplot as plt
     from matplotlib.patches import Rectangle
     import five_figures as ff
-    colours = {"raw": ff.MUTED, "optix": ff.BLUE, "rr": ff.ORANGE}
-    T = next(iter(scenes[0].lines.values())).shape[0]
-    width = int(round(T * XT_PANEL_W / XT_PANEL_H))
-    rows_h = len(dens) * XT_PANEL_H + (len(dens) - 1) * GAP
-    crop_w = ff.WIDTH - (XT_NAME + GAP + XT_LABEL + len(XT_COLUMNS) * XT_PANEL_W + (len(XT_COLUMNS) - 1) * GAP) - 0.04
-    # (the 0.04 in keeps the last column's 2 pt frames inside the page)
+    colours = {"raw": ff.MUTED, "optix": ff.BLUE, "rr": ff.ORANGE, "oidn": AQUA, "relax": YELLOW, "reblur": MAGENTA}
+    T = min(XT_N, next(iter(scenes[0].lines.values())).shape[0])
+    rows_h = len(dens) * panel + (len(dens) - 1) * XT_ROW_GAP
+    pitch = max(panel + GAP, XT_PITCH)
+    margin = max(0.04, (XT_HEAD_W - panel) / 2 + 0.02)  # the last column's head and 2 pt frame inside the page
+    crop_w = ff.WIDTH - (XT_NAME + GAP + XT_LABEL + (len(columns) - 1) * pitch + panel) - margin
     px0 = XT_NAME + crop_w + GAP + XT_LABEL
-    xs = [px0 + j * (XT_PANEL_W + GAP) for j in range(len(XT_COLUMNS))]
-    block = rows_h + 0.56  # the panels, the two lines of numbers and the gap to the next setup
+    xs = [px0 + j * pitch for j in range(len(columns))]
+    block = rows_h + XT_ROW_GAP + 0.15  # the panels, the last row's numbers and the gap to the next setup
     fig = plt.figure(figsize=(ff.WIDTH, XT_HEAD + len(scenes) * block - 0.15))
-    for x, ((name, sub), _, _) in zip(xs, XT_COLUMNS):
-        ff._text(fig, x + XT_PANEL_W / 2, 0.2, name, fontsize=9, fontweight="bold", ha="center", va="bottom")
+    for x, ((name, sub), _, _) in zip(xs, columns):
+        ff._text(fig, x + panel / 2, 0.2, name, fontsize=9, fontweight="bold", ha="center", va="bottom")
         if sub:
-            ff._text(fig, x + XT_PANEL_W / 2, 0.38, sub, fontsize=7.5, color=ff.MUTED, ha="center", va="bottom")
+            ff._text(fig, x + panel / 2, 0.38, sub, fontsize=7.5, color=ff.MUTED, ha="center", va="bottom")
+    ff._text(fig, XT_NAME, 0.38, XT_KEY, fontsize=7, color=ff.MUTED, ha="left", va="bottom")
     halo = [pe.withStroke(linewidth=1.6, foreground=ff.INK)]
     for i, sc in enumerate(scenes):
         top = XT_HEAD + i * block
-        a, b = (c - sc.cols[0] for c in middle(sc.cols, width))
-        cx0, cx1 = crop_around(sc.frame.shape, (sc.cols[0] + a, sc.cols[0] + b), crop_w / rows_h)
+        x0, x1 = sub_window(sc.cols, sc.err0, XT_N)
+        a, b = x0 - sc.cols[0], x1 - sc.cols[0]  # in the window's rows
+        cx0, cx1 = crop_around(sc.frame.shape, (x0, x1), crop_w / rows_h)
         ax = ff._axes(fig, XT_NAME, top, crop_w, rows_h)
         ax.imshow(np.clip(sc.show(sc.frame[:, cx0:cx1]), 0, 1), aspect="auto")
-        # the strip: exactly the pixels the panels show, one row (the band's middle) across the window, in a box
-        # white edged dark for any sky; one row has no inside to see at this size, so the box reads as a line
+        # the strip: exactly the pixels the panels show, one row (the band's middle), in a box white edged dark for
+        # any sky; one row has no inside to see at this size, so the box reads as a line
         row = sc.rows[0] + (sc.rows[1] - sc.rows[0]) // 2
-        ax.add_patch(Rectangle((sc.cols[0] + a - cx0 - 0.5, row - 0.5), b - a, 1, fill=False, edgecolor="white",
-                               lw=0.9, path_effects=[pe.withStroke(linewidth=2.0, foreground=ff.INK)]))
+        ax.add_patch(Rectangle((x0 - cx0 - 0.5, row - 0.5), x1 - x0, 1, fill=False, edgecolor="white", lw=0.9,
+                               path_effects=[pe.withStroke(linewidth=2.0, foreground=ff.INK)]))
         ax.set_xlim(-0.5, cx1 - cx0 - 0.5)
         ax.set_ylim(sc.frame.shape[0] - 0.5, -0.5)
         ff._cell(ax, "", 7)
@@ -347,13 +405,13 @@ def xt_canvas(scenes, dens):
                  ha="center", va="center")
         ref_img = np.clip(sc.show(np.broadcast_to(sc.ref_line[a:b], (T, b - a, 3))), 0, 1)
         for k, den in enumerate(dens):
-            y = top + k * (XT_PANEL_H + GAP)
+            y = top + k * (panel + XT_ROW_GAP)
             colour = colours.get(den, ff.INK)
-            ff._text(fig, px0 - XT_LABEL / 2, y + XT_PANEL_H / 2, XT_ROW_NAMES.get(den, NAMES[den]), fontsize=7,
-                     fontweight="bold", color=colour, rotation=90, ha="center", va="center")
-            for j, (x, (_, hist, m)) in enumerate(zip(xs, XT_COLUMNS)):
-                p = ff._axes(fig, x, y, XT_PANEL_W, XT_PANEL_H)
-                img = ref_img if hist is None else np.clip(sc.show(sc.lines[den, hist, m][:, a:b]), 0, 1)
+            ff._text(fig, px0 - XT_LABEL / 2, y + panel / 2, XT_ROW_NAMES.get(den, NAMES[den]), fontsize=7,
+                     fontweight="bold", color=ff.INK if ink_names else colour, rotation=90, ha="center", va="center")
+            for j, (x, (_, hist, m)) in enumerate(zip(xs, columns)):
+                p = ff._axes(fig, x, y, panel, panel)
+                img = ref_img if hist is None else np.clip(sc.show(sc.lines[den, hist, m][:T, a:b]), 0, 1)
                 p.imshow(img, aspect="auto", interpolation="nearest")
                 ff._cell(p, "", 7)
                 for sp in p.spines.values():
@@ -366,14 +424,10 @@ def xt_canvas(scenes, dens):
                     for s, (tx, ty) in (("$x$", (0.88, 0.74)), ("$t$", (0.14, 0.14))):
                         p.text(tx, ty, s, transform=p.transAxes, color="white", fontsize=9, ha="center",
                                va="center", path_effects=halo)
-        yy = top + rows_h + 0.17
-        names = " / ".join("none" if d == "raw" else NAMES[d] for d in dens)
-        for line, (label, cell) in enumerate((("SMAPE (%s):" % names, lambda s: "%.1f" % s["smape"]),
-                                              ("Temporal correlation (%s):" % names, lambda s: _rho_cell(s["rho_t3"])))):
-            ff._text(fig, xs[0] + XT_PANEL_W, yy + 0.16 * line, label, fontsize=7.5, ha="right", va="bottom")
-            for x, (_, hist, m) in zip(xs[1:], XT_COLUMNS[1:]):
-                ff._text(fig, x + XT_PANEL_W / 2, yy + 0.16 * line, " / ".join(cell(sc.numbers[d, hist, m]) for d in dens),
-                         fontsize=7.5, ha="center", va="bottom")
+            for x, (_, hist, m) in zip(xs[1:], columns[1:]):  # the row's numbers, under its panels
+                n = sc.numbers[den, hist, m]
+                ff._text(fig, x + panel / 2, y + panel + 0.17, "%.1f · %s" % (n["smape"], _rho_cell(n["rho_t3"])),
+                         fontsize=7, ha="center", va="bottom")
     return fig
 
 
@@ -384,11 +438,37 @@ def page_figure(sc, out):
     plt.close(fig)
 
 
-def xt_figure(scenes, dens, out):
+def xt_figure(scenes, dens, out, **kw):
     import matplotlib.pyplot as plt
-    fig = xt_canvas(scenes, dens)
+    fig = xt_canvas(scenes, dens, **kw)
     fig.savefig(out, dpi=300, facecolor="white")
     plt.close(fig)
+
+
+def summary(sc):
+    """A setup's entry in the json: its band, window and frames, the reference's own error in the band and each
+    config's statistics by history, mutations and channel."""
+    hists = {}
+    for (den, hist, m), s in sc.numbers.items():
+        hists.setdefault(hist, {}).setdefault("m%d" % m, {})[den] = s
+    return {"rows": list(sc.rows), "window": list(sc.cols), "frames": next(iter(sc.lines.values())).shape[0],
+            "ref_noise": sc.ref_noise, "histories": hists}
+
+
+def night(root, results, label, rows, view=NIGHT_VIEW):
+    """The night street's (x, t) figure, figs/spacetime_night.png, and its numbers, five_denoisers/spacetime_night.json:
+    NIGHT_COLUMNS through NIGHT_DENOISERS, the window where plain ReSTIR with OptiX errs most on chain 0 within the
+    columns `view`."""
+    import json
+    import paper_tables
+    sc = scene(root, results, label, rows, configs=NIGHT_CONFIGS, pick=NIGHT_CONFIGS[0],
+               ref_dir=os.path.join(root, "long_refs", label, "ref"), within=view)
+    sc.name = paper_tables.SETUP_NAMES.get(label, label)
+    with open(os.path.join(root, "five_denoisers", "spacetime_night.json"), "w") as fh:
+        json.dump({label: summary(sc)}, fh, indent=1)
+    xt_figure([sc], NIGHT_DENOISERS, os.path.join(root, "figs", "spacetime_night.png"), columns=NIGHT_COLUMNS,
+              panel=NIGHT_PANEL, ink_names=True)
+    print(label, "window", sc.cols)
 
 
 def main(argv=None, scenes=None):
@@ -399,20 +479,20 @@ def main(argv=None, scenes=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("root")
     ap.add_argument("--results")
+    ap.add_argument("--night", action="store_true")
     a = ap.parse_args(argv)
     with open(a.results or os.path.join(a.root, "five_denoisers", "results.json")) as fh:
         results = json.load(fh)
+    if a.night:
+        night(a.root, results, *next(iter(spacetime_runs.NIGHT.items())))
+        return
     out, done = {}, []
     for label, rows in (scenes or spacetime_runs.SCENES).items():
         sc = scene(a.root, results, label, rows)
         sc.name = paper_tables.SETUP_NAMES.get(label, label)
         page_figure(sc, os.path.join(a.root, "figs", "spacetime_%s.png" % label))
         done.append(sc)
-        hists = {}
-        for (den, hist, m), s in sc.numbers.items():
-            hists.setdefault(hist, {}).setdefault("m%d" % m, {})[den] = s
-        out[label] = {"rows": list(sc.rows), "window": list(sc.cols), "frames": next(iter(sc.lines.values())).shape[0],
-                      "ref_noise": sc.ref_noise, "histories": hists}
+        out[label] = summary(sc)
         print(label, "window", sc.cols)
     with open(os.path.join(a.root, "five_denoisers", "spacetime.json"), "w") as fh:
         json.dump(out, fh, indent=1)

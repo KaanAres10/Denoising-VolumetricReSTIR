@@ -39,6 +39,18 @@ class TestList(unittest.TestCase):
         self.assertNotIn(b"\r", out)  # bash's read keeps it on a line's last value: VR_VOL_NORMAL=gradient\r
         self.assertEqual(out.count(b"\n"), len(sr.SCENES))
 
+    def test_night_lists_the_night_streets_replays_alone(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            for label in sr.SCENES:
+                run_dir(root, label, "fd_c200_m0", {"VR_SCENE": "x"})
+            run_dir(root, "emeraldnight_d3", "fr_c50_m0", {"VR_SCENE": "emeraldnight"})
+            out = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                               "spacetime_runs.py"), "--list", root, "--night"],
+                                 capture_output=True, check=True).stdout
+        self.assertEqual(out.decode().split()[:2], ["emeraldnight_d3", "st_fr_c50_m0"])
+        self.assertEqual(out.count(b"\n"), 1)  # not the paper's setups
+
 
 class TestRuns(unittest.TestCase):
     def test_each_paper_run_is_replayed_with_its_own_environment(self):
@@ -55,6 +67,17 @@ class TestRuns(unittest.TestCase):
         self.assertNotIn("VR_TAG", first)
         self.assertEqual(first["VR_MTHRESH"], "200")  # everything else as the paper ran it
         self.assertEqual((first["VR_STRIP_FRAMES"], first["VR_STRIP_ROWS"]), ("128", "208:240"))
+
+    def test_the_night_streets_m_cap_50_runs_plain_and_with_five_mutations(self):
+        label = next(iter(sr.NIGHT))
+        with tempfile.TemporaryDirectory() as root:
+            for cfg in ("fd1_c50_m0", "fr_c50_m5", "fd2_c50_m5",
+                        "fd1_c50_m1", "fd1_c50_m5_jsel", "fd1_c200_m5", "fd1_ship_m0", "st_fd1_c50_m0"):  # not these
+                run_dir(root, label, cfg, {"VR_SCENE": "emeraldnight", "VR_MTHRESH": "50"})
+            runs = sr.runs(root, scenes=sr.NIGHT, frames=128, source=sr.NIGHT_SOURCE)
+        self.assertEqual([r["config"] for r in runs], ["st_fd1_c50_m0", "st_fd2_c50_m5", "st_fr_c50_m5"])
+        self.assertEqual(runs[0]["env"]["VR_STRIP_ROWS"], "%d:%d" % sr.NIGHT[label])
+        self.assertEqual(runs[0]["env"]["VR_MTHRESH"], "50")
 
     def test_a_run_is_complete_with_every_strip_and_a_clean_log(self):
         strip = {"rows": [0, 32], "frames": [1602], "channels": {"raw": "a", "optix": "b"}}
