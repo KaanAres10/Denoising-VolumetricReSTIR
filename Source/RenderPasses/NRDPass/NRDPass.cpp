@@ -183,7 +183,9 @@ const Gui::DropdownList kDenoisingMethod = {
 
 NRDPass::NRDPass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
 {
+#if !FALCOR_HAS_NRD4
     mpDevice->requireD3D12();
+#endif
 
     // PackRadiance includes NRD.hlsli, so it needs the SAME encoding macros as the library shaders.
     // v4 renamed them; see the note in createPipelines(). Passing the v3.1 names to a v4 build is a
@@ -1102,7 +1104,7 @@ void NRDPass::renderUI(Gui::Widgets& widget)
     const nrd::LibraryDesc& nrdLibraryDesc = nrd::GetLibraryDesc();
 #endif
     char name[256];
-    _snprintf_s(name, 255, "NRD Library v%u.%u.%u", nrdLibraryDesc.versionMajor, nrdLibraryDesc.versionMinor, nrdLibraryDesc.versionBuild);
+    snprintf(name, sizeof(name), "NRD Library v%u.%u.%u", nrdLibraryDesc.versionMajor, nrdLibraryDesc.versionMinor, nrdLibraryDesc.versionBuild);
     widget.text(name);
 
     widget.checkbox("Enabled", mEnabled);
@@ -1734,36 +1736,50 @@ void NRDPass::reinit()
 void NRDPass::createPipelines()
 {
     mpPasses.clear();
+#if FALCOR_HAS_D3D12
     mpCachedProgramKernels.clear();
     mpCSOs.clear();
     mCBVSRVUAVdescriptorSetLayouts.clear();
     mpRootSignatures.clear();
+    const bool useRootSignatures = mpDevice->getType() == Device::Type::D3D12;
+#endif
+#if FALCOR_HAS_NRD4
+    mReflectedBindings.clear();
+#endif
 
 #if FALCOR_HAS_NRD4
     const nrd::InstanceDesc& denoiserDesc = *nrd::GetInstanceDesc(*mpInstance);
 
+#if FALCOR_HAS_D3D12
     // v4 drops StaticSamplerDesc: samplers sit at consecutive registers from samplersBaseRegisterIndex.
     D3D12DescriptorSetLayout SamplersDescriptorSetLayout;
-    for (uint32_t j = 0; j < denoiserDesc.samplersNum; j++)
+    if (useRootSignatures)
     {
-        SamplersDescriptorSetLayout.addRange(
-            ShaderResourceType::Sampler, denoiserDesc.samplersBaseRegisterIndex + j, 1,
-            denoiserDesc.constantBufferAndSamplersSpaceIndex
-        );
-    }
-    mpSamplersDescriptorSet =
-        D3D12DescriptorSet::create(mpDevice, SamplersDescriptorSetLayout, D3D12DescriptorSetBindingUsage::ExplicitBind);
+        for (uint32_t j = 0; j < denoiserDesc.samplersNum; j++)
+        {
+            SamplersDescriptorSetLayout.addRange(
+                ShaderResourceType::Sampler, denoiserDesc.samplersBaseRegisterIndex + j, 1,
+                denoiserDesc.constantBufferAndSamplersSpaceIndex
+            );
+        }
+        mpSamplersDescriptorSet =
+            D3D12DescriptorSet::create(mpDevice, SamplersDescriptorSetLayout, D3D12DescriptorSetBindingUsage::ExplicitBind);
 
-    for (uint32_t j = 0; j < denoiserDesc.samplersNum; j++)
-    {
-        mpSamplersDescriptorSet->setSampler(0, j, mpSamplers[j].get());
+        for (uint32_t j = 0; j < denoiserDesc.samplersNum; j++)
+        {
+            mpSamplersDescriptorSet->setSampler(0, j, mpSamplers[j].get());
+        }
     }
+#endif
 
     for (uint32_t i = 0; i < denoiserDesc.pipelinesNum; i++)
     {
         const nrd::PipelineDesc& nrdPipelineDesc = denoiserDesc.pipelines[i];
 
+#if FALCOR_HAS_D3D12
         D3D12DescriptorSetLayout CBVSRVUAVdescriptorSetLayout;
+        if (useRootSignatures)
+        {
         CBVSRVUAVdescriptorSetLayout.addRange(
             ShaderResourceType::Cbv, denoiserDesc.constantBufferRegisterIndex, 1, denoiserDesc.constantBufferAndSamplersSpaceIndex
         );
@@ -1790,6 +1806,8 @@ void NRDPass::createPipelines()
             );
             registerOffset += nrdDescriptorRange.descriptorsNum;
         }
+        }
+#endif
 #else
     // Get denoiser desc for currently initialized denoiser implementation.
     const nrd::DenoiserDesc& denoiserDesc = nrd::GetDenoiserDesc(*mpDenoiser);
@@ -1833,6 +1851,10 @@ void NRDPass::createPipelines()
         }
 #endif
 
+#if FALCOR_HAS_D3D12
+        ref<D3D12RootSignature> pRootSig;
+        if (useRootSignatures)
+        {
         mCBVSRVUAVdescriptorSetLayouts.push_back(CBVSRVUAVdescriptorSetLayout);
 
         // Create root signature for the NRD pass.
@@ -1842,9 +1864,11 @@ void NRDPass::createPipelines()
 
         const D3D12RootSignature::Desc& desc = rootSignatureDesc;
 
-        ref<D3D12RootSignature> pRootSig = D3D12RootSignature::create(mpDevice, desc);
+        pRootSig = D3D12RootSignature::create(mpDevice, desc);
 
         mpRootSignatures.push_back(pRootSig);
+        }
+#endif
 
         // Create Compute PSO for the NRD pass.
         {
@@ -1856,6 +1880,11 @@ void NRDPass::createPipelines()
             // undefined symbols, so NRD_DIFF and NRD_SPEC both evaluate false and the shaders
             // silently compile with no signal selected.
             defines.add("NRD_INTERNAL");
+
+            // NRD.hlsli keys its [[vk::image_format("unknown")]] on this DXC macro. Without the attribute Slang infers a
+            // format from the element type, and storage writes to a texture of any other format are undefined.
+            if (mpDevice->getType() == Device::Type::Vulkan)
+                defines.add("__spirv__");
 
             // Matrix layout. On Falcor 8.0 NRD's float4x4 constants reached the shaders TRANSPOSED, so
             // build_scripts/patch_nrd_matrix_layout.py rewrote the headers to read
@@ -1968,9 +1997,35 @@ void NRDPass::createPipelines()
             if (!rowMajor)
                 programDesc.setCompilerFlags(SlangCompilerFlags::MatrixLayoutColumnMajor);
             // Disable warning 30056: non-short-circuiting `?:` operator is deprecated, use 'select' instead.
-            programDesc.setCompilerArguments({"-Wno-30056"});
+            std::vector<std::string> compilerArguments = {"-Wno-30056"};
+#if FALCOR_HAS_NRD4
+            // NRD declares one register class per kind of resource (t0.., u0.., s0.., b0..). D3D12 keeps the classes apart, but
+            // Vulkan has one binding number per set, so t0 and u0 collide: a shader then reads a storage image through a texture
+            // descriptor, which faults the GPU and reads back as an all-zero frame with no error. NRD's own SPIR-V is built with
+            // the classes shifted apart by these offsets.
+            //
+            // All but the constant buffer's. Measured: shifted, it lands at (set 1, binding 2) and every constant reads as zero, so
+            // each pixel takes NRD's early-outs and the output stays black, again with no error. Left alone, Slang puts it at
+            // (set 0, binding 0), clear of the others, and the constants arrive.
+            if (mpDevice->getType() == Device::Type::Vulkan)
+            {
+                const nrd::SPIRVBindingOffsets& offsets = nrd::GetLibraryDesc()->spirvBindingOffsets;
+                const std::pair<const char*, uint32_t> shifts[] = {
+                    {"-fvk-s-shift", offsets.samplerOffset},
+                    {"-fvk-t-shift", offsets.textureOffset},
+                    {"-fvk-u-shift", offsets.storageTextureAndBufferOffset},
+                };
+                for (const auto& [flag, offset] : shifts)
+                    compilerArguments.insert(compilerArguments.end(), {flag, std::to_string(offset), "all"});
+            }
+#endif
+            programDesc.setCompilerArguments(compilerArguments);
             ref<ComputePass> pPass = ComputePass::create(mpDevice, programDesc, defines);
+            mpPasses.push_back(pPass);
 
+#if FALCOR_HAS_D3D12
+            if (useRootSignatures)
+            {
             ref<Program> pProgram = pPass->getProgram();
             ref<const ProgramKernels> pProgramKernels = pProgram->getActiveVersion()->getKernels(mpDevice.get(), pPass->getVars().get());
 
@@ -1980,9 +2035,48 @@ void NRDPass::createPipelines()
 
             ref<ComputeStateObject> pCSO = mpDevice->createComputeStateObject(csoDesc);
 
-            mpPasses.push_back(pPass);
             mpCachedProgramKernels.push_back(pProgramKernels);
             mpCSOs.push_back(pCSO);
+            }
+#endif
+#if FALCOR_HAS_NRD4
+            if (mpDevice->getType() == Device::Type::Vulkan)
+            {
+                ReflectedBindings bindings;
+                const ReflectionStructType* pStruct =
+                    pPass->getProgram()->getReflector()->getDefaultParameterBlock()->getElementType()->asStructType();
+                for (uint32_t m = 0; m < pStruct->getMemberCount(); m++)
+                {
+                    const ref<const ReflectionVar>& pMember = pStruct->getMember(m);
+                    const ReflectionResourceType* pResource = pMember->getType()->asResourceType();
+                    if (!pResource)
+                        continue;
+                    if (pResource->getType() == ReflectionResourceType::Type::ConstantBuffer)
+                        bindings.constants = pMember->getName();
+                    else if (pResource->getType() == ReflectionResourceType::Type::Sampler)
+                        bindings.samplers.push_back(pMember->getName());
+                    else if (pResource->getShaderAccess() == ReflectionResourceType::ShaderAccess::Read)
+                        bindings.srvs.push_back(pMember->getName());
+                    else
+                        bindings.uavs.push_back(pMember->getName());
+                }
+
+                // A count that disagrees means the positions cannot be trusted. Binding anyway would denoise from the wrong
+                // textures, with no error.
+                uint32_t srvCount = 0, uavCount = 0;
+                for (uint32_t j = 0; j < nrdPipelineDesc.resourceRangesNum; j++)
+                {
+                    const nrd::ResourceRangeDesc& range = nrdPipelineDesc.resourceRanges[j];
+                    (range.descriptorType == nrd::DescriptorType::TEXTURE ? srvCount : uavCount) += range.descriptorsNum;
+                }
+                FALCOR_CHECK(
+                    bindings.srvs.size() == srvCount && bindings.uavs.size() == uavCount && !bindings.constants.empty(),
+                    "NRD pipeline '{}' declares {} SRVs and {} UAVs, but NRD lists {} and {}.",
+                    identifier, bindings.srvs.size(), bindings.uavs.size(), srvCount, uavCount
+                );
+                mReflectedBindings.push_back(std::move(bindings));
+            }
+#endif
         }
     }
 }
@@ -2530,8 +2624,163 @@ void NRDPass::executeInternal(RenderContext* pRenderContext, const RenderData& r
     pRenderContext->submit();
 }
 
+ref<Texture> NRDPass::getNrdTexture(const RenderData& renderData, const NrdResource& resource)
+{
+    ref<Texture> texture;
+
+    switch (resource.type)
+    {
+    case nrd::ResourceType::IN_MV:
+        texture = renderData.getTexture(kInputMotionVectors);
+        break;
+    case nrd::ResourceType::IN_NORMAL_ROUGHNESS:
+        texture = renderData.getTexture(kInputNormalRoughnessMaterialID);
+        break;
+    case nrd::ResourceType::IN_VIEWZ:
+        texture = renderData.getTexture(kInputViewZ);
+        break;
+    case nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST:
+        texture = renderData.getTexture(kInputDiffuseRadianceHitDist);
+        break;
+    case nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST:
+        texture = renderData.getTexture(kInputSpecularRadianceHitDist);
+        break;
+    case nrd::ResourceType::IN_SPEC_HITDIST:
+        texture = renderData.getTexture(kInputSpecularHitDist);
+        break;
+#if !FALCOR_HAS_NRD4
+    // Removed in NRD v4 together with the SpecularReflectionMv / SpecularDeltaMv denoisers.
+    case nrd::ResourceType::IN_DELTA_PRIMARY_POS:
+        texture = renderData.getTexture(kInputDeltaPrimaryPosW);
+        break;
+    case nrd::ResourceType::IN_DELTA_SECONDARY_POS:
+        texture = renderData.getTexture(kInputDeltaSecondaryPosW);
+        break;
+#endif
+    case nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST:
+        texture = renderData.getTexture(kOutputFilteredDiffuseRadianceHitDist);
+        break;
+    case nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST:
+        texture = renderData.getTexture(kOutputFilteredSpecularRadianceHitDist);
+        break;
+#if FALCOR_HAS_NRD4
+    case nrd::ResourceType::IN_DIFF_CONFIDENCE:
+        texture = renderData.getTexture(kInputDiffuseConfidence);
+        break;
+    case nrd::ResourceType::IN_SPEC_CONFIDENCE:
+        texture = renderData.getTexture(kInputSpecularConfidence);
+        break;
+    case nrd::ResourceType::IN_DISOCCLUSION_THRESHOLD_MIX:
+        texture = renderData.getTexture(kInputDisocclusionThresholdMix);
+        break;
+    case nrd::ResourceType::IN_DIFF_HITDIST:
+        texture = renderData.getTexture(kInputDiffuseHitDist);
+        break;
+    case nrd::ResourceType::IN_PENUMBRA:
+        texture = renderData.getTexture(kInputPenumbra);
+        break;
+    case nrd::ResourceType::IN_TRANSLUCENCY:
+        texture = renderData.getTexture(kInputTranslucency);
+        break;
+    case nrd::ResourceType::IN_SIGNAL:
+        texture = renderData.getTexture(kInputSignal);
+        break;
+    case nrd::ResourceType::IN_DIFF_SH0:
+        texture = renderData.getTexture(kInputDiffuseSh0);
+        break;
+    case nrd::ResourceType::IN_DIFF_SH1:
+        texture = renderData.getTexture(kInputDiffuseSh1);
+        break;
+    case nrd::ResourceType::OUT_DIFF_SH0:
+        texture = renderData.getTexture(kOutputDiffuseSh0);
+        break;
+    case nrd::ResourceType::OUT_DIFF_SH1:
+        texture = renderData.getTexture(kOutputDiffuseSh1);
+        break;
+    case nrd::ResourceType::OUT_DIFF_HITDIST:
+        texture = renderData.getTexture(kOutputFilteredDiffuseHitDist);
+        break;
+    case nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY:
+        texture = renderData.getTexture(kOutputShadowTranslucency);
+        break;
+    case nrd::ResourceType::OUT_SIGNAL:
+        texture = renderData.getTexture(kOutputSignal);
+        break;
+    case nrd::ResourceType::OUT_VALIDATION:
+        texture = renderData.getTexture(kOutputValidation);
+        break;
+#endif
+#if !FALCOR_HAS_NRD4
+    // Removed in NRD v4 together with the SpecularReflectionMv / SpecularDeltaMv denoisers.
+    case nrd::ResourceType::OUT_REFLECTION_MV:
+        texture = renderData.getTexture(kOutputReflectionMotionVectors);
+        break;
+    case nrd::ResourceType::OUT_DELTA_MV:
+        texture = renderData.getTexture(kOutputDeltaMotionVectors);
+        break;
+#endif
+    case nrd::ResourceType::TRANSIENT_POOL:
+        texture = mpTransientTextures[resource.indexInPool];
+        break;
+    case nrd::ResourceType::PERMANENT_POOL:
+        texture = mpPermanentTextures[resource.indexInPool];
+        break;
+    default:
+        FALCOR_ASSERT(!"Unavailable resource type");
+        break;
+    }
+
+    FALCOR_ASSERT(texture);
+    return texture;
+}
+
+#if FALCOR_HAS_NRD4
+void NRDPass::dispatchReflected(RenderContext* pRenderContext, const RenderData& renderData, const nrd::DispatchDesc& dispatchDesc)
+{
+    const nrd::InstanceDesc& denoiserDesc = *nrd::GetInstanceDesc(*mpInstance);
+    const nrd::PipelineDesc& pipelineDesc = denoiserDesc.pipelines[dispatchDesc.pipelineIndex];
+    const ReflectedBindings& bindings = mReflectedBindings[dispatchDesc.pipelineIndex];
+    const ref<ComputePass>& pPass = mpPasses[dispatchDesc.pipelineIndex];
+    ShaderVar var = pPass->getRootVar();
+
+
+    var[bindings.constants].setBlob(dispatchDesc.constantBufferData, dispatchDesc.constantBufferDataSize);
+    for (size_t j = 0; j < bindings.samplers.size(); j++)
+        var[bindings.samplers[j]].setSampler(mpSamplers[j]);
+
+    uint32_t resourceIndex = 0;
+    uint32_t srvIndex = 0;
+    uint32_t uavIndex = 0;
+    for (uint32_t rangeIndex = 0; rangeIndex < pipelineDesc.resourceRangesNum; rangeIndex++)
+    {
+        const nrd::ResourceRangeDesc& range = pipelineDesc.resourceRanges[rangeIndex];
+        for (uint32_t offset = 0; offset < range.descriptorsNum; offset++)
+        {
+            const ref<Texture> texture = getNrdTexture(renderData, dispatchDesc.resources[resourceIndex++]);
+            if (range.descriptorType == nrd::DescriptorType::TEXTURE)
+                var[bindings.srvs[srvIndex++]].setSrv(texture->getSRV(0, 1, 0, 1));
+            else
+                var[bindings.uavs[uavIndex++]].setUav(texture->getUAV(0, 0, 1));
+        }
+    }
+
+    // NRD counts in thread groups, execute() in threads.
+    const uint3 groupSize = pPass->getThreadGroupSize();
+    pPass->execute(pRenderContext, dispatchDesc.gridWidth * groupSize.x, dispatchDesc.gridHeight * groupSize.y, groupSize.z);
+}
+#endif
+
 void NRDPass::dispatch(RenderContext* pRenderContext, const RenderData& renderData, const nrd::DispatchDesc& dispatchDesc)
 {
+#if FALCOR_HAS_NRD4
+    if (mpDevice->getType() == Device::Type::Vulkan)
+    {
+        dispatchReflected(pRenderContext, renderData, dispatchDesc);
+        return;
+    }
+#endif
+
+#if FALCOR_HAS_D3D12
 #if FALCOR_HAS_NRD4
     const nrd::InstanceDesc& denoiserDesc = *nrd::GetInstanceDesc(*mpInstance);
 #else
@@ -2602,111 +2851,7 @@ void NRDPass::dispatch(RenderContext* pRenderContext, const RenderData& renderDa
 
             FALCOR_ASSERT(resourceDescriptorType == nrdDescriptorRange.descriptorType);
 
-            ref<Texture> texture;
-
-            switch (resource.type)
-            {
-            case nrd::ResourceType::IN_MV:
-                texture = renderData.getTexture(kInputMotionVectors);
-                break;
-            case nrd::ResourceType::IN_NORMAL_ROUGHNESS:
-                texture = renderData.getTexture(kInputNormalRoughnessMaterialID);
-                break;
-            case nrd::ResourceType::IN_VIEWZ:
-                texture = renderData.getTexture(kInputViewZ);
-                break;
-            case nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST:
-                texture = renderData.getTexture(kInputDiffuseRadianceHitDist);
-                break;
-            case nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST:
-                texture = renderData.getTexture(kInputSpecularRadianceHitDist);
-                break;
-            case nrd::ResourceType::IN_SPEC_HITDIST:
-                texture = renderData.getTexture(kInputSpecularHitDist);
-                break;
-#if !FALCOR_HAS_NRD4
-            // Removed in NRD v4 together with the SpecularReflectionMv / SpecularDeltaMv denoisers.
-            case nrd::ResourceType::IN_DELTA_PRIMARY_POS:
-                texture = renderData.getTexture(kInputDeltaPrimaryPosW);
-                break;
-            case nrd::ResourceType::IN_DELTA_SECONDARY_POS:
-                texture = renderData.getTexture(kInputDeltaSecondaryPosW);
-                break;
-#endif
-            case nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST:
-                texture = renderData.getTexture(kOutputFilteredDiffuseRadianceHitDist);
-                break;
-            case nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST:
-                texture = renderData.getTexture(kOutputFilteredSpecularRadianceHitDist);
-                break;
-#if FALCOR_HAS_NRD4
-            case nrd::ResourceType::IN_DIFF_CONFIDENCE:
-                texture = renderData.getTexture(kInputDiffuseConfidence);
-                break;
-            case nrd::ResourceType::IN_SPEC_CONFIDENCE:
-                texture = renderData.getTexture(kInputSpecularConfidence);
-                break;
-            case nrd::ResourceType::IN_DISOCCLUSION_THRESHOLD_MIX:
-                texture = renderData.getTexture(kInputDisocclusionThresholdMix);
-                break;
-            case nrd::ResourceType::IN_DIFF_HITDIST:
-                texture = renderData.getTexture(kInputDiffuseHitDist);
-                break;
-            case nrd::ResourceType::IN_PENUMBRA:
-                texture = renderData.getTexture(kInputPenumbra);
-                break;
-            case nrd::ResourceType::IN_TRANSLUCENCY:
-                texture = renderData.getTexture(kInputTranslucency);
-                break;
-            case nrd::ResourceType::IN_SIGNAL:
-                texture = renderData.getTexture(kInputSignal);
-                break;
-            case nrd::ResourceType::IN_DIFF_SH0:
-                texture = renderData.getTexture(kInputDiffuseSh0);
-                break;
-            case nrd::ResourceType::IN_DIFF_SH1:
-                texture = renderData.getTexture(kInputDiffuseSh1);
-                break;
-            case nrd::ResourceType::OUT_DIFF_SH0:
-                texture = renderData.getTexture(kOutputDiffuseSh0);
-                break;
-            case nrd::ResourceType::OUT_DIFF_SH1:
-                texture = renderData.getTexture(kOutputDiffuseSh1);
-                break;
-            case nrd::ResourceType::OUT_DIFF_HITDIST:
-                texture = renderData.getTexture(kOutputFilteredDiffuseHitDist);
-                break;
-            case nrd::ResourceType::OUT_SHADOW_TRANSLUCENCY:
-                texture = renderData.getTexture(kOutputShadowTranslucency);
-                break;
-            case nrd::ResourceType::OUT_SIGNAL:
-                texture = renderData.getTexture(kOutputSignal);
-                break;
-            case nrd::ResourceType::OUT_VALIDATION:
-                texture = renderData.getTexture(kOutputValidation);
-                break;
-#endif
-#if !FALCOR_HAS_NRD4
-            // Removed in NRD v4 together with the SpecularReflectionMv / SpecularDeltaMv denoisers.
-            case nrd::ResourceType::OUT_REFLECTION_MV:
-                texture = renderData.getTexture(kOutputReflectionMotionVectors);
-                break;
-            case nrd::ResourceType::OUT_DELTA_MV:
-                texture = renderData.getTexture(kOutputDeltaMotionVectors);
-                break;
-#endif
-            case nrd::ResourceType::TRANSIENT_POOL:
-                texture = mpTransientTextures[resource.indexInPool];
-                break;
-            case nrd::ResourceType::PERMANENT_POOL:
-                texture = mpPermanentTextures[resource.indexInPool];
-                break;
-            default:
-                FALCOR_ASSERT(!"Unavailable resource type");
-                break;
-            }
-
-            FALCOR_ASSERT(texture);
+            ref<Texture> texture = getNrdTexture(renderData, resource);
 
             // Set up resource barriers.
             Resource::State newState =
@@ -2778,6 +2923,7 @@ void NRDPass::dispatch(RenderContext* pRenderContext, const RenderData& renderDa
     pCommandList->Dispatch(dispatchDesc.gridWidth, dispatchDesc.gridHeight, 1);
 
     mpDevice->getUploadHeap()->release(cbAllocation);
+#endif
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(PluginRegistry& registry)

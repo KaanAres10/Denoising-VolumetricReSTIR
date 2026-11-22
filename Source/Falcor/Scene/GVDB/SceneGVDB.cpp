@@ -53,6 +53,19 @@ namespace Falcor
     static const int kPrevFrameDensityGridOffset = 2 * kNumMaxMips + 3;
     static const int kPrevFrameExtraGridOffset = 11;
 
+    // Diagnostic: a hash of what a volume sends to the GPU, under FALCOR_GVDB_DUMP=1 like the dump below, so a load
+    // can be compared across builds and platforms. Only the bytes count: nothing here reads back from the GPU.
+    static void dumpGVDBHash(const char* what, int slotId, int level, const void* data, size_t bytes)
+    {
+        static const bool enabled = []{ const char* e = std::getenv("FALCOR_GVDB_DUMP"); return e && e[0] == '1'; }();
+        if (!enabled) return;
+
+        uint64_t hash = 14695981039346656037ull;
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        for (size_t i = 0; i < bytes; i++) hash = (hash ^ p[i]) * 1099511628211ull;
+        std::printf("[gvdbhash] slot%d lev%d %s bytes=%llu fnv=%016llx\n", slotId, level, what, (unsigned long long)bytes, (unsigned long long)hash);
+    }
+
     // Diagnostic: dump the GVDBInfo/VolumeDesc values a volume ends up with, so the offline bake can
     // be validated numerically against the live gvdb.dll path (which is the fork's own code). Set
     // FALCOR_GVDB_DUMP=1 to enable; the two paths should produce byte-identical output.
@@ -470,6 +483,9 @@ namespace Falcor
                         if (nodeCacheFile) { fwrite(newNodePool.back().data(), newPoolWidth, gvdb.mPool->getPoolTotalCnt(0, n), nodeCacheFile); fclose(nodeCacheFile); }
                     }
 
+                    dumpGVDBHash("rawnodes", slotId, n, nodePoolPtr, (size_t)oldPoolWidth * numElements);
+                    dumpGVDBHash("nodes", slotId, n, newNodePool.back().data(), (size_t)newPoolWidth * numElements);
+
                     gvdbInfo.nodewid[n + GVDBInfo::MAX_LEVELS * slotId] = newPoolWidth;
                     gvdbInfo.nodelist[n + GVDBInfo::MAX_LEVELS * slotId] = mpDevice->createStructuredBuffer(newPoolWidth,
                         gvdb.mPool->getPoolTotalCnt(0, n), kBufFlags, MemoryType::DeviceLocal, newNodePool.back().data(), false);
@@ -485,6 +501,7 @@ namespace Falcor
                             uint2 oldElement; memcpy(&oldElement.x, childPoolPtr + 8 * i, 8);
                             newChildPool[i] = ((oldElement.y & 0xFFFF) << 16) | ((oldElement.x >> 16) & 0xFFFF);
                         }
+                        dumpGVDBHash("children", slotId, n, newChildPool.data(), newChildPool.size() * sizeof(uint32_t));
                         gvdbInfo.childwid[n + GVDBInfo::MAX_LEVELS * slotId] /= 2;
                         gvdbInfo.childlist[n + GVDBInfo::MAX_LEVELS * slotId] = mpDevice->createBuffer(gvdb.mPool->getPoolSize(1, n) / 2,
                             kBufFlags, MemoryType::DeviceLocal, newChildPool.data());
@@ -600,6 +617,9 @@ namespace Falcor
                                                     gvdb.mGridValMax, typeId == 1, compressedDensityPart2);
                         }
                     }
+                    dumpGVDBHash("atlas", slotId, -1, clampedDensity.data(), clampedDensity.size() * sizeof(float));
+                    dumpGVDBHash("bc4", slotId, -1, compressedDensity.data(), compressedDensity.size());
+                    dumpGVDBHash("bc4part2", slotId, -1, compressedDensityPart2.data(), compressedDensityPart2.size());
                     const bool atlasCompressed = !compressedDensity.empty();
                     // D3D12 caps a Texture3D at 2048 per axis and this loader only ever splits the
                     // atlas in two, so the addressable depth is 2 * 2048. Past that, texture creation

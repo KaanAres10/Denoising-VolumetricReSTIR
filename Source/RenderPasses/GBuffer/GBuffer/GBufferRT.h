@@ -73,6 +73,9 @@ private:
     bool mUseTraceRayInline = false;
     /// Option for enabling depth-of-field when camera's aperture radius is nonzero.
     bool mUseDOF = true;
+    /// Write what GBufferRaster leaves on a pixel with no geometry: linear Z and motion vector zero. By default a miss writes a
+    /// far depth, which NRD reads as past its denoising range and skips, leaving those pixels black.
+    bool mRasterMiss = false;
 
     // Ray tracing resources
     struct

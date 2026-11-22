@@ -85,3 +85,18 @@ fi
 # Copy NVTT
 cp ${EXT_DIR}/nvtt/libcudart.so.11.0 ${OUT_DIR}
 cp ${EXT_DIR}/nvtt/libnvtt.so ${OUT_DIR}
+
+# Copy DLSS. NGX looks for its feature libraries next to the executable.
+DLSS_DIR=$5
+if [ -d "${DLSS_DIR}/lib/Linux_x86_64/rel" ]; then
+    cp -fp ${DLSS_DIR}/lib/Linux_x86_64/rel/libnvidia-ngx-dlss.so.* ${OUT_DIR}
+    cp -fp ${DLSS_DIR}/lib/Linux_x86_64/rel/libnvidia-ngx-dlssd.so.* ${OUT_DIR}
+fi
+
+# Copy NRD. The library and the shaders must come from the same SDK, which only CMake knows.
+NRD_DIR=$6
+if [ -n "${NRD_DIR}" ] && [ -f "${NRD_DIR}/Lib/Release/libNRD.so" ]; then
+    mkdir -p ${OUT_DIR}/shaders/nrd/Shaders
+    cp -frp ${NRD_DIR}/Shaders/. ${OUT_DIR}/shaders/nrd/Shaders/
+    cp -fp ${NRD_DIR}/Lib/Release/libNRD.so ${OUT_DIR}
+fi

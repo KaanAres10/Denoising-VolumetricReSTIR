@@ -29,9 +29,11 @@
 
 #include "Falcor.h"
 #include "Core/Enum.h"
+#if FALCOR_HAS_D3D12
 #include "Core/API/Shared/D3D12DescriptorSet.h"
 #include "Core/API/Shared/D3D12RootSignature.h"
 #include "Core/API/Shared/D3D12ConstantBufferView.h"
+#endif
 #include "RenderGraph/RenderPassHelpers.h"
 
 #include <NRD.h>
@@ -121,6 +123,14 @@ private:
     );
 #endif
     void dispatch(RenderContext* pRenderContext, const RenderData& renderData, const nrd::DispatchDesc& dispatchDesc);
+#if FALCOR_HAS_NRD4
+    /// The Vulkan path of dispatch(): binds through Falcor's reflection of NRD's shaders, with no root signature.
+    void dispatchReflected(RenderContext* pRenderContext, const RenderData& renderData, const nrd::DispatchDesc& dispatchDesc);
+    using NrdResource = nrd::ResourceDesc;
+#else
+    using NrdResource = nrd::Resource;
+#endif
+    ref<Texture> getNrdTexture(const RenderData& renderData, const NrdResource& resource);
 
 #if FALCOR_HAS_NRD4
     /// v4 renames the opaque handle: an "Instance" hosts one or more denoisers, each keyed by an
@@ -169,15 +179,29 @@ private:
 #endif
 
     std::vector<ref<Sampler>> mpSamplers;
+#if FALCOR_HAS_D3D12
     std::vector<D3D12DescriptorSetLayout> mCBVSRVUAVdescriptorSetLayouts;
     ref<D3D12DescriptorSet> mpSamplersDescriptorSet;
     std::vector<ref<D3D12RootSignature>> mpRootSignatures;
-    std::vector<ref<ComputePass>> mpPasses;
     std::vector<ref<const ProgramKernels>> mpCachedProgramKernels;
     std::vector<ref<ComputeStateObject>> mpCSOs;
+    ref<D3D12ConstantBufferView> mpCBV;
+#endif
+    std::vector<ref<ComputePass>> mpPasses;
     std::vector<ref<Texture>> mpPermanentTextures;
     std::vector<ref<Texture>> mpTransientTextures;
-    ref<D3D12ConstantBufferView> mpCBV;
+#if FALCOR_HAS_NRD4
+    /// Vulkan: what each pipeline's shader declares, by name. NRD lists a pipeline's resources in register order and its
+    /// *.resources.hlsli declare them in that order, so a position in these lists is the register within its class.
+    struct ReflectedBindings
+    {
+        std::string constants;
+        std::vector<std::string> samplers;
+        std::vector<std::string> srvs;
+        std::vector<std::string> uavs;
+    };
+    std::vector<ReflectedBindings> mReflectedBindings;
+#endif
 
     float4x4 mPrevViewMatrix;
     float4x4 mPrevProjMatrix;

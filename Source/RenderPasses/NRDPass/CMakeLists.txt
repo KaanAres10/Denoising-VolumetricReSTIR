@@ -1,4 +1,5 @@
-if(NOT (FALCOR_HAS_NRD AND FALCOR_HAS_D3D12))
+# v3.1 drives D3D12 directly; v4 also has a Vulkan path, which is what Linux uses.
+if(NOT (FALCOR_HAS_NRD AND (FALCOR_HAS_D3D12 OR FALCOR_HAS_NRD4)))
     return()
 endif()
 

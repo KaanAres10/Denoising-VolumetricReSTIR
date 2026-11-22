@@ -390,8 +390,11 @@ if(FALCOR_WINDOWS)
     endif()
 elseif(FALCOR_LINUX)
     add_custom_target(deploy_dependencies ALL
-        COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.sh ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR}
+        COMMAND ${CMAKE_SOURCE_DIR}/build_scripts/deploycommon.sh ${source_dir} ${output_dir} $<CONFIG> ${FALCOR_SLANG_DIR} ${FALCOR_DLSS_DIR} ${FALCOR_NRD_DIR}
     )
+    if(TARGET patch_nrd_shaders)
+        add_dependencies(deploy_dependencies patch_nrd_shaders)
+    endif()
 endif()
 set_target_properties(deploy_dependencies PROPERTIES FOLDER "Misc")
 
@@ -471,7 +474,9 @@ endif()
 # Supplies the one protobuf symbol Falcor.dll imports but no packman package ships. Must come
 # before Falcor so the DLL exists next to the executable by the time anything is run; see
 # build_scripts/protoc_shim/protoc_shim.cpp for the full explanation and the removal condition.
-add_subdirectory(build_scripts/protoc_shim)
+if(FALCOR_WINDOWS)
+    add_subdirectory(build_scripts/protoc_shim)
+endif()
 
 add_subdirectory(Source/Falcor)
 add_subdirectory(Source/Modules)

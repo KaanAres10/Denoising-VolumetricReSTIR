@@ -1,4 +1,4 @@
-if(NOT (FALCOR_HAS_DLSS AND FALCOR_HAS_D3D12))
+if(NOT FALCOR_HAS_DLSS)
     return()
 endif()
 

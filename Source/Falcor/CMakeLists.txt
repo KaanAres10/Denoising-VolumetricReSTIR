@@ -1041,6 +1041,13 @@ if(EXISTS "${GVDB_DIR}/lib/gvdb.lib")
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${GVDB_PTX_DIR}/cuda_gvdb_copydata.ptx" "$<TARGET_FILE_DIR:Falcor>"
         COMMENT "Copying GVDB runtime files (gvdb.dll + PTX) to Falcor output directory"
     )
+elseif(TARGET gvdb)
+    # Linux: libgvdb.so from external/gvdb. Same isolation as above: only SceneGVDB.cpp sees its headers.
+    message(STATUS "FALCOR_HAS_GVDB: TRUE (external/gvdb)")
+    set_source_files_properties(Scene/GVDB/SceneGVDB.cpp PROPERTIES
+        INCLUDE_DIRECTORIES "${FALCOR_GVDB_INCLUDE_DIRS}"
+        COMPILE_DEFINITIONS "FALCOR_HAS_GVDB=1;GVDB_SKIP_OPENVDB")
+    target_link_libraries(Falcor PRIVATE gvdb)
 else()
     message(STATUS "FALCOR_HAS_GVDB: FALSE (prebuilt GVDB not found at ${GVDB_DIR})")
 endif()

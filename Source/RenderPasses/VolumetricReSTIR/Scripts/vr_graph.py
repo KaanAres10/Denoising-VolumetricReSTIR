@@ -953,7 +953,16 @@ def add_gbuffer(g, render, jitter=True, name="GBufferRaster", upscale=False, rat
         props.update({"upscale": True, "upscaleRatio": ratio if ratio is not None else 0.58})
     elif render is not None:
         props.update({"outputSize": "Fixed", "fixedOutputSize": render})
-    g.addPass(createPass("GBufferRaster", props), name)
+    # GBufferRaster needs rasterizer ordered views, which Vulkan does not offer. GBufferRT writes the same channels, so
+    # the pass keeps its name and the graph's edges stay as they are. rasterMiss makes it agree on pixels with no geometry,
+    # or NRD reads them as past its denoising range and leaves the background black.
+    try:
+        pass_ = createPass("GBufferRaster", props)
+    except RuntimeError as e:
+        if "rasterizer ordered views" not in str(e):
+            raise
+        pass_ = createPass("GBufferRT", dict(props, rasterMiss=True))
+    g.addPass(pass_, name)
     return name
 
 

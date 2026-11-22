@@ -62,7 +62,7 @@ RWTexture2D<float> gMask;
 
 #define is_valid(name) (is_valid_##name != 0)
 
-#if !defined(COMPUTE_DEPTH_OF_FIELD) || !defined(USE_ALPHA_TEST) || !defined(LOD_MODE) || !defined(ADJUST_SHADING_NORMALS) || !defined(RAY_FLAGS)
+#if !defined(COMPUTE_DEPTH_OF_FIELD) || !defined(USE_ALPHA_TEST) || !defined(LOD_MODE) || !defined(ADJUST_SHADING_NORMALS) || !defined(RAY_FLAGS) || !defined(RASTER_MISS)
 #error "Not all defines are set!"
 #endif
 
@@ -73,6 +73,7 @@ struct GBufferRT
     static const TexLODMode kLODMode = TexLODMode(LOD_MODE);
     static const bool kAdjustShadingNormals = ADJUST_SHADING_NORMALS;
     static const uint kRayFlags = RAY_FLAGS;
+    static const bool kRasterMiss = RASTER_MISS;
     static const float kEnvMapDepth = 100000000.0f; // Arbitrary big number
 
     uint2 frameDim;
@@ -376,7 +377,7 @@ struct GBufferRT
 
     void writeMiss(const uint2 pixel, const float3 rayOrigin, const float3 rayDir)
     {
-        const float2 mvec = computeMotionVectorBackground(pixel, rayOrigin, rayDir);
+        const float2 mvec = kRasterMiss ? float2(0.f) : computeMotionVectorBackground(pixel, rayOrigin, rayDir);
         const float2 octNormal = ndir_to_oct_unorm(float3(0.2215f, 0.2215f, 0.2215f)); // UE4 default value at miss
         const float roughness = 0.f;
         const float materialID = 0.f;
@@ -405,7 +406,7 @@ struct GBufferRT
         if (is_valid(gDepth))
             gDepth[pixel] = 1.f;
         if (is_valid(gLinearZ))
-            gLinearZ[pixel] = float2(kEnvMapDepth, 0.f);
+            gLinearZ[pixel] = float2(kRasterMiss ? 0.f : kEnvMapDepth, 0.f);
         if (is_valid(gMotionVectorW))
             gMotionVectorW[pixel] = {};
         if (is_valid(gNormalWRoughnessMaterialID))

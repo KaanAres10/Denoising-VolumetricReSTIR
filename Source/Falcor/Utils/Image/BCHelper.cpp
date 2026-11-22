@@ -3,6 +3,13 @@
 #include <algorithm>
 #include <cmath>
 
+// SAL annotations are MSVC-only and generate no code.
+#if !defined(_MSC_VER)
+#define _In_reads_(n)
+#define _Inout_
+#define _Out_
+#endif
+
 namespace Falcor
 {
 

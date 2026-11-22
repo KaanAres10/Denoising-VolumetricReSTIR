@@ -37,6 +37,7 @@ const std::string kProgramComputeFile = "RenderPasses/GBuffer/GBuffer/GBufferRT.
 // Scripting options.
 const char kUseTraceRayInline[] = "useTraceRayInline";
 const char kUseDOF[] = "useDOF";
+const char kRasterMiss[] = "rasterMiss";
 
 // Ray tracing settings that affect the traversal stack size. Set as small as possible.
 const uint32_t kMaxPayloadSizeBytes = 4;
@@ -191,6 +192,7 @@ Properties GBufferRT::getProperties() const
     props[kLODMode] = mLODMode;
     props[kUseTraceRayInline] = mUseTraceRayInline;
     props[kUseDOF] = mUseDOF;
+    props[kRasterMiss] = mRasterMiss;
     return props;
 }
 
@@ -213,6 +215,8 @@ void GBufferRT::parseProperties(const Properties& props)
             mUseTraceRayInline = value;
         else if (key == kUseDOF)
             mUseDOF = value;
+        else if (key == kRasterMiss)
+            mRasterMiss = value;
         // TODO: Check for unparsed fields, including those parsed in base classes.
     }
 }
@@ -336,6 +340,7 @@ DefineList GBufferRT::getShaderDefines(const RenderData& renderData) const
     defines.add("USE_ALPHA_TEST", mUseAlphaTest ? "1" : "0");
     defines.add("LOD_MODE", std::to_string((uint32_t)mLODMode));
     defines.add("ADJUST_SHADING_NORMALS", mAdjustShadingNormals ? "1" : "0");
+    defines.add("RASTER_MISS", mRasterMiss ? "1" : "0");
 
     // Setup ray flags.
     RayFlags rayFlags = RayFlags::None;

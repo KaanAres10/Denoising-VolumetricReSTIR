@@ -471,9 +471,34 @@ set(NRD_DIR ${PACKMAN_DIR}/nrd)
 # Opt-in until NRDPass is ported: v4 is NOT source-compatible with v3.1 (Instance API, resolution
 # moved from creation into CommonSettings, Relax settings structs merged), so selecting it
 # automatically would break the build for anyone who happens to have the v4 tree vendored.
-option(FALCOR_USE_NRD4 "Use the vendored NRD v4 SDK instead of packman's v3.1" OFF)
+# Linux has no packman NRD at all, so there v4 is the default and the library is built from source
+# (build_scripts/build_nrd_linux.sh).
+if(FALCOR_LINUX)
+    set(_nrd4_default ON)
+else()
+    set(_nrd4_default OFF)
+endif()
+option(FALCOR_USE_NRD4 "Use the vendored NRD v4 SDK instead of packman's v3.1" ${_nrd4_default})
 
-if(FALCOR_USE_NRD4 AND EXISTS ${NRD4_DIR}/Include/NRD.h)
+if(FALCOR_LINUX)
+    if(FALCOR_USE_NRD4 AND EXISTS ${NRD4_DIR}/Include/NRD.h AND EXISTS ${NRD4_DIR}/Lib/Release/libNRD.so)
+        add_library(nrd SHARED IMPORTED GLOBAL)
+        set_target_properties(nrd PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES ${NRD4_DIR}/Include
+            INTERFACE_COMPILE_DEFINITIONS FALCOR_HAS_NRD4=1
+            IMPORTED_LOCATION ${NRD4_DIR}/Lib/Release/libNRD.so
+        )
+        set(FALCOR_HAS_NRD ON PARENT_SCOPE)
+        set(FALCOR_HAS_NRD4 ON PARENT_SCOPE)
+        set(FALCOR_NRD_DIR ${NRD4_DIR} PARENT_SCOPE)
+        message(STATUS "NRD SDK: ${NRD4_DIR} (v4, SH capable)")
+    else()
+        set(FALCOR_HAS_NRD OFF PARENT_SCOPE)
+        set(FALCOR_HAS_NRD4 OFF PARENT_SCOPE)
+        set(FALCOR_NRD_DIR "" PARENT_SCOPE)
+        message(STATUS "NRD SDK: none (run build_scripts/build_nrd_linux.sh for ${NRD4_DIR}/Lib/Release/libNRD.so)")
+    endif()
+elseif(FALCOR_USE_NRD4 AND EXISTS ${NRD4_DIR}/Include/NRD.h)
     add_library(nrd SHARED IMPORTED GLOBAL)
     # v4 ships one configuration; point Debug at the Release import lib rather than leaving it unset.
     set_target_properties(nrd PROPERTIES
@@ -542,7 +567,23 @@ else()
 endif()
 set(FALCOR_DLSS_DIR ${DLSS_DIR} PARENT_SCOPE)
 
-if(EXISTS ${DLSS_DIR}/include/nvsdk_ngx.h)
+if(FALCOR_LINUX AND EXISTS ${DLSS_DIR}/include/nvsdk_ngx.h AND EXISTS ${DLSS_DIR}/lib/Linux_x86_64/libnvsdk_ngx.a)
+    # The static NGX loader. deploycommon.sh puts the feature libraries next to the executables.
+    add_library(dlss STATIC IMPORTED GLOBAL)
+    set_target_properties(dlss PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES ${DLSS_DIR}/include
+        IMPORTED_LOCATION ${DLSS_DIR}/lib/Linux_x86_64/libnvsdk_ngx.a
+        INTERFACE_LINK_LIBRARIES "${CMAKE_DL_LIBS}"
+    )
+    set(FALCOR_HAS_DLSS ON PARENT_SCOPE)
+    if(EXISTS ${DLSS_DIR}/include/nvsdk_ngx_helpers_dlssd_vk.h)
+        set(FALCOR_HAS_DLSSD ON PARENT_SCOPE)
+        target_compile_definitions(dlss INTERFACE FALCOR_HAS_DLSSD=1)
+    else()
+        set(FALCOR_HAS_DLSSD OFF PARENT_SCOPE)
+    endif()
+    message(STATUS "DLSS SDK: ${DLSS_DIR}")
+elseif(FALCOR_WINDOWS AND EXISTS ${DLSS_DIR}/include/nvsdk_ngx.h)
     # The import-library subdirectory was renamed between releases: 3.5.0 uses "x86_64",
     # the 310.x line uses "x64". Pick whichever exists rather than hardcoding one.
     if(EXISTS ${DLSS_DIR}/lib/Windows_x86_64/x64/nvsdk_ngx_d.lib)
@@ -590,9 +631,28 @@ else()
     set(FALCOR_HAS_OPTIX OFF PARENT_SCOPE)
 endif()
 
+# gvdb -- built from source on Linux; Windows links the prebuilt SDK (see Source/Falcor/CMakeLists.txt).
+if(FALCOR_LINUX AND FALCOR_HAS_CUDA)
+    add_subdirectory(gvdb)
+endif()
+
 # oidn (Intel Open Image Denoise) — for the Volumetric ReSTIR denoiser passes.
-set(FALCOR_OIDN_DIR "C:/oidn-2.3.3.x64.windows" CACHE PATH "Path to the Intel Open Image Denoise SDK")
-if(FALCOR_WINDOWS AND EXISTS "${FALCOR_OIDN_DIR}/include/OpenImageDenoise/oidn.hpp")
+if(FALCOR_LINUX)
+    set(FALCOR_OIDN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/oidn-2.3.3.x86_64.linux" CACHE PATH "Path to the Intel Open Image Denoise SDK")
+else()
+    set(FALCOR_OIDN_DIR "C:/oidn-2.3.3.x64.windows" CACHE PATH "Path to the Intel Open Image Denoise SDK")
+endif()
+if(FALCOR_LINUX AND EXISTS "${FALCOR_OIDN_DIR}/include/OpenImageDenoise/oidn.hpp")
+    add_library(oidn SHARED IMPORTED GLOBAL)
+    set_target_properties(oidn PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${FALCOR_OIDN_DIR}/include"
+        IMPORTED_LOCATION "${FALCOR_OIDN_DIR}/lib/libOpenImageDenoise.so.2"
+    )
+    # Directory of OIDN runtime libraries (main + core + device_cpu/cuda), copied next to each OIDN pass.
+    set(FALCOR_OIDN_BIN_DIR "${FALCOR_OIDN_DIR}/lib" CACHE INTERNAL "OIDN runtime library directory")
+    set(FALCOR_HAS_OIDN ON PARENT_SCOPE)
+    message(STATUS "FALCOR_HAS_OIDN: TRUE (${FALCOR_OIDN_DIR})")
+elseif(FALCOR_WINDOWS AND EXISTS "${FALCOR_OIDN_DIR}/include/OpenImageDenoise/oidn.hpp")
     add_library(oidn SHARED IMPORTED GLOBAL)
     set_target_properties(oidn PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES "${FALCOR_OIDN_DIR}/include"

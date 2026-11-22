@@ -15,7 +15,9 @@ target_sources(NRDAdapter PRIVATE
 # simply empty, this pass quietly compiles the v3.1 packing against a v4 NRDPass, and the result is a
 # smeared image with no build error. FALCOR_USE_NRD4 is a cache OPTION and therefore always visible,
 # which makes the inconsistency detectable -- fail the configure instead.
-if(FALCOR_USE_NRD4 AND NOT FALCOR_HAS_NRD4)
+#
+# Not on Linux, where the option defaults ON and an unbuilt libNRD.so just leaves NRDPass out.
+if(FALCOR_USE_NRD4 AND NOT FALCOR_HAS_NRD4 AND NOT FALCOR_LINUX)
     message(FATAL_ERROR
         "NRDAdapter: FALCOR_USE_NRD4 is ON but FALCOR_HAS_NRD4 did not reach this scope, so the "
         "guide packing would silently use the v3.1 layout against a v4 NRDPass. Ensure external/ is "

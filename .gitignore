@@ -52,6 +52,8 @@
 # NRD v4, built from source (see Source/RenderPasses/NRDPass/README.md). ~10 MB of binaries.
 /external/nrd-4/
 /external/dlss-legacy-37/
+# OIDN's Linux SDK (see docs/linux.md). On Windows it lives outside the repo.
+/external/oidn-*/
 
 # Local build logs.
 /build_*.log

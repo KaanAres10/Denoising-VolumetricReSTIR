@@ -48,16 +48,24 @@
 #include <nvsdk_ngx_helpers_dlssd.h>
 #endif
 #endif
+#else
+#include <nvsdk_ngx.h>
+#include <nvsdk_ngx_helpers.h>
 #endif
 
 #if FALCOR_HAS_VULKAN
 #include <vulkan/vulkan.h>
 #include <nvsdk_ngx_vk.h>
 #include <nvsdk_ngx_helpers_vk.h>
+#if FALCOR_HAS_DLSSD
+#include <nvsdk_ngx_helpers_dlssd_vk.h>
+#endif
 #endif
 
 #include <cstdio>
 #include <cstdarg>
+#include <fstream>
+#include <string>
 
 #define THROW_IF_FAILED(call)                                                     \
     {                                                                             \
@@ -98,6 +106,24 @@ VkImageAspectFlags getAspectMaskFromFormat(VkFormat format)
     default:
         return VK_IMAGE_ASPECT_COLOR_BIT;
     }
+}
+
+NVSDK_NGX_Resource_VK makeVkResource(Texture* pTexture, bool isUAV = false)
+{
+    if (!pTexture)
+        return {};
+
+    VkImageView imageView = isUAV ? pTexture->getUAV()->getNativeHandle().as<VkImageView>()
+                                  : pTexture->getSRV(0, 1)->getNativeHandle().as<VkImageView>();
+    VkImage image = pTexture->getNativeHandle().as<VkImage>();
+    VkFormat format = getVulkanFormat(pTexture->getFormat());
+    VkImageSubresourceRange range;
+    range.aspectMask = getAspectMaskFromFormat(format);
+    range.baseMipLevel = 0;
+    range.levelCount = 1;
+    range.baseArrayLayer = 0;
+    range.layerCount = 1;
+    return NVSDK_NGX_Create_ImageView_Resource_VK(imageView, image, range, format, pTexture->getWidth(), pTexture->getHeight(), isUAV);
 }
 #endif
 
@@ -195,7 +221,20 @@ std::string NGXWrapper::logLoadedFeatureDll(const char* moduleName)
     logInfo("[NGX] loaded {} version {} from {}", moduleName, version, path);
     return version;
 #else
-    return "unknown";
+    // On Linux the libraries carry their version in the file name: nvngx_dlssd.dll is libnvidia-ngx-dlssd.so.<version>.
+    const std::string soName = std::string(moduleName) == "nvngx_dlssd.dll" ? "libnvidia-ngx-dlssd.so." : "libnvidia-ngx-dlss.so.";
+    std::ifstream maps("/proc/self/maps");
+    for (std::string line; std::getline(maps, line);)
+    {
+        const size_t pos = line.find(soName);
+        if (pos == std::string::npos)
+            continue;
+        const std::string version = line.substr(pos + soName.size());
+        logInfo("[NGX] loaded {} version {} from {}", soName + version, version, line.substr(line.find('/')));
+        return version;
+    }
+    logWarning("[NGX] {}* is not loaded", soName);
+    return {};
 #endif
 }
 
@@ -203,8 +242,12 @@ void NGXWrapper::initializeNGX(const std::filesystem::path& applicationDataPath,
 {
     NVSDK_NGX_Result result = NVSDK_NGX_Result_Fail;
 
+    // NGX takes wide strings on every platform, and only Windows paths hold them natively.
+    const std::wstring applicationDataPathW = applicationDataPath.wstring();
+    const std::wstring featureSearchPathW = featureSearchPath.wstring();
+
     NVSDK_NGX_FeatureCommonInfo featureInfo = {};
-    const wchar_t* pathList[] = {featureSearchPath.c_str()};
+    const wchar_t* pathList[] = {featureSearchPathW.c_str()};
     featureInfo.PathListInfo.Length = 1;
     featureInfo.PathListInfo.Path = const_cast<wchar_t**>(&pathList[0]);
 
@@ -212,14 +255,14 @@ void NGXWrapper::initializeNGX(const std::filesystem::path& applicationDataPath,
     {
     case Device::Type::D3D12:
 #if FALCOR_HAS_D3D12
-        result = NVSDK_NGX_D3D12_Init(kAppID, applicationDataPath.c_str(), mpDevice->getNativeHandle().as<ID3D12Device*>(), &featureInfo);
+        result = NVSDK_NGX_D3D12_Init(kAppID, applicationDataPathW.c_str(), mpDevice->getNativeHandle().as<ID3D12Device*>(), &featureInfo);
 #endif
         break;
     case Device::Type::Vulkan:
 #if FALCOR_HAS_VULKAN
         result = NVSDK_NGX_VULKAN_Init(
             kAppID,
-            applicationDataPath.c_str(),
+            applicationDataPathW.c_str(),
             mpDevice->getNativeHandle(0).as<VkInstance>(),
             mpDevice->getNativeHandle(1).as<VkPhysicalDevice>(),
             mpDevice->getNativeHandle(2).as<VkDevice>(),
@@ -437,8 +480,20 @@ void NGXWrapper::initializeDLSSD(
 #endif
         break;
     }
+    case Device::Type::Vulkan:
+    {
+#if FALCOR_HAS_VULKAN
+        pRenderContext->submit();
+        VkCommandBuffer vkCommandBuffer = pRenderContext->getLowLevelData()->getCommandBufferNativeHandle().as<VkCommandBuffer>();
+        THROW_IF_FAILED(NGX_VULKAN_CREATE_DLSSD_EXT1(
+            mpDevice->getNativeHandle(2).as<VkDevice>(), vkCommandBuffer, creationNodeMask, visibilityNodeMask, &feature, mpParameters, &dlssdParams
+        ));
+        pRenderContext->submit();
+#endif
+        break;
+    }
     default:
-        FALCOR_THROW("DLSS Ray Reconstruction is only implemented for D3D12.");
+        FALCOR_THROW("DLSS Ray Reconstruction is only implemented for D3D12 and Vulkan.");
     }
 
     // The preset hint is logged beside the DLL version below: the pair is what identifies the network,
@@ -460,9 +515,19 @@ void NGXWrapper::releaseDLSSD(const void* owner)
     if (it != mRRFeatures.end() && it->second)
     {
         mpDevice->wait();
+        switch (mpDevice->getType())
+        {
+        case Device::Type::D3D12:
 #if FALCOR_HAS_D3D12
-        THROW_IF_FAILED(NVSDK_NGX_D3D12_ReleaseFeature(it->second));
+            THROW_IF_FAILED(NVSDK_NGX_D3D12_ReleaseFeature(it->second));
 #endif
+            break;
+        case Device::Type::Vulkan:
+#if FALCOR_HAS_VULKAN
+            THROW_IF_FAILED(NVSDK_NGX_VULKAN_ReleaseFeature(it->second));
+#endif
+            break;
+        }
         it->second = nullptr;
     }
 }
@@ -484,7 +549,6 @@ bool NGXWrapper::evaluateDLSSD(
         return false;
     NVSDK_NGX_Handle* const pFeature = featureIt->second;
 
-#if FALCOR_HAS_D3D12
     // Every input must be in ShaderResource and the output in UnorderedAccess before NGX runs.
     // A missed barrier here is a silent debug-layer error plus garbage output, and there are
     // now seven inputs rather than three.
@@ -497,6 +561,56 @@ bool NGXWrapper::evaluateDLSSD(
     }
     pRenderContext->resourceBarrier(in.output, Resource::State::UnorderedAccess);
 
+#if FALCOR_HAS_VULKAN
+    if (mpDevice->getType() == Device::Type::Vulkan)
+    {
+        NVSDK_NGX_Resource_VK color = makeVkResource(in.color);
+        NVSDK_NGX_Resource_VK output = makeVkResource(in.output, true);
+        NVSDK_NGX_Resource_VK depth = makeVkResource(in.depth);
+        NVSDK_NGX_Resource_VK motionVectors = makeVkResource(in.motionVectors);
+        NVSDK_NGX_Resource_VK diffuseAlbedo = makeVkResource(in.diffuseAlbedo);
+        NVSDK_NGX_Resource_VK specularAlbedo = makeVkResource(in.specularAlbedo);
+        NVSDK_NGX_Resource_VK normals = makeVkResource(in.normals);
+        NVSDK_NGX_Resource_VK roughness = makeVkResource(in.roughness);
+        NVSDK_NGX_Resource_VK exposure = makeVkResource(in.exposure);
+
+        NVSDK_NGX_VK_DLSSD_Eval_Params evalParams = {};
+        evalParams.pInColor = &color;
+        evalParams.pInOutput = &output;
+        evalParams.pInDepth = &depth;
+        evalParams.pInMotionVectors = &motionVectors;
+        evalParams.pInDiffuseAlbedo = &diffuseAlbedo;
+        evalParams.pInSpecularAlbedo = &specularAlbedo;
+        evalParams.pInNormals = &normals;
+        evalParams.pInRoughness = &roughness;
+        evalParams.pInExposureTexture = in.exposure ? &exposure : nullptr;
+        evalParams.InJitterOffsetX = jitterOffset.x;
+        evalParams.InJitterOffsetY = jitterOffset.y;
+        evalParams.InReset = resetAccumulation ? 1 : 0;
+        evalParams.InMVScaleX = motionVectorScale.x;
+        evalParams.InMVScaleY = motionVectorScale.y;
+        evalParams.InRenderSubrectDimensions.Width = in.color->getWidth();
+        evalParams.InRenderSubrectDimensions.Height = in.color->getHeight();
+        evalParams.pInWorldToViewMatrix = pWorldToView ? const_cast<float*>(reinterpret_cast<const float*>(pWorldToView)) : nullptr;
+        evalParams.pInViewToClipMatrix = pViewToClip ? const_cast<float*>(reinterpret_cast<const float*>(pViewToClip)) : nullptr;
+        evalParams.InFrameTimeDeltaInMsec = frameTimeDeltaMs;
+
+        VkCommandBuffer vkCommandBuffer = pRenderContext->getLowLevelData()->getCommandBufferNativeHandle().as<VkCommandBuffer>();
+        NVSDK_NGX_Result result = NGX_VULKAN_EVALUATE_DLSSD_EXT(vkCommandBuffer, pFeature, mpParameters, &evalParams);
+        if (NVSDK_NGX_FAILED(result))
+        {
+            logWarning("Failed to evaluate DLSS-D feature: {}", resultToString(result));
+            return false;
+        }
+
+        pRenderContext->setPendingCommands(true);
+        pRenderContext->uavBarrier(in.output);
+        pRenderContext->submit();
+        return true;
+    }
+#endif
+
+#if FALCOR_HAS_D3D12
     auto native = [](Texture* pTex) -> ID3D12Resource*
     { return pTex ? pTex->getNativeHandle().as<ID3D12Resource*>() : nullptr; };
 
@@ -612,6 +726,7 @@ void NGXWrapper::initializeDLSS(
             NGX_VULKAN_CREATE_DLSS_EXT(vkCommandBuffer, creationNodeMask, visibilityNodeMask, &mpFeatureSR, mpParameters, &dlssParams)
         );
         pRenderContext->submit();
+        logLoadedFeatureDll("nvngx_dlss.dll");
 #endif
         break;
     }
@@ -743,31 +858,11 @@ bool NGXWrapper::evaluateDLSS(
         pRenderContext->resourceBarrier(pDepth, Resource::State::ShaderResource);
         pRenderContext->resourceBarrier(pResolvedColor, Resource::State::UnorderedAccess);
 
-        auto getImageView = [](Texture* pTexture, bool isUAV = false) -> NVSDK_NGX_Resource_VK
-        {
-            if (!pTexture)
-                return {};
-
-            VkImageView imageView = isUAV ? pTexture->getUAV()->getNativeHandle().as<VkImageView>()
-                                          : pTexture->getSRV(0, 1)->getNativeHandle().as<VkImageView>();
-            VkImage image = pTexture->getNativeHandle().as<VkImage>();
-            VkFormat format = getVulkanFormat(pTexture->getFormat());
-            VkImageSubresourceRange range;
-            range.aspectMask = getAspectMaskFromFormat(format);
-            range.baseMipLevel = 0;
-            range.levelCount = 1;
-            range.baseArrayLayer = 0;
-            range.layerCount = 1;
-            return NVSDK_NGX_Create_ImageView_Resource_VK(
-                imageView, image, range, format, pTexture->getWidth(), pTexture->getHeight(), isUAV
-            );
-        };
-
-        NVSDK_NGX_Resource_VK unresolvedColorBuffer = getImageView(pUnresolvedColor);
-        NVSDK_NGX_Resource_VK motionVectorsBuffer = getImageView(pMotionVectors);
-        NVSDK_NGX_Resource_VK resolvedColorBuffer = getImageView(pResolvedColor, true);
-        NVSDK_NGX_Resource_VK depthBuffer = getImageView(pDepth);
-        NVSDK_NGX_Resource_VK exposureBuffer = getImageView(pExposure);
+        NVSDK_NGX_Resource_VK unresolvedColorBuffer = makeVkResource(pUnresolvedColor);
+        NVSDK_NGX_Resource_VK motionVectorsBuffer = makeVkResource(pMotionVectors);
+        NVSDK_NGX_Resource_VK resolvedColorBuffer = makeVkResource(pResolvedColor, true);
+        NVSDK_NGX_Resource_VK depthBuffer = makeVkResource(pDepth);
+        NVSDK_NGX_Resource_VK exposureBuffer = makeVkResource(pExposure);
 
         NVSDK_NGX_VK_DLSS_Eval_Params evalParams = {};
 
