@@ -81,6 +81,16 @@ static const SamplingOptions kSamplingOptions = VR_SAMPLING_OPTIONS;
 #define VR_SR_PER_PIXEL_OFFSETS 0
 #endif
 
+// VR_SR_PAIRWISE (user-asked 2026-10-31, a speed-up): pairwise MIS in place of Talbot's. With the center c (sample 0)
+// and the k neighbours i in range, the center's confidence M_c split evenly over the k pairs:
+//   m_i(y) = (1/k) M_i p_i(y) / (M_i p_i(y) + (M_c/k) p_c(y)),   m_c(y) = (1/k) sum_i (M_c/k) p_c(y) / (same),
+// which sum to 1 at every y (each pair's two shares do), so the output stays an unbiased contribution weight; and with
+// equal targets and M they are 1/(k+1) each, as Talbot's. Each neighbour's target is then evaluated at the center's
+// sample alone (k evaluations) instead of at every other tap's (k^2). Off: Talbot, as before.
+#ifndef VR_SR_PAIRWISE
+#define VR_SR_PAIRWISE 0
+#endif
+
 int2 generateNeighborOffset(int sampleId, int sampleCount, float sampleRadius, int pixelId, int frameId)
 {
     int2 offset;
@@ -202,6 +212,50 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     int startSampleId = gMISMethod == kMISTalbot ? 0 : 1;
 
+#if VR_SR_PAIRWISE
+    // Pairwise MIS (see VR_SR_PAIRWISE): the neighbours in range (k), the output's M (K: every tap's, as
+    // simpleResampleStep sums them), and the center sample's weight m_c(y_c), from each neighbour's target there.
+    float pwK = 0.f, pwMTotal = 0.f, pwMc = 0.f, pwCenterMIS = 1.f;
+    if (gMISMethod == kMISTalbot)
+    {
+        const Reservoir center = gInputReservoirs[pixelId];
+        pwMc = center.M;
+        pwMTotal = center.M;
+        for (int j = 1; j < gSampleCount; j++)
+        {
+            const int2 tapPos2 = pixelPos + generateNeighborOffset(j, gSampleCount, gSampleRadius, pixelId, r2TimeSeed);
+            if (!IsWithinRange(tapPos2, gResolution)) continue;
+            pwK += 1.f;
+            pwMTotal += gInputReservoirs[getPixelID(tapPos2, gResolution)].M;
+        }
+        if (pwK > 0.f && center.runningSum > 0.f)
+        {
+            const float centerShare = pwMc / pwK * center.p_y; // (M_c / k) p_c(y_c)
+            float mc = 0.f;
+            for (int j = 1; j < gSampleCount; j++)
+            {
+                const int2 tapPos2 = pixelPos + generateNeighborOffset(j, gSampleCount, gSampleRadius, pixelId, r2TimeSeed);
+                if (!IsWithinRange(tapPos2, gResolution)) continue;
+                const Reservoir tap2 = gInputReservoirs[getPixelID(tapPos2, gResolution)];
+                float p_j = 0.f; // p_j(y_c); M_j p_j(y_c) is 0 for an empty neighbour without evaluating it
+                if (tap2.M > 0.f)
+                {
+                    float3 neighborRayDir = normalize(computeNonNormalizedRayDirPinholeScaled(gScene.camera, tapPos2, 1, 0.5f, gResolution));
+                    VolRay neighborRay = { ray.origin, neighborRayDir, 0, center.depth };
+                    #ifdef SURFACE_SCENE
+                    VBufferItem vItem = gVBuffer[getPixelID(tapPos2, gResolution)];
+                    #endif
+                    p_j = evaluatePHatReadOnly(center, neighborRay, sg, envMapSampler, emissiveSampler, VBUFFERITEM dataProvider, SAMPLING_OPTIONS, false, true, true);
+                    if (isinf(p_j) || isnan(p_j)) p_j = 0.f;
+                }
+                const float den = tap2.M * p_j + centerShare;
+                mc += den > 0.f ? centerShare / den : 1.f;
+            }
+            pwCenterMIS = mc / pwK;
+        }
+    }
+#endif
+
     for (int sampleId = startSampleId; sampleId < gSampleCount; sampleId++)
     {
         int2 offset = generateNeighborOffset(sampleId, gSampleCount, gSampleRadius, pixelId, r2TimeSeed);
@@ -232,6 +286,20 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 resampleNeighborSpatialReuse(tap, resampleRay, sg, envMapSampler, emissiveSampler, VBUFFERITEM dataProvider, SAMPLING_OPTIONS);
             }
 
+        #if VR_SR_PAIRWISE
+            // The resampling weight K m / M times this tap's runningSum (W M p_c(y), resampled to the center): with
+            // simpleResampleStep's M sum K, the output's W is sum_j m_j p_c(y_j) W_j / p_c(y).
+            if (gMISMethod == kMISTalbot && tap.runningSum > 0.f)
+            {
+                if (sampleId == 0) MISWeight = pwMc > 0.f ? pwMTotal * pwCenterMIS / pwMc : 0.f;
+                else
+                {
+                    // neighbor_py = p_i(y_i) (its own pixel's target), tap.p_y = p_c(y_i) after the resampling above
+                    const float den = tap.M * neighbor_py + pwMc / pwK * tap.p_y;
+                    MISWeight = den > 0.f ? pwMTotal / pwK * neighbor_py / den : 0.f;
+                }
+            }
+        #else
             if (gMISMethod == kMISTalbot && tap.runningSum > 0.f)
             {
                 float p_sum = 0;
@@ -283,6 +351,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
                 if (p_sum > 0)
                     MISWeight = p_qi * k / p_sum;
             }
+        #endif
 
             tap.runningSum *= float(MISWeight);
 

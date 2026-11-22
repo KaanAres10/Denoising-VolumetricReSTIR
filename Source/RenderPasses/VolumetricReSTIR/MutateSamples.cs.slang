@@ -81,6 +81,53 @@ static const uint kStaticStrategyMask = VR_MUT_STATIC_MASK;
 #else
 #define STRATEGY_MASK gStrategyMask
 #endif
+// VR_MUT_STORED_P0 (one bounce): start the chain from the reservoir's stored p_y instead of evaluating p_hat(x0) again.
+// At one bounce Temporal and Spatial Reuse store exactly this target's value (the same options; their spatialReuse
+// flag only matters for vertex reuse), so it saves one p_hat per pixel; the camera ray's transmittance is then left
+// to the first move that keeps the depth. Off: p_hat(x0) is evaluated, as before.
+#ifndef VR_MUT_STORED_P0
+#define VR_MUT_STORED_P0 0
+#endif
+// VR_MUT_COARSE: the chain's target marches the shadow ray on the initial candidates' coarser grid (VR_MUT_COARSE_MIP,
+// steps x VR_MUT_COARSE_STEP), the camera ray as before. Eq. 16 holds for any target the chain uses throughout, so
+// W(z) = p_c(x0) / p_c(z) W(x0); but reuse's MIS reads p_y as the full target at the sample's own pixel, so a chain
+// that moved evaluates the full p_hat once at its end and stores that. Off: the full target throughout, as before.
+#ifndef VR_MUT_COARSE
+#define VR_MUT_COARSE 0
+#endif
+#ifndef VR_MUT_COARSE_MIP
+#define VR_MUT_COARSE_MIP 2
+#endif
+#ifndef VR_MUT_COARSE_STEP
+#define VR_MUT_COARSE_STEP 2.f
+#endif
+// VR_MUT_INTERLEAVE: mutate half the pixels each frame, alternating every frame, in a checkerboard of whole thread
+// groups (2: VR_GROUP_X x VR_GROUP_Y tiles, 16 x 16) or of whole warps (1: 16 x 2 blocks). Only groups pay: a group
+// holds its registers until its last warp ends, so skipping half of every group's warps saved 6% of the pass, not half
+// (night street, 5 mutations); a per-pixel checkerboard would save nothing at all. Which pixels mutate depends only on
+// the pixel and the frame, never on the sample: each reservoir stays an unbiased (sample, weight) pair, as with any
+// fixed mutation count. Off (0): every pixel, every frame.
+#ifndef VR_MUT_INTERLEAVE
+#define VR_MUT_INTERLEAVE 0
+#endif
+// VR_MUT_JOINT_LIGHT: a depth or free-flight move also steps the light sample as the light move does (an env direction
+// rotated on the sphere, a point stepped on its emissive triangle), in the same proposal, so one p_hat evaluation moves
+// both. Both steps are symmetric, so the test is unchanged; the light step is drawn wherever the light move could move
+// x's light, and z keeps that light (a depth stays in the medium). Off: only the light move moves the light sample.
+#ifndef VR_MUT_JOINT_LIGHT
+#define VR_MUT_JOINT_LIGHT 0
+#endif
+
+/// The options the chain's target uses: the reuse passes' own, with VR_MUT_COARSE the shadow ray's grid coarsened.
+SamplingOptions chainOptions()
+{
+    SamplingOptions o = SAMPLING_OPTIONS;
+#if VR_MUT_COARSE
+    o.lightingMipLevel = VR_MUT_COARSE_MIP;
+    o.lightingTStepScale = VR_MUT_COARSE_STEP;
+#endif
+    return o;
+}
 
 RWStructuredBuffer<Reservoir> gCurReservoirs;
 #if MAX_BOUNCES > 1
@@ -416,10 +463,10 @@ typedef OverrideArrayDataProvider MutationDataProvider;
 typedef StructuredBufferArrayDataProvider MutationDataProvider;
 #endif
 
-/// Which strategies can move this sample, from its type: medium or not, and its light kind -- which only the
-/// re-selection changes, so the loop asks again for the current state (an inapplicable pick is a self-transition).
+/// Which strategies could move this sample, from its type: medium or not, and its light kind -- which only the
+/// re-selection changes, so the loop asks again for the current state. Before the strategy mask (see applicable).
 /// b: the sample's extra bounce (two bounces; unused at one).
-uint applicable(Reservoir r, ExtraBounceReservoir b)
+uint moveKinds(Reservoir r, ExtraBounceReservoir b)
 {
     const bool selfEmission = r.lightID == kSelfEmissionLightID;
     const bool inMedium = r.depth != kRayTMax;
@@ -447,16 +494,52 @@ uint applicable(Reservoir r, ExtraBounceReservoir b)
         if (inMedium) mask |= bounceMoves(r, b);
     }
 #endif
-    return mask & STRATEGY_MASK;
+    return mask;
 }
 
-/// rejectBelow > 0: early rejection -- 0 may come back for a value below it (its shadow march stopped early).
+/// The enabled strategies that can move this sample (an inapplicable pick is a self-transition).
+uint applicable(Reservoir r, ExtraBounceReservoir b)
+{
+    return moveKinds(r, b) & STRATEGY_MASK;
+}
+
+/// The light move's proposal for x's light sample: an env direction rotated on the sphere, symmetric in solid angle,
+/// or a point on an emissive triangle stepped on the torus of its area-uniform u, same triangle.
+float2 perturbedLightUV(Reservoir x, inout SampleGenerator sg)
+{
+    if (x.lightID < 0) // environment map: rotate on the sphere, symmetric in solid angle
+    {
+        const float3 w = gScene.envMap.uvToWorld(x.lightUV);
+        const float theta = abs(kelemenStep(gDirStepMin, gDirStepMax, sampleNext2D(sg)));
+        const float phi = M_2PI * sampleNext1D(sg);
+        const float3 t = perp_stark(w);
+        const float3 b = cross(w, t);
+        const float3 w2 = cos(theta) * w + sin(theta) * (cos(phi) * t + sin(phi) * b);
+        return gScene.envMap.worldToUv(normalize(w2));
+    }
+    // emissive triangle: torus step in the area-uniform u, same triangle
+    return frac(x.lightUV + float2(kelemenStep(gLightStepMin, gLightStepMax, sampleNext2D(sg)),
+                                   kelemenStep(gLightStepMin, gLightStepMax, sampleNext2D(sg))));
+}
+
+/// The chain's target (chainOptions). rejectBelow > 0: early rejection -- 0 may come back for a value below it (its
+/// shadow march stopped early).
 float pHat(Reservoir r, VolRay ray, inout SampleGenerator sg, MutationDataProvider dp,
            VBUFFERDECLARE inout CachingVisibilityProvider vis, float rejectBelow = 0.f)
 {
-    const float p = evaluate_P_hat(ray, sg, envMapSampler, emissiveSampler, VBUFFERITEM dp, SAMPLING_OPTIONS, r, vis, false, true, false, rejectBelow);
+    const float p = evaluate_P_hat(ray, sg, envMapSampler, emissiveSampler, VBUFFERITEM dp, chainOptions(), r, vis, false, true, false, rejectBelow);
     return (isnan(p) || isinf(p)) ? 0.f : p;
 }
+
+#if VR_MUT_COARSE
+/// The reuse passes' full target, for the value a moved chain stores.
+float pHatFull(Reservoir r, VolRay ray, inout SampleGenerator sg, MutationDataProvider dp,
+               VBUFFERDECLARE inout CachingVisibilityProvider vis)
+{
+    const float p = evaluate_P_hat(ray, sg, envMapSampler, emissiveSampler, VBUFFERITEM dp, SAMPLING_OPTIONS, r, vis, false, true, false);
+    return (isnan(p) || isinf(p)) ? 0.f : p;
+}
+#endif
 
 #ifndef VR_GROUP_X
 #define VR_GROUP_X 16
@@ -468,6 +551,13 @@ float pHat(Reservoir r, VolRay ray, inout SampleGenerator sg, MutationDataProvid
 void main(uint3 DTid : SV_DispatchThreadID)
 {
     if (any(DTid.xy >= gResolution)) return;
+#if VR_MUT_INTERLEAVE == 2
+    const uint2 groupTile = uint2(DTid.x / VR_GROUP_X, DTid.y / VR_GROUP_Y);
+    if (((groupTile.x + groupTile.y + uint(gFrameCount)) & 1u) != 0u) return;
+#elif VR_MUT_INTERLEAVE
+    const uint2 warpBlock = uint2(DTid.x / VR_GROUP_X, DTid.y / max(1u, 32u / VR_GROUP_X));
+    if (((warpBlock.x + warpBlock.y + uint(gFrameCount)) & 1u) != 0u) return;
+#endif
     const int2 pixelPos = DTid.xy;
     printSetPixel(pixelPos);
     const int pixelId = getPixelID(pixelPos, gResolution);
@@ -505,17 +595,25 @@ void main(uint3 DTid : SV_DispatchThreadID)
     dp.value = xb;
 #endif
 
+#if VR_MUT_STORED_P0 && !VR_MUT_COARSE && MAX_BOUNCES == 1
+    const float p0 = r.p_y; // this target's value at x0 (see VR_MUT_STORED_P0), checked > 0 above
+    float primaryVis = -1.f; // not known yet: the first move that keeps the depth evaluates it
+#else
     CachingVisibilityProvider vis0;
     vis0.Initialize();
     const float p0 = pHat(r, ray, sg, dp, VBUFFERITEM vis0);
     if (!(p0 > 0.f)) { stat(4); return; }
     if (p0 != r.p_y) stat(5);
+    float primaryVis = vis0.data;
+#endif
 
     Reservoir x = r;
     float px = p0;
-    float primaryVis = vis0.data;
 #if MAX_BOUNCES > 1
     float bounceVis = vis0.data1; // segment 1 of x
+#endif
+#if VR_MUT_COARSE
+    bool moved = false; // a proposal was accepted: the full target is evaluated at the end
 #endif
     const float depthUnit = gScene.volumeDesc.tStep * gScene.volumeWorldScaling;
     const uint enabledCount = countbits(STRATEGY_MASK);
@@ -688,21 +786,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
         }
         else if (s == kLight)
         {
-            if (x.lightID < 0) // environment map: rotate on the sphere, symmetric in solid angle
-            {
-                const float3 w = gScene.envMap.uvToWorld(x.lightUV);
-                const float theta = abs(kelemenStep(gDirStepMin, gDirStepMax, sampleNext2D(sg)));
-                const float phi = M_2PI * sampleNext1D(sg);
-                const float3 t = perp_stark(w);
-                const float3 b = cross(w, t);
-                const float3 w2 = cos(theta) * w + sin(theta) * (cos(phi) * t + sin(phi) * b);
-                z.lightUV = gScene.envMap.worldToUv(normalize(w2));
-            }
-            else // emissive triangle: torus step in the area-uniform u, same triangle
-            {
-                z.lightUV = frac(x.lightUV + float2(kelemenStep(gLightStepMin, gLightStepMax, sampleNext2D(sg)),
-                                                    kelemenStep(gLightStepMin, gLightStepMax, sampleNext2D(sg))));
-            }
+            z.lightUV = perturbedLightUV(x, sg);
             visz.data = primaryVis; // the depth did not move
         #if MAX_BOUNCES > 1
             visz.data1 = bounceVis; // nor did the extra bounce
@@ -715,6 +799,10 @@ void main(uint3 DTid : SV_DispatchThreadID)
             stat(2);
             if (!(z.depth > 0.f)) continue; // p_hat = 0: rejected, never resampled
         }
+    #if VR_MUT_JOINT_LIGHT
+        // The depth or free-flight proposal steps the light sample too (see VR_MUT_JOINT_LIGHT).
+        if ((s == kDepth || s == kFlight) && (moveKinds(x, xb) & (1u << kLight)) != 0) z.lightUV = perturbedLightUV(x, sg);
+    #endif
 
         // The test's random number comes first -- p_hat draws none, so the stream is unchanged -- and with it what
         // p_hat(z) must exceed to be accepted, u p_hat(x) q(z) / q(x): with gEarlyReject the shadow march stops once
@@ -734,6 +822,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
         {
             x = z;
             px = pz;
+        #if VR_MUT_COARSE
+            moved = true;
+        #endif
             primaryVis = visz.data; // preset to x's when the move kept x1 (p_hat only reads it then), else z's
         #if MAX_BOUNCES > 1
             bounceVis = visz.data1;
@@ -758,7 +849,27 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     // Eq. 16 in this reservoir's representation W = runningSum / (p_y M):
     // W(z) = p_hat(x0)/p_hat(z) W(x0)  <=>  runningSum *= p_hat(x0)/p_y_old, p_y = p_hat(z).
+#if VR_MUT_COARSE
+    // With the chain's coarse target p_c: W(z) = p_c(x0)/p_c(z) W(x0), stored with the full target's value at z as p_y
+    // (what reuse's MIS reads): runningSum *= p_c(x0)/p_y_old * p_full(z)/p_c(z). A chain that never moved keeps its
+    // reservoir as it was. Where the full target is 0 at z (rare: the coarse grid sees light the fine one blocks),
+    // the chain's own value stays, which keeps this pixel's W exact.
+    if (!moved) return;
+    {
+        CachingVisibilityProvider visf;
+        visf.Initialize();
+        visf.data = primaryVis; // the camera ray's transmittance: the visibility options, which the coarse target keeps
+        const float pFull = pHatFull(x, ray, sg, dp, VBUFFERITEM visf);
+        if (pFull > 0.f)
+        {
+            r.runningSum *= (p0 / r.p_y) * (pFull / px);
+            px = pFull;
+        }
+        else r.runningSum *= p0 / r.p_y;
+    }
+#else
     r.runningSum *= p0 / r.p_y;
+#endif
     r.depth = x.depth;
     r.lightID = x.lightID; // the re-selection changes the light itself
     r.lightUV = x.lightUV;

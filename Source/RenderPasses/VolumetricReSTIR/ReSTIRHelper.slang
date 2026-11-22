@@ -138,6 +138,46 @@ int encodePathTag(int storage, int pathTag)
 #define VR_REUSE_ON 0
 #endif
 
+// VR_CAM_EARLY_REJECT (the mutation pass, one bounce): its early rejection also before and on the camera ray, not only
+// on the shadow ray -- see evaluate_F_. Same decisions, so the same frames. Off: the camera ray is always marched fully.
+#ifndef VR_CAM_EARLY_REJECT
+#define VR_CAM_EARLY_REJECT 0
+#endif
+#if VR_EARLY_REJECT && VR_CAM_EARLY_REJECT && MAX_BOUNCES == 1
+/// The light's unoccluded term at a medium scatter point -- evaluate_L_in_volume's Ld, before any march. An analytic
+/// light samples with a copy of sg (taken by value), so the caller's stream is unchanged; an invalid sample gives 0
+/// (p_hat is 0 then too).
+float3 unoccludedLightInVolume(MediumInteraction mi, int lightID, float2 lightUV, bool isLastFrame, SampleGenerator sg)
+{
+    if (lightID < 0)
+    {
+    #if VR_USE_ENV_LIGHTS
+        const float3 wiWorld = gScene.envMap.uvToWorld(lightUV, isLastFrame);
+        return gScene.envMap.eval(wiWorld, 0.f, isLastFrame) * mi.phaseFunction(mi.wo, wiWorld);
+    #else
+        return 0.f;
+    #endif
+    }
+    if (lightID < (int)gScene.getLightCount())
+    {
+    #if VR_USE_ANALYTIC_LIGHTS
+        const SceneLightSample ls = getAnalyticalLightSample(lightID, mi.p, sg);
+        return ls.Li * mi.phaseFunction(mi.wo, ls.rayDir);
+    #else
+        return 0.f;
+    #endif
+    }
+#if VR_USE_EMISSIVE_LIGHTS
+    TriangleLightSample ls;
+    if (!sampleTriangleOffset(mi.p, (uint)(lightID - (int)gScene.getLightCount()), lightUV, ls)) return 0.f;
+    const float lsCosTheta = dot(ls.normalW, -ls.dir);
+    return ls.Le * gScene.emissiveIntensityMultiplier * mi.phaseFunction(mi.wo, ls.dir) * lsCosTheta / (ls.distance * ls.distance);
+#else
+    return 0.f;
+#endif
+}
+#endif
+
 float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvider : IExternalVisibilityProvider>(
     REUSETYPE Reservoir tap, VBUFFERDECLARE ArrayDataProvider extraBounceReservoirs, EnvMapSampler envMapSampler, EmissiveLightSampler emissiveSampler,
     VolRay ray, inout SampleGenerator sg, SamplingOptions options, inout ExternalVisibilityProvider externalVis, bool isLastFrame, bool noReuse, bool spatialReuse, bool isFinalShading,
@@ -210,6 +250,21 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
             if (externalVis.getVisibility(0) != -1.f) visibility = externalVis.getVisibility(0);
             else
             {
+                float camStop = 0.f;
+            #if VR_EARLY_REJECT && VR_CAM_EARLY_REJECT && MAX_BOUNCES == 1
+                // The mutation pass's early rejection before and on the camera ray: p_hat <= density sigma_s Ld times
+                // the two transmittances, each at most 1, so a proposal that bound rejects marches nothing, and the
+                // camera march stops once its transmittance cannot carry p_hat above the threshold (the shadow march
+                // keeps its own stop). The 1e-4 margin covers the rounding of the product, so the decisions are the
+                // full value's; a march that stopped is never cached (its proposal is rejected).
+                if (rejectBelow > 0.f && !isBackgroundSample && !isSelfEmission)
+                {
+                    const float bound = luminance(density * gScene.volumeDesc.sigma_s * unoccludedLightInVolume(mi, tap.lightID, tap.lightUV, isLastFrame, sg));
+                    const float stop = rejectBelow * (1.f - 1e-4f);
+                    if (!(bound > stop)) return 0.f;
+                    camStop = stop / bound;
+                }
+            #endif
             #ifdef SURFACE_SCENE
                 // correct for shadow acne result in floating point arithmetic compilation optimization discrepancy when using V Buffer
                 if (isLastVertexSurface)
@@ -218,10 +273,11 @@ float3 evaluate_F_<ArrayDataProvider:IArrayDataProvider, ExternalVisibilityProvi
                     ray.tMax = length(dir);
                     ray.dir = dir / ray.tMax;
                 }
-                visibility = computeGeneralPathSpaceVisibility(true, !isBackgroundSample, ray, sg, options.visibilitySamples, options.visibilityMipLevel + mipLevelOffset, options.visibilityUseLinearSampler, options.visibilityTrackingMethod, options.visibilityTStepScale, !isFinalShading);
+                visibility = computeGeneralPathSpaceVisibility(true, !isBackgroundSample, ray, sg, options.visibilitySamples, options.visibilityMipLevel + mipLevelOffset, options.visibilityUseLinearSampler, options.visibilityTrackingMethod, options.visibilityTStepScale, !isFinalShading, camStop);
             #else
-                visibility = computeVisibility(ray, sg, options.visibilitySamples, options.visibilityMipLevel + mipLevelOffset, options.visibilityUseLinearSampler, options.visibilityTrackingMethod, options.visibilityTStepScale);
+                visibility = computeVisibility(ray, sg, options.visibilitySamples, options.visibilityMipLevel + mipLevelOffset, options.visibilityUseLinearSampler, options.visibilityTrackingMethod, options.visibilityTStepScale, camStop);
             #endif
+                if (camStop > 0.f && !(visibility >= camStop)) return 0.f; // stopped, or below: rejected either way
                 externalVis.putVisibility(0, visibility);
             }
         }
